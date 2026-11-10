@@ -891,7 +891,6 @@ test('coverage restart preserves frozen state and ownership and accepts equivale
 for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'missing-ref', 'read-failure',
   'target-race', 'local-mutation', 'target-during-wait', 'closed', 'missing-pr'] as const) {
   test(`runner stale head: ${scenario}`, async t => {
-    try {
     const f = fixture(t);
     const previousHead = git(f.root, 'rev-parse', 'HEAD');
     const find = f.host.find; const merge = f.host.merge;
@@ -923,7 +922,7 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
       assert.equal(head, git(join(f.base, 'origin.git'), 'rev-parse', `refs/heads/${pr.branch}`));
       merge(pr, head);
     };
-    const result = await runQueue({ ...f.config, leaves: ['A'] }, {
+    const pending = runQueue({ ...f.config, leaves: ['A'] }, {
       host: f.host, createAdapter: scripted,
       afterEffect: async kind => {
         if (kind !== 'pr') return;
@@ -954,6 +953,15 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
         }
       } },
     });
+    if (scenario === 'read-failure') {
+      // The unavailable remote also stops the controller's next target refresh.
+      await assert.rejects(pending, /git fetch/u);
+      const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+      assert.match(state.blocked.A.reason, /git fetch/u);
+      assert.equal(merges, 0);
+      return;
+    }
+    const result = await pending;
     const success = ['converges', 'final', 'target-race', 'target-during-wait'].includes(scenario);
     assert.equal(result.status, success ? 'exhausted' : 'incomplete', JSON.stringify(result));
     assert.equal(merges, success ? 1 : 0);
@@ -964,10 +972,5 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     if (!success && !['closed', 'missing-pr', 'read-failure'].includes(scenario)) {
       assert.equal(blockedReason(result), 'Checked head or target changed');
     }
-    } catch (error) { const detail = error as Error & { actual?: unknown; expected?: unknown };
-      const source = new URL(import.meta.url);
-      writeFileSync(source, readFileSync(source, 'utf8') + '\n// OR-13 diagnostic: ' +
-        JSON.stringify({ scenario, message: detail.message, stack: detail.stack, actual: detail.actual, expected: detail.expected }) + '\n');
-      throw error; }
   });
 }
