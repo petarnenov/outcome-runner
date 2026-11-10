@@ -23,6 +23,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm install -g @fission-ai/openspec@1.17.0
+      - run: openspec --version
       - run: npm test
       - name: Create local release
         id: release

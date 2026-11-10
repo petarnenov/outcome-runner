@@ -2,13 +2,14 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync, realpathSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { git, command } from '../src/git.ts';
 import { hash, validateConfig, validateQueue } from '../src/model.ts';
 import type { CheckRecord, Harness, Project, PullRequest, Queue, ReviewRecord, RunConfig, Work, WorkerSession } from '../src/model.ts';
+import { main } from '../src/cli.ts';
 import { runQueue } from '../src/runner.ts';
 import { PAGE_BYTES } from '../src/text-page.ts';
 import type { RunEvent } from '../src/runner.ts';
@@ -54,7 +55,7 @@ function fixture(t: TestContext, { second = false } = {}) {
     commitScope: second ? 'counter' : 'fixture-tools', commitSuffix: second ? ' (PORT-1)' : '',
     planningCheck: { command: 'openspec', args: ['validate', '{change}', '--strict'] },
     checks: [{ command: 'make', args: [second ? 'verify-result' : 'pr-check'] },
-      { command: 'node', args: ['--test', '{scope}/*.test.mjs'] }] };
+      { command: 'node', args: ['--test', '--experimental-test-coverage', '--test-coverage-lines={coverage}', '{scope}/*.test.mjs'] }] };
   const queue: Queue = { version: 1, tasks: ['A', 'B', 'C', 'D'].map((id, priority) => ({
     id, priority, title: `Implement finite counter ${id}`, change: `counter-${id.toLowerCase()}`,
     scopes: [`src/${id.toLowerCase()}`], dependencies: priority ? [['A'], ['B'], []][priority - 1] : [],
@@ -219,6 +220,11 @@ test('copied distribution accepts a differently configured independent project',
   const f = fixture(t, { second: true }); const distribution = join(f.base, 'portable');
   cpSync('src', distribution, { recursive: true });
   const { runQueue: portable } = await import(pathToFileURL(join(distribution, 'runner.ts')).href);
+  for (const coverage of [0, 101, 85.5, '90', null]) {
+    await assert.rejects(portable({ ...f.config, coverage }), /Invalid coverage/u);
+  }
+  await assert.rejects(portable({ ...f.config, project: { ...f.project,
+    checks: [{ command: 'node', args: ['--test'] }] } }), /A coverage gate check is required/u);
   const result = await portable({ ...f.config, leaves: ['A'] }, { host: f.host, createAdapter: scripted });
   assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.equal(f.records[0].state, 'MERGED');
 });
@@ -457,7 +463,7 @@ test('review reads a large diff in pages and check output through its section', 
 
 test('run_checks answers compactly and bounds a failing check', async t => {
   const f = fixture(t); let observed = false;
-  const failing = { command: 'node', args: ['-e', "process.stderr.write('x'.repeat(40000)); process.exit(1)"] };
+  const failing = { command: 'node', args: ['-e', "process.stderr.write('x'.repeat(40000)); process.exit(1)", '{coverage}'] };
   const result = await runQueue({ ...f.config, leaves: ['A'], project: { ...f.config.project, checks: [failing] } }, { host: f.host,
     createAdapter: options => {
       const inner = scripted(options as ScriptedOptions);
@@ -732,7 +738,7 @@ test('restart keeps the existing claim without another ledger commit', async t =
 
 test('a claim lost after push is resumed by the same durable claimant', async t => {
   const f = fixture(t); const config = { ...f.config, leaves: ['A'] };
-  const store = new RunStore(config.stateDirectory, { ...config, root: realpathSync(f.root), leaves: ['A'] }, { repositoryRoot: f.root });
+  const store = new RunStore(config.stateDirectory, { ...config, coverage: 85, root: realpathSync(f.root), leaves: ['A'] }, { repositoryRoot: f.root });
   store.update({ claimant: 'durable' }); store.close();
   const ledger = new ClaimLedger(f.root, 'proposal');
   ledger.acquire(ledger.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'durable', host: 'h' }, 'chore: claim A');
@@ -769,4 +775,105 @@ test('a target advance inside the outcome scope blocks the result', async t => {
     afterEffect: async kind => { if (kind === 'implementation') advanceTarget(f, 'src/a/foreign.txt', 'scope'); } });
   assert.equal(result.status, 'incomplete'); assert.equal(f.records.length, 0);
   assert.match(blockedReason(result), /outcome scope/u);
+});
+
+test('coverage startup failures are private, exit 4 and allocate nothing', async t => {
+  const f = fixture(t);
+  const { root: _root, stateDirectory: _state, ...invocation } = f.config;
+  const path = join(f.base, 'invocation.json');
+  const cases: { coverage?: unknown; args?: string[]; project?: Project; message: RegExp }[] = [
+    ...[0, 101, 85.5, 'abc', '90', null, true].map(coverage => ({ coverage, message: /Invalid coverage/u })),
+    ...['0', '101', '85.5', 'abc', '85oops', 'Infinity'].map(value =>
+      ({ args: [`--coverage=${value}`], message: /Invalid coverage/u })),
+    ...[['--coverage='], ['--coverage=90', '--coverage=91']].map(args => ({ args, message: /coverage/u })),
+    ...[
+      { checks: [] },
+      { checks: [{ command: 'node', args: ['--test'] }] },
+      { checks: [{ command: 'node', args: ['--test'] }], planningCheck: { command: 'node', args: ['{coverage}'] } },
+      { checks: [{ command: 'node', args: ['--test'] }], setup: [{ command: 'node', args: ['{coverage}'] }] },
+      { checks: [{ command: '{coverage}', args: [] }] },
+    ].map(patch => ({ project: { ...f.project, ...patch }, message: /A coverage gate check is required/u })),
+  ];
+  for (const entry of cases) {
+    const { args = [], message, ...patch } = entry;
+    writeFileSync(path, JSON.stringify({ ...invocation, ...patch }));
+    let output = '';
+    assert.equal(await main(path, undefined, line => { output += line; },
+      { cwd: f.root, env: { XDG_STATE_HOME: join(f.base, 'private-state') }, args }), 4);
+    const diagnostic = JSON.parse(output).diagnostics as string;
+    assert.match(JSON.parse(readFileSync(diagnostic, 'utf8')).message, message);
+    assert.ok(!output.includes('Invalid coverage'));
+    assert.ok(!output.includes('coverage gate check'));
+    rmSync(join(diagnostic, '..'), { recursive: true, force: true });
+    assert.equal(existsSync(join(f.base, '.work-queue-locks')), false);
+    assert.equal(existsSync(join(f.base, 'private-state')), false);
+    assert.equal(git(f.root, 'worktree', 'list').split('\n').length, 1);
+    assert.equal(git(join(f.base, 'origin.git'), 'for-each-ref', 'refs/heads/work-queue-claims-proposal'), '');
+  }
+  for (const coverage of [0, 101, 85.5, 'abc', '90', null, true, NaN, Infinity]) {
+    await assert.rejects(runQueue({ ...f.config, coverage } as RunConfig), /Invalid coverage/u);
+  }
+  await assert.rejects(runQueue({ ...f.config, project: { ...f.project, checks: [{ command: 'node', args: [] }] } }),
+    /A coverage gate check is required/u);
+  assert.equal(existsSync(join(f.base, '.work-queue-locks')), false);
+});
+
+test('coverage is expanded in every check execution and stated across purposes and repair', async t => {
+  const f = fixture(t); const prompts: string[] = []; let repair = false;
+  const marker = '{coverage}:{coverage}:{change}:{target}:{scope}';
+  const expected = '92:92:counter-a:proposal:src/a';
+  f.project.checks.push({ command: 'node', args: ['-e',
+    `if (process.argv[1] !== ${JSON.stringify(expected)}) process.exit(1); console.log(process.argv[1]);`, marker] });
+  const result = await runQueue({ ...f.config, leaves: ['A'], coverage: 92 }, { host: f.host,
+    createAdapter: options => {
+      const inner = scripted(options as ScriptedOptions);
+      return { ...inner, async startAction(prompt: string) {
+        prompts.push(prompt);
+        if (prompt.includes('Review actual implementation') && !repair) {
+          repair = true;
+          await options.handleTool('outcome_report', { outcome: 'changes-required', summary: 'Exercise repair', findings: ['Recheck implementation.'] }, {} as ToolContext);
+          return { threadId: 'coverage-review', events: [], text: '' } as unknown as WorkerReply;
+        }
+        return inner.startAction(prompt);
+      } };
+    } });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.ok(repair); assert.ok(prompts.length >= 7);
+  for (const prompt of prompts) assert.match(prompt, /Resolved coverage threshold: 92%\./u);
+  for (const stage of ['Inspect current files', 'Create proposal.md', 'Implement all approved', 'Review actual implementation']) {
+    assert.ok(prompts.some(prompt => prompt.includes(stage)));
+  }
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+  for (const records of [state.completed.A.checks, state.completed.A.finalChecks]) {
+    assert.ok(records.some((check: CheckRecord) => check.args.includes('--test-coverage-lines=92')));
+    assert.ok(records.some((check: CheckRecord) => check.args.includes(expected) && check.output!.includes(expected)));
+    assert.ok(records.every((check: CheckRecord) => !check.args.some(arg => arg.includes('{coverage}'))));
+  }
+});
+
+test('coverage restart preserves frozen state and ownership and accepts equivalent default', async t => {
+  const f = fixture(t); const config = { ...f.config, leaves: ['A'] };
+  await assert.rejects(runQueue(config, { host: f.host, createAdapter: scripted, afterEffect: async kind => {
+    if (kind === 'claim') throw Object.assign(new Error('Interrupted'), { interrupted: true });
+  } }), /Interrupted/u);
+  const statePath = join(config.stateDirectory, 'state.json');
+  const ownerPath = join(f.base, '.work-queue-locks', `${hash(realpathSync(f.root))}-owner.json`);
+  const state = readFileSync(statePath, 'utf8'); const owner = readFileSync(ownerPath, 'utf8');
+  const { root: _root, stateDirectory: _state, ...invocation } = config;
+  const path = join(f.base, 'invocation.json'); writeFileSync(path, JSON.stringify({ ...invocation, coverage: 90 }));
+  let output = '';
+  assert.equal(await main(path, candidate => runQueue({ ...candidate, stateDirectory: config.stateDirectory },
+    { host: f.host, createAdapter: scripted }), line => { output += line; }, { cwd: f.root }), 4);
+  const diagnostic = JSON.parse(output).diagnostics as string;
+  assert.match(readFileSync(diagnostic, 'utf8'), /durable invocation owns unfinished work/u);
+  rmSync(join(diagnostic, '..'), { recursive: true, force: true });
+  assert.equal(readFileSync(statePath, 'utf8'), state);
+  assert.equal(readFileSync(ownerPath, 'utf8'), owner);
+  const prompts: string[] = [];
+  assert.equal((await runQueue({ ...config, coverage: 85 }, { host: f.host, createAdapter: options => {
+    const inner = scripted(options as ScriptedOptions);
+    return { ...inner, async startAction(prompt: string) { prompts.push(prompt); return inner.startAction(prompt); } };
+  } })).status, 'exhausted');
+  assert.ok(prompts.length);
+  for (const prompt of prompts) assert.match(prompt, /Resolved coverage threshold: 85%\./u);
 });

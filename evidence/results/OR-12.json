@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "id": "OR-12",
+  "taskHash": "dfc89c17d63333a6b6bf59b71ee9da5c874f63f4a88d15ddf585946d848f9e75",
+  "authority": "owner-2026-11-10-parallel-OR-12",
+  "specification": {
+    "openspec/changes/release-workflow-test-prerequisites/design.md": "acb1fdf069bfe0ecf5efe42e0583af9f697cf63b5df0613358e2d9c45f63dfff",
+    "openspec/changes/release-workflow-test-prerequisites/proposal.md": "1c61be5a25060163c4d2496a8f2dee3879f825629f7c0d572e876e49bd53ea5d",
+    "openspec/changes/release-workflow-test-prerequisites/specs/release-workflow-test-prerequisites/spec.md": "3e27817582be3a295a5b8540ba455e82d23052661c2b758b7acd4836c449b4a6"
+  },
+  "review": {
+    "reviewer": "codex:01a1c75f-1d41-75c0-98ce-b0a1ced65ea3",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": ".github/workflows/release.yml",
+      "hash": "9a50d363c02bf9737e60f053bd1df7760b6110a78f7adb4770d4deac281db3fe"
+    },
+    {
+      "path": "docs/releasing.md",
+      "hash": "2c80c1b1bd74b6c08e8327934a285f81bbebf4dccfed5f639ffbd3787c76247b"
+    },
+    {
+      "path": "openspec/changes/release-workflow-test-prerequisites/design.md",
+      "hash": "acb1fdf069bfe0ecf5efe42e0583af9f697cf63b5df0613358e2d9c45f63dfff"
+    },
+    {
+      "path": "openspec/changes/release-workflow-test-prerequisites/proposal.md",
+      "hash": "1c61be5a25060163c4d2496a8f2dee3879f825629f7c0d572e876e49bd53ea5d"
+    },
+    {
+      "path": "openspec/changes/release-workflow-test-prerequisites/specs/release-workflow-test-prerequisites/spec.md",
+      "hash": "3e27817582be3a295a5b8540ba455e82d23052661c2b758b7acd4836c449b4a6"
+    },
+    {
+      "path": "openspec/changes/release-workflow-test-prerequisites/tasks.md",
+      "hash": "14a193dfc3e1384824fef9b7d564098bf53d397ef9e5d2fd116373cd2e8787dc"
+    }
+  ],
+  "head": "6edaecdc7781893f5165aa12c13ff82acf9976ba",
+  "base": "5f0993e7830f8beb7fc77622dd79939d85c0c1e4"
+}

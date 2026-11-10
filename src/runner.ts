@@ -142,7 +142,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
     };
     const checks = (work: Work, definitions: CommandSpec[]): CheckRecord[] => definitions.map(check => {
       const args = check.args.map(arg => arg.replaceAll('{change}', work.change)
-        .replaceAll('{target}', project.target).replaceAll('{scope}', work.scopes[0]));
+        .replaceAll('{target}', project.target).replaceAll('{scope}', work.scopes[0])
+        .replaceAll('{coverage}', String(config.coverage)));
       const output = command(work.path, check.command, args);
       return { command: check.command, args, outcome: 'passed', output: output.slice(-16000) };
     });
@@ -223,7 +224,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
           'diff, findings or checks. ' +
           'run_checks takes input {} and runs only frozen project checks after specification binding; ' +
           'read their output through the checks section. ' +
-          'Read applicable AGENTS.md. Report blockers privately. No shell or approval tools.\n' + prompt);
+          'Read applicable AGENTS.md. Report blockers privately. No shell or approval tools.\n' +
+          `Resolved coverage threshold: ${config.coverage}%.\n` + prompt);
         save({ sessions: [...(activeWork().sessions ?? []), {
           purpose, threadId: reply.threadId, events: reply.events, privateText: reply.text }] });
         if (!result || result.outcome === 'blocked') throw new Error(`Worker ${purpose} incomplete`);
