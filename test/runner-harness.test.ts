@@ -40,16 +40,23 @@ test('Claude is the exact default while Codex resolves and freezes its own setti
 test('Codex selection is read-only and closes on success and refusal', async () => {
   let closed = 0; const methods: string[] = [];
   const catalog = new Map([['pinned', ['medium']]]);
+  const defaultEfforts = new Map([['pinned', 'medium']]);
+  let defaultModel: string | undefined = 'pinned';
   const create = () => ({ probe: () => ({ status: 'interface-ready' }),
     connect: async () => { methods.push('connect'); }, rpc: async (method: string, params: { includeLayers: boolean }) => {
       methods.push(method); assert.equal(method, 'config/read'); assert.equal(params.includeLayers, false);
       return { config: { model: 'pinned', model_reasoning_effort: 'medium' } };
-    }, models: async () => { methods.push('models'); return catalog; }, close: () => { closed++; } });
+    }, modelList: async () => { methods.push('modelList');
+      return defaultModel === undefined ? { catalog, defaultEfforts } : { catalog, defaultModel, defaultEfforts }; },
+    close: () => { closed++; } });
   assert.deepEqual(await codexSelection('/project', create as unknown as () => CodexAdapter),
-    { model: 'pinned', effort: 'medium', catalog });
-  assert.deepEqual(methods, ['connect', 'config/read', 'models']);
+    { model: 'pinned', effort: 'medium', catalog, defaultModel: 'pinned', defaultEfforts });
+  assert.deepEqual(methods, ['connect', 'config/read', 'modelList']);
+  defaultModel = undefined;
+  assert.deepEqual(await codexSelection('/project', create as unknown as () => CodexAdapter),
+    { model: 'pinned', effort: 'medium', catalog, defaultEfforts });
   await assert.rejects(codexSelection('.', () => ({ ...create(), probe: () => ({ status: 'unavailable' }) }) as unknown as CodexAdapter), /unavailable/u);
-  assert.equal(closed, 2);
+  assert.equal(closed, 3);
 });
 
 test('resolved harness model and effort changes and legacy identity cannot rewrite saved state', async t => {

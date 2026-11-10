@@ -137,6 +137,8 @@ Save it as, for example, `~/invocations/my-project-1.json`:
 - If a fresh worktree needs dependencies, add
   `"setup": [{ "command": "npm", "args": ["ci"] }]` to `project`.
 - Without `leaves`, every task in `authority.tasks` runs.
+- Leave out `coverage` (and `harness`, `model`, `effort`) to be asked for it
+  when the run starts from a terminal; see [Harness selection](#harness-selection).
 
 **7. Run it from the repository**
 
@@ -145,9 +147,13 @@ cd /path/to/project
 outcome-runner ~/invocations/my-project-1.json
 ```
 
-Without flags the run uses harness `claude`, model `claude-opus-5-5` and effort
-`medium`. Choose them with `--harness=<claude|codex>`, `--model=<id>` and
-`--effort=<level>`, in any order and each at most once:
+Started from a terminal, the runner shows which harnesses are installed and
+asks for the harness, model, effort and coverage that neither a flag nor the
+invocation file sets; pressing Enter at every question gives harness `claude`,
+model `claude-opus-5-5`, effort `medium` and coverage 85. See
+[Harness selection](#harness-selection). Without a terminal the run uses those
+same defaults. Choose them with `--harness=<claude|codex>`, `--model=<id>`,
+`--effort=<level>` and `--coverage=<n>`, in any order and each at most once:
 
 ```sh
 outcome-runner ~/invocations/my-project-1.json --model=claude-sonnet-5-5 --effort=high
@@ -169,7 +175,7 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
 | 3 | Incomplete, for example blocked dependencies or a protected merge |
-| 4 | Did not run; the printed `reason` (for example `openspec-missing`) and the `diagnostics` file explain why |
+| 4 | Did not run; the printed `reason` (for example `openspec-missing` or `harness-unavailable`) and the `diagnostics` file explain why |
 
 After an interruption, run the **same command with the same file** to resume. Do
 not delete the state under `~/.local/state/outcome-runner/`. The runner also
@@ -229,6 +235,61 @@ tell whether the config exists.
 The reason is printed in the stdout line
 `{"status":"unavailable","reason":"...","diagnostics":"..."}` and repeated in
 the private diagnostics file.
+
+## Harness selection
+
+Every start goes through these steps in this order, before the lock, claims and
+worktrees:
+
+1. **OpenSpec preflight**: see [OpenSpec preflight](#openspec-preflight).
+2. **Harness availability**: both harnesses are checked with their version
+   probes, Claude Code (`claude --version`, 2.1.321 or newer) and Codex CLI
+   (`codex --version`, 0.167.0 or newer). A harness is unavailable with reason
+   `not-installed` when its executable is missing,
+   `uncertified-claude-version` or `uncertified-codex-version` when it is older
+   (the found version is shown), or `probe-failed` when the version check fails
+   in another way. An unavailable harness never fails the run by itself.
+3. **Harness**: only the available harnesses can be chosen; `claude` is
+   preselected when available, otherwise the only available one.
+4. **Model**: the models the chosen harness offers. `claude-opus-5-5` is
+   preselected for Claude. For Codex the Codex default model is preselected: the
+   model from the local Codex configuration when Codex lists it, otherwise the
+   model that Codex `model/list` marks with `isDefault`, otherwise the first
+   listed model.
+5. **Effort**: only the efforts the chosen model supports. `medium` is
+   preselected when supported, otherwise the model's default effort (for Codex
+   its `defaultReasoningEffort` from `model/list`).
+6. **Coverage**: the coverage threshold, with 85 preselected. Only an integer
+   from 1 to 100 is accepted; anything else is asked again.
+
+Steps 3 to 6 are questions only when the start is interactive (both stdin and
+stderr are terminals, as in the OpenSpec preflight). The harness statuses, the
+options and the questions are written to stderr; stdout keeps only the JSON
+lines. Pressing Enter accepts the preselected answer shown in brackets, for
+example `Harness [claude]: `. You may also type the number of an option or its
+exact name. A value given by a flag (`--harness=`, `--model=`, `--effort=`,
+`--coverage=`) or in the invocation file is used without asking for it.
+
+Non-interactive starts (CI, a pipe, stderr redirected) ask and print nothing
+here: flags, the invocation file and the defaults `claude`, `claude-opus-5-5`,
+`medium` and 85 apply (with `--harness=codex`, an omitted model or effort comes
+from the local Codex configuration). The selected harness must still be
+available.
+
+On a restart of an invocation whose state already records a harness, model,
+effort and coverage, no question is asked and the recorded selection is reused.
+A flag or invocation value that differs from the record is refused as an
+incompatible run state, leaving the state unchanged.
+
+When no harness is available, or the harness set by flag, invocation file,
+record or default is unavailable, the run exits with code 4 and reason
+`harness-unavailable` before anything is allocated. The diagnostics message
+lists each harness with its reason, for example
+`No available harness: claude: not-installed; codex: uncertified-codex-version (codex-cli 0.100.0)`.
+
+The chosen values are frozen in the invocation identity exactly like flag
+values. With Codex, its configuration and model list are read once per start
+and reused to validate the selection.
 
 ## Creating the queue file
 
@@ -364,9 +425,11 @@ outcome-runner hash path/to/queue.json
 outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>]
 ```
 
-Every start first runs the [OpenSpec preflight](#openspec-preflight).
+Every start first runs the [OpenSpec preflight](#openspec-preflight), then the
+[harness availability check and selection](#harness-selection).
 
-Claude is used when both the CLI and JSON harness are omitted, or when
+Claude is used when both the CLI and JSON harness are omitted (and, from a
+terminal, chosen or accepted with Enter), or when
 `--harness=claude` or JSON `"harness": "claude"` is given. It requires
 authenticated Claude Code **2.1.321 or newer**. Its model and effort are then
 selectable independently through flags or the JSON `model` and `effort` fields.
@@ -392,8 +455,9 @@ selected harness's catalog, or an effort the selected model does not support, is
 refused before allocation with exit code 4 and a diagnostics message naming the
 rejected value. Omitted fields still fall back to the defaults above.
 
-JSON `coverage` is optional and defaults to 85. It must be a numeric integer
-from 1 through 100; `--coverage=<n>` overrides it. This flag can appear in any
+JSON `coverage` is optional; when neither it nor `--coverage` is given, a
+terminal start asks for it and any other start uses 85. It must be a numeric
+integer from 1 through 100; `--coverage=<n>` overrides it. This flag can appear in any
 order with the selection flags, once and with a nonempty value. Invalid coverage
 is refused with exit code 4 and private diagnostics before allocation.
 
@@ -450,7 +514,9 @@ tests directly, without a build. `npm run typecheck` checks types and
 `npm test` runs the suite with scripted adapters and fails when line, branch or
 function coverage of the sources falls below 85%. Tests script the OpenSpec
 preflight's prompts, processes and files, so the preflight never runs npm,
-`openspec` or a real TTY under test. The `live:*` scripts exercise a real
+`openspec` or a real TTY under test. Tests likewise script the harness
+selection's answers, harness probes and Codex reader, so no test starts a real
+`claude` or `codex`. The `live:*` scripts exercise a real
 harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
 
 ## License

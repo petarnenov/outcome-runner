@@ -20,10 +20,14 @@ import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolContext, ToolInpu
 // Scripted runs pass a scripted OpenSpec preflight so no test runs the openspec binary;
 // test/openspec-preflight.test.ts covers the real checks.
 const passingOpenspec: RunOptions['openspec'] = { probe: () => ({ status: 0 }), configPresent: () => true };
+// Scripted runs also report both harnesses available, non-interactively, so no test probes a real harness;
+// test/harness-selection.test.ts covers the availability check and the prompts.
+const passingSelection: RunOptions['selection'] = { interactive: false,
+  probe: harness => ({ harness, available: true, version: 'scripted' }) };
 const runQueue: typeof runQueueWithPreflight = (config, options = {}) =>
-  runQueueWithPreflight(config, { openspec: passingOpenspec, mergePolling: { delay: async () => {} }, ...options });
+  runQueueWithPreflight(config, { openspec: passingOpenspec, selection: passingSelection, mergePolling: { delay: async () => {} }, ...options });
 const withPassingOpenspec = (portable: typeof runQueueWithPreflight): typeof runQueueWithPreflight =>
-  (config, options = {}) => portable(config, { openspec: passingOpenspec, ...options });
+  (config, options = {}) => portable(config, { openspec: passingOpenspec, selection: passingSelection, ...options });
 
 interface FixtureHost {
   find(branch: string): PullRequest | null;

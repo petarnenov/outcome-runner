@@ -2,8 +2,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { Interface } from 'node:readline';
 import { isAtLeast } from './harness-version.ts';
-import { codexCatalog } from './harness-catalog.ts';
-import type { Catalog } from './harness-catalog.ts';
+import { codexModels } from './harness-catalog.ts';
+import type { Catalog, CodexModels } from './harness-catalog.ts';
 import type { AdapterEvent, AdapterOptions, HarnessAdapter, ProbeResult, SessionHandle, SpawnProcess,
   ToolDefinition, ToolInput, WorkerProcess, WorkerReply, HarnessOptions } from './harness-adapter.ts';
 
@@ -112,10 +112,15 @@ export class CodexAdapter implements HarnessAdapter {
     }) as Promise<Result>;
   }
 
+  /** Lists the models, efforts and marked defaults this Codex offers over the already connected app-server session. */
+  async modelList(): Promise<CodexModels> {
+    if (!this.connected) throw new Error('Codex adapter is not connected');
+    return codexModels(<Result>(method: string, params: object) => this.rpc<Result>(method, params));
+  }
+
   /** Lists the models and efforts this Codex offers over the already connected app-server session. */
   async models(): Promise<Catalog> {
-    if (!this.connected) throw new Error('Codex adapter is not connected');
-    return codexCatalog(<Result>(method: string, params: object) => this.rpc<Result>(method, params));
+    return (await this.modelList()).catalog;
   }
 
   async connect(): Promise<void> {

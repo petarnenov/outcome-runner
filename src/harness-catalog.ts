@@ -4,10 +4,21 @@ import type { Harness } from './model.ts';
 export type Catalog = ReadonlyMap<string, readonly string[]>;
 export type CatalogRpc = <Result>(method: string, params: object) => Promise<Result>;
 
+/** The Codex catalog plus the defaults that `model/list` marks. */
+export interface CodexModels {
+  catalog: Catalog;
+  /** The first visible entry with `isDefault: true`. */
+  defaultModel?: string;
+  /** Model to its `defaultReasoningEffort`, kept only when that model supports it. */
+  defaultEfforts: ReadonlyMap<string, string>;
+}
+
 interface CodexModelEntry {
   id?: unknown;
   model?: unknown;
   hidden?: unknown;
+  isDefault?: unknown;
+  defaultReasoningEffort?: unknown;
   supportedReasoningEfforts?: { reasoningEffort?: unknown }[];
 }
 interface CodexModelPage { data?: CodexModelEntry[]; nextCursor?: unknown }
@@ -20,9 +31,11 @@ export const claudeEfforts: readonly string[] = ['low', 'medium', 'high', 'xhigh
 export const claudeModels: readonly string[] = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2'];
 export const claudeCatalog: Catalog = new Map(claudeModels.map((model): [string, readonly string[]] => [model, claudeEfforts]));
 
-/** Reads every visible Codex model and its reasoning efforts through the app-server RPC `model/list`. */
-export async function codexCatalog(rpc: CatalogRpc): Promise<Catalog> {
+/** Reads every visible Codex model, its reasoning efforts and the marked defaults through `model/list`. */
+export async function codexModels(rpc: CatalogRpc): Promise<CodexModels> {
   const catalog = new Map<string, string[]>();
+  const defaultEfforts = new Map<string, string>();
+  let defaultModel: string | undefined;
   const cursors = new Set<string>();
   let cursor: string | undefined;
   for (;;) {
@@ -36,13 +49,24 @@ export async function codexCatalog(rpc: CatalogRpc): Promise<Catalog> {
       const efforts = (Array.isArray(entry.supportedReasoningEfforts) ? entry.supportedReasoningEfforts : [])
         .map(option => option?.reasoningEffort)
         .filter((effort): effort is string => typeof effort === 'string' && effort.length > 0);
+      const first = !catalog.has(id);
       catalog.set(id, [...new Set([...(catalog.get(id) ?? []), ...efforts])]);
+      const effort = entry.defaultReasoningEffort;
+      if (first && typeof effort === 'string' && efforts.includes(effort)) defaultEfforts.set(id, effort);
+      if (defaultModel === undefined && entry.isDefault === true) defaultModel = id;
     }
     const next = page.nextCursor;
-    if (next === undefined || next === null || next === '') return catalog;
+    if (next === undefined || next === null || next === '') {
+      return defaultModel === undefined ? { catalog, defaultEfforts } : { catalog, defaultModel, defaultEfforts };
+    }
     if (typeof next !== 'string' || cursors.has(next)) throw new Error('Codex model/list returned an invalid or repeated cursor');
     cursors.add(next); cursor = next;
   }
+}
+
+/** Reads every visible Codex model and its reasoning efforts through the app-server RPC `model/list`. */
+export async function codexCatalog(rpc: CatalogRpc): Promise<Catalog> {
+  return (await codexModels(rpc)).catalog;
 }
 
 export async function harnessCatalog(harness: Harness, codex?: () => Promise<Catalog>): Promise<Catalog> {
