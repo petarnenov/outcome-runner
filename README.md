@@ -28,11 +28,15 @@ during installation.
 Pull Request into the target branch itself**. If the target requires human
 approval, the run ends incomplete and the Pull Request waits.
 
-**1. Install once per machine**
+**1. Install once per machine, or use npx**
 
 ```sh
 npm i -g --allow-git=root github:petarnenov/outcome-runner
 ```
+
+With npx nothing needs installing. Wherever a step below says `outcome-runner`,
+write `npx --allow-git=root github:petarnenov/outcome-runner` instead, and run it
+from inside the repository in the same way.
 
 You also need Git with a commit identity, OpenSpec CLI, authenticated `gh`, and
 authenticated Claude Code 2.1.321 or newer (or Codex 0.167.0 or newer).
@@ -327,9 +331,11 @@ and fresh-process recovery evidence must be recorded before rollout.
 
 ## Development
 
-Sources are TypeScript using only erasable syntax, so Node runs them directly.
-`npm run typecheck` checks types and `npm run build` emits the installed package
-to `dist/`.
+Run `npm install` once after cloning; it also builds `dist/`.
+
+Sources are TypeScript using only erasable syntax, so Node runs them and the
+tests directly, without a build. `npm run typecheck` checks types and
+`npm run build` emits the installed package to `dist/`.
 
 `npm test` runs the suite with scripted adapters. The `live:*` scripts exercise a
 real harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
