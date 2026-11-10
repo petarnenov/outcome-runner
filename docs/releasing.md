@@ -36,6 +36,8 @@ To create a local release, use Node 24 and `node scripts/release.ts` from the re
 
 A push to main starts .github/workflows/release.yml unless its head is a release commit. The release concurrency group queues jobs without canceling a running job. Each job checks out the exact pushed SHA with all history and tags, uses Node 24, runs npm ci, typecheck and tests, then creates a local release with the Actions bot identity.
 
+The workflow's test step requires OpenSpec CLI `@fission-ai/openspec@1.17.0` because the suite invokes `openspec validate` through the runner's planning check. After typecheck and before tests, the workflow installs it globally with `npm install -g @fission-ai/openspec@1.17.0`, then runs `openspec --version` in a separate step. Installation or version-check failures stop the job before tests. Update the pinned CLI version in `.github/workflows/release.yml` and keep this documentation in sync.
+
 A release publishes HEAD to main and its tag in one non-forced atomic push. Only after that push succeeds does the workflow create a GitHub Release. Its notes are exactly the newly prepended changelog section, without the CLI version line or previous sections. No-release results skip publication. Notes are captured outside the working tree.
 
 ## Rejected pushes and recovery
