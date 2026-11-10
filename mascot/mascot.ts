@@ -75,7 +75,18 @@ export function moodArt(mood: string): MoodArt | undefined {
 }
 
 async function run(mood: MascotMood, caption: string, options: MascotOptions, state: PlayState): Promise<void> {
-  void mood; void caption; void options; void state; void HEIGHT; void HIDE;
+  const stream: MascotStream = options.stream ?? (process.stderr as unknown as MascotStream);
+  state.stream = stream;
+  const isTTY = options.isTTY ?? defaultIsTTY;
+  const env: Record<string, string | undefined> = options.env ?? (process.env as Record<string, string | undefined>);
+  const wait = options.wait ?? defaultWait;
+  const signal = options.signal;
+  const art = moodArt(mood);
+  if (art === undefined || !isTTY(stream) || env.OUTCOME_RUNNER_MASCOT === '0' || signal?.aborted === true) {
+    state.finished = true;
+    return;
+  }
+  void caption; void HEIGHT; void HIDE; void wait;
 }
 
 function restore(state: PlayState): void {
