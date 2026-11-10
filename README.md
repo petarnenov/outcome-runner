@@ -337,8 +337,7 @@ Sources are TypeScript using only erasable syntax, so Node runs them and the
 tests directly, without a build. `npm run typecheck` checks types and
 `npm run build` emits the installed package to `dist/`.
 
-`npm test` runs the suite with scripted adapters and fails when line, branch or
-function coverage of the sources falls below 85%. The `live:*` scripts exercise a
+`npm test` runs the suite with scripted adapters. The `live:*` scripts exercise a
 real harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
 
 ## License
