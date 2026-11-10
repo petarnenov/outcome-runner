@@ -314,6 +314,9 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
           for (let attempt = 0; attempt < 4; attempt += 1) {
             await session(work, 'plan', prompt + 'Create proposal.md, design.md, tasks.md and specs/<capability>/spec.md. ' +
               'Use OpenSpec delta headings and WHEN/THEN scenarios. Stay within task scope; do not edit product files. ' +
+              'This session writes only those planning artifacts. Product file writes and run_checks are refused until ' +
+              'the specification is bound, in a later session; that is expected and not a blocker, so do not attempt them. ' +
+              'When the artifacts are written, call outcome_report with outcome ready. ' +
               'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
             let specification;
             try {

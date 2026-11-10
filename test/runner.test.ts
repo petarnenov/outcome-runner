@@ -491,6 +491,20 @@ test('run_checks reports passing checks without their output', async t => {
   assert.ok(observed);
 });
 
+test('the plan session is told that later-stage refusals are not blockers', async t => {
+  const f = fixture(t); let planPrompt = '';
+  await runQueue({ ...f.config, leaves: ['A'], maxAccepted: 1 }, { host: f.host,
+    createAdapter: options => {
+      const inner = scripted(options as ScriptedOptions);
+      return { ...inner, async startAction(prompt: string) {
+        if (prompt.includes('Create proposal.md')) planPrompt = prompt;
+        return inner.startAction(prompt);
+      } };
+    } });
+  assert.match(planPrompt, /not a blocker/u);
+  assert.match(planPrompt, /outcome_report with outcome ready/u);
+});
+
 test('state inside primary checkout is rejected before effects', async t => {
   const f = fixture(t);
   await assert.rejects(runQueue({ ...f.config, stateDirectory: join(f.root, '.git/state') },
