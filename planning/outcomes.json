@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "OR-1",
+      "title": "Selectable model and effort per harness",
+      "change": "selectable-harness-model-effort",
+      "priority": 1,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": [],
+      "criteria": [
+        "Add one module under src/ that answers which models and which efforts per model each harness offers; harness.ts, claude-adapter.ts and codex-adapter.ts use it instead of their own hard-coded model and effort checks.",
+        "Claude offers a static catalog of exact model IDs claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5 and claude-fable-5-2, each with efforts low, medium, high, xhigh and max (the values accepted by `claude --effort`).",
+        "Codex offers the models returned by the app-server RPC model/list (all pages, following nextCursor, hidden models excluded) and, per model, the efforts listed in its supportedReasoningEfforts[].reasoningEffort.",
+        "The Claude-only restriction 'Claude requires Opus 5.5 medium' and the ClaudeAdapter constructor check 'Unsupported Claude model or effort' are removed; any model and effort combination present in the Claude catalog is accepted and passed to `claude --model <id> --effort <level>`, and the existing pinned-model verification of the init, assistant and result messages stays in force for the selected model.",
+        "A model or effort that the selected harness does not offer, or an effort the selected model does not support, is refused before allocation with exit code 4 and a diagnostics message naming the rejected value.",
+        "When harness, model and effort are all omitted, the run uses harness claude, model claude-opus-5-5 and effort medium, exactly as today; omitted Codex model and effort are still resolved from the local Codex configuration.",
+        "The CLI accepts --model=<id> and --effort=<level> in addition to --harness=<claude|codex>, in any order, each at most once; any other argument is refused with exit code 4. CLI values override the invocation JSON fields model and effort.",
+        "The resolved harness, model and effort stay part of the frozen invocation identity: a restart with a different resolved value is refused as today.",
+        "Tests cover catalog lookup for both harnesses (Codex via a scripted model/list response, including pagination and a hidden model), default resolution, CLI flag parsing and precedence, refusal of unknown model and unsupported effort, and a Claude adapter started with a non-Opus catalog model. No test starts a real harness.",
+        "README sections 'Start and resume' and 'Quick start' document the selectable models, efforts, the new flags and the unchanged defaults; the statement that Claude is pinned to Opus 5.5 medium is replaced.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-2",
+      "title": "Configurable test coverage threshold",
+      "change": "configurable-test-coverage-threshold",
+      "priority": 2,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-1"],
+      "criteria": [
+        "The invocation JSON accepts an optional integer field coverage and the CLI accepts --coverage=<n>; n must be an integer from 1 to 100, otherwise the run is refused with exit code 4. The CLI value overrides the JSON value.",
+        "When neither is given, the coverage threshold is 85.",
+        "The resolved coverage threshold is part of the frozen invocation identity: a restart with a different resolved threshold is refused like a changed harness, model or effort.",
+        "Arguments of project.checks may contain the placeholder {coverage}; the runner replaces it with the resolved threshold, the same way it replaces {change}, {target} and {scope}.",
+        "A run whose project.checks contain no argument with {coverage} is refused before allocation with exit code 4 and a diagnostics message saying that a coverage gate check is required.",
+        "Every worker prompt states the resolved coverage threshold as a percentage.",
+        "Tests cover the default 85, JSON value, CLI override, rejection of 0, 101, 85.5 and non-numeric values, placeholder substitution in a check, refusal without a {coverage} check, and refusal of a restart with a changed threshold.",
+        "README documents coverage, --coverage and {coverage}, and its invocation example contains a check that enforces the threshold, for example node --test --experimental-test-coverage --test-coverage-lines={coverage}.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-3",
+      "title": "OpenSpec preflight with install offer",
+      "change": "openspec-preflight-install-offer",
+      "priority": 3,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-2"],
+      "criteria": [
+        "Before any harness check, selection prompt, claim or worktree is created, the runner checks that the OpenSpec CLI is available (openspec --version exits 0) and that openspec/config.yaml exists at origin/<target> of the repository.",
+        "The startup is interactive only when both process.stdin and process.stderr are TTYs; all prompts and their explanations are written to stderr so stdout keeps only the existing JSON lines.",
+        "Interactive, missing CLI: the runner asks whether to install it with npm install -g @fission-ai/openspec@latest. On yes it runs exactly that command as an argument array, then repeats the check; on no, or when the install or the repeated check fails, it exits with code 4 and diagnostics reason openspec-missing.",
+        "Interactive, missing openspec/config.yaml at origin/<target>: the runner asks whether to create the project layout in the working tree (openspec/config.yaml containing 'schema: spec-driven', plus .gitkeep files in the project changes and receipts directories). On yes it creates only the missing files, never commits or pushes, and exits with code 4 and a message to commit and push them; on no it exits with code 4 and diagnostics reason openspec-not-initialized.",
+        "Non-interactive: nothing is installed or created and nothing is asked; a missing CLI or config exits with code 4 and the matching diagnostics reason.",
+        "When OpenSpec is available and initialized, startup continues without any OpenSpec prompt.",
+        "Prompt input, process execution and file creation are injectable so tests script answers and commands; no test runs npm, openspec or a real TTY.",
+        "Tests cover: available and initialized; missing CLI with yes and successful install; yes with failing install; no; missing config with yes and with no; and the non-interactive refusals.",
+        "README describes the OpenSpec preflight, the install offer and the non-interactive behaviour.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-4",
+      "title": "Interactive harness, model, effort and coverage selection",
+      "change": "interactive-harness-selection",
+      "priority": 4,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-1", "OR-2", "OR-3"],
+      "criteria": [
+        "After the OpenSpec preflight passes, the runner checks the availability of both harnesses with their existing probes: Claude Code 2.1.321 or newer and Codex CLI 0.167.0 or newer; a missing executable counts as unavailable with reason not-installed instead of failing the run.",
+        "Interactive (same TTY rule and stderr output as the OpenSpec preflight): the runner shows each harness with its status and version or reason, and asks the user to choose among the available harnesses only; claude is the preselected answer when available. When only one harness is available it is shown and preselected.",
+        "After the harness is chosen, the runner lists the models that harness offers (from the OR-1 catalog) and asks for one; claude-opus-5-5 is preselected for Claude, the Codex default model for Codex.",
+        "After the model is chosen, the runner lists only the efforts that this harness and model support and asks for one; medium is preselected when supported, otherwise the model's default effort.",
+        "Last, the runner asks for the coverage threshold with 85 preselected and accepts only an integer from 1 to 100, asking again on invalid input.",
+        "Pressing Enter accepts the preselected answer. A value given by a CLI flag or the invocation JSON is used without asking for it.",
+        "When no harness is available, or a harness set by flag or JSON is unavailable, the runner exits with code 4 and a diagnostics message listing each harness and its reason.",
+        "Non-interactive: nothing is asked; flags, JSON and defaults (claude, claude-opus-5-5, medium, 85) apply, and the selected harness must be available.",
+        "On a restart of an invocation whose state already records a harness, model, effort and coverage, no selection prompt is shown and the recorded selection is reused; a flag or JSON value that differs is refused as today.",
+        "The chosen values are used by the run and frozen in its identity exactly like values given by flags.",
+        "Prompt input and harness probes are injectable; tests script answers and probe results and never start a real harness.",
+        "Tests cover: both harnesses available with default answers; choosing Codex and one of its models and efforts; only one harness available; none available; flag-supplied values skipping their prompts; invalid coverage answer followed by a valid one; non-interactive defaults; restart reusing the recorded selection.",
+        "README documents the interactive startup order: OpenSpec, harness availability, harness, model, effort, coverage.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-5",
+      "title": "Completion summary with duration and complexity grade",
+      "change": "completion-summary-grade",
+      "priority": 5,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-4"],
+      "criteria": [
+        "The runner records the time a task is claimed in its work state; the record survives a restart.",
+        "The outcome_report schema gains an optional completion object with summary (string) and grade (one of A, B, C, D, E). The implementation review session must provide it whenever it reports accepted; an accepted report without a valid completion is refused like any other invalid private report.",
+        "The review prompt explains the grade: the complexity of the whole task from A (most complex) to E (easiest), and asks for a summary of two or three English sentences describing what the task changed.",
+        "When the task is accepted, the controller builds a completion summary of three or four English sentences: the reviewer's summary followed by one sentence stating the wall-clock time from claim to acceptance (formatted like 1h 12m 5s) and the complexity grade.",
+        "The accepted event printed to stdout contains summary, durationSeconds and grade, and the final result JSON contains the same data per newly accepted task ID.",
+        "Existing receipts stay valid: receipt validation does not require the new data.",
+        "Tests cover the duration across a simulated restart, an accepted review without completion being refused, an invalid grade being refused, and the content of the accepted event and the final result.",
+        "README documents the completion summary, the A to E scale and where the summary appears.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-6",
+      "title": "Graded test planning up to the coverage threshold",
+      "change": "graded-test-planning",
+      "priority": 6,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-2", "OR-5"],
+      "criteria": [
+        "The plan session prompt requires tasks.md to contain a test section in which every planned test has a complexity grade from A (most complex) to E (easiest), listed from E to A.",
+        "The planning review prompt requires the reviewer to report changes-required when a planned test lacks a grade or the tests are not listed from E to A.",
+        "The work session prompt requires writing tests grade by grade starting with E, calling run_checks after each grade, and continuing to the next harder grade until the coverage gate passes at the resolved threshold; grades left unwritten because the threshold was reached stay unchecked in tasks.md with the note 'not needed: coverage reached'.",
+        "The implementation review prompt requires changes-required when the coverage gate did not pass at the resolved threshold or when a harder grade was written while an easier planned grade is still unchecked without that note.",
+        "All prompts state the resolved coverage threshold as a percentage.",
+        "Tests assert the plan, planning review, work and implementation review prompts contain these instructions and the resolved threshold, using scripted adapters only.",
+        "README describes the graded test workflow.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-7",
+      "title": "JSONL ledger of all runs for statistics",
+      "change": "run-statistics-ledger",
+      "priority": 7,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-5", "OR-6"],
+      "criteria": [
+        "Every invocation of the runner, except the hash command, appends exactly one JSON object as one line to $XDG_STATE_HOME/outcome-runner/runs.jsonl (default ~/.local/state/outcome-runner/runs.jsonl) when it ends, whatever its exit code: 0, 3, 4, or a cancellation by SIGINT or SIGTERM.",
+        "The file and its directories are created when missing, the file with mode 0600; existing lines are never rewritten or removed, and each record is written with a single append call so records of concurrent runs on one machine do not interleave.",
+        "Each record contains: schemaVersion 1, a unique runId, runner package version, hostname, repository top-level path, origin URL, target branch, invocation name, authority reference, startedAt and endedAt as ISO 8601 UTC, durationSeconds, exitCode, status (exhausted, limit-reached, incomplete, cancelled or unavailable) and, for unavailable, the failure reason.",
+        "Each record contains the resolved run settings when they were resolved: harness, harness CLI version, model, effort, coverage threshold, maxAccepted, the selected leaves, and whether each setting came from a CLI flag, the invocation JSON, an interactive answer or the default.",
+        "Each record contains one entry per task the run worked on or decided about, with: id, change, outcome (accepted, blocked, claimed-elsewhere or not-started), last stage reached, blocking reason when blocked, durationSeconds from claim to acceptance, complexity grade and completion summary when accepted, number of worker sessions per purpose, number of planning and implementation review rounds, number of findings per review round, final check commands with their outcomes, and the PR number and URL when one exists.",
+        "Each record contains token usage per task and per run when the harness reports it, and null otherwise.",
+        "Records never contain the authority instruction text, worker prompts, private worker output, check output, file contents or environment variables.",
+        "A failure to write the ledger is reported on stderr and does not change the runner's exit code or result.",
+        "README documents the ledger path, that one line is written per run, and every field of the record with its type.",
+        "Tests use a temporary XDG_STATE_HOME and cover: records for exit codes 0, 3 and 4 and for cancellation; two runs appending two parseable lines; required fields and per-task data for an accepted and a blocked task; absence of the authority instruction, prompts and private output; and an unwritable ledger leaving the exit code unchanged. No test starts a real harness.",
+        "npm run typecheck and npm test pass."
+      ]
+    }
+  ]
+}
