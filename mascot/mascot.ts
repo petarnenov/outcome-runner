@@ -18,6 +18,13 @@ interface Pose { eyes?: [string, string]; x?: number; lift?: boolean; extra?: st
 
 interface MoodArt { colour: number; eyes: [string, string]; mouth: string; delay: number; poses: Pose[] }
 
+interface PlayState { stream: MascotStream | undefined; hideAttempted: boolean; frameAttempted: boolean; finished: boolean }
+
+const HEIGHT = 7;
+const HIDE = '\x1b[?25l';
+const SHOW = '\x1b[?25h';
+const RESET = '\x1b[0m';
+
 const MOODS: Record<MascotMood, MoodArt> = {
   happy: { colour: 32, eyes: ['^', '^'], mouth: 'v', delay: 200, poses: [{ lift: true }, {}, { lift: true }, {}] },
   angry: { colour: 31, eyes: ['>', '<'], mouth: 'm', delay: 150, poses: [{ x: 1 }, { x: 3 }, { x: 1 }, { x: 2 }] },
@@ -43,10 +50,48 @@ export function drawFrame(art: MoodArt, pose: Pose): string[] {
   return pose.lift === true ? [...body, ''] : [pose.extra ?? '', ...body];
 }
 
+export function paint(line: string, colour: number | undefined): string {
+  return colour === undefined || line === '' ? line : `\x1b[${colour}m${line}${RESET}`;
+}
+
+export function joinLines(frame: string[], prefix: string): string {
+  return frame.map(line => `${prefix}${line}\n`).join('');
+}
+
+export function defaultIsTTY(stream: MascotStream): boolean {
+  return stream.isTTY === true;
+}
+
 export async function defaultWait(ms: number, signal?: AbortSignal): Promise<void> {
   await delay(ms, undefined, signal === undefined ? {} : { signal });
 }
 
+function attempt(stream: MascotStream, chunk: string): void {
+  try { stream.write(chunk); } catch { /* restoring the terminal is best effort */ }
+}
+
+export function moodArt(mood: string): MoodArt | undefined {
+  return Object.prototype.hasOwnProperty.call(MOODS, mood) ? MOODS[mood as MascotMood] : undefined;
+}
+
+async function run(mood: MascotMood, caption: string, options: MascotOptions, state: PlayState): Promise<void> {
+  void mood; void caption; void options; void state; void HEIGHT; void HIDE;
+}
+
+function restore(state: PlayState): void {
+  const stream = state.stream;
+  if (stream === undefined) return;
+  if (!state.finished && state.frameAttempted) attempt(stream, '\n');
+  if (state.hideAttempted) attempt(stream, SHOW);
+}
+
 export async function playMascot(mood: MascotMood, caption: string, options: MascotOptions = {}): Promise<void> {
-  void mood; void caption; void options; void MOODS;
+  const state: PlayState = { stream: undefined, hideAttempted: false, frameAttempted: false, finished: false };
+  try {
+    await run(mood, caption, options, state);
+  } catch {
+    // A failing write, a rejecting timer or an abort stops the animation.
+  } finally {
+    restore(state);
+  }
 }
