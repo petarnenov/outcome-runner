@@ -50,12 +50,14 @@ export interface RunConfig {
   harness?: Harness;
   model?: string;
   effort?: string;
+  coverage?: number;
 }
 
 export interface ResolvedRunConfig extends RunConfig {
   harness: Harness;
   model: string;
   effort: string;
+  coverage: number;
 }
 
 export type Stage = 'claim' | 'investigate' | 'plan' | 'work' | 'receipt' | 'publish' | 'pr' | 'merge';
@@ -163,7 +165,15 @@ export function validateQueue(candidate: unknown, project?: Project): Queue {
   };
   ids.forEach(visit); return queue;
 }
+export function resolveCoverage(value: unknown = 85): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 100) {
+    throw new Error('Invalid coverage: expected an integer from 1 to 100');
+  }
+  return value;
+}
+
 export function validateConfig<T extends RunConfig>(config: T): T {
+  resolveCoverage(config.coverage);
   const project = config.project;
   if ((config.mode ?? 'OFF') !== 'OFF' || !config.root || !config.stateDirectory ||
       !config.invocation || !config.authority?.reference || !config.authority?.instruction ||
@@ -186,6 +196,9 @@ export function validateConfig<T extends RunConfig>(config: T): T {
         !Array.isArray(check.args) || check.args.some(arg => typeof arg !== 'string')) {
       throw new Error('Commands must be fixed executable and argument arrays');
     }
+  }
+  if (!project.checks.some(check => check.args.some(arg => arg.includes('{coverage}')))) {
+    throw new Error('A coverage gate check is required');
   }
   return config;
 }

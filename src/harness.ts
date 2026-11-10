@@ -3,6 +3,7 @@ import { ClaudeAdapter } from './claude-adapter.ts';
 import { assertSelection, defaultSelection, harnessCatalog, harnesses } from './harness-catalog.ts';
 import type { Catalog } from './harness-catalog.ts';
 import type { AdapterOptions, HarnessAdapter, HarnessOptions } from './harness-adapter.ts';
+import { resolveCoverage } from './model.ts';
 import type { Harness, ResolvedRunConfig, RunConfig } from './model.ts';
 
 export interface CodexSelection { model?: string; effort?: string; catalog: Catalog }
@@ -22,6 +23,7 @@ export async function codexSelection(cwd: string,
 }
 export async function resolveHarness(config: RunConfig,
   readCodex: (cwd: string) => Promise<CodexSelection> = codexSelection): Promise<ResolvedRunConfig> {
+  const coverage = resolveCoverage(config.coverage);
   const harness: Harness = config.harness ?? defaultSelection.harness;
   if (!harnesses.includes(harness)) throw new Error(`Unknown outcome harness ${JSON.stringify(harness)}`);
   let { model, effort } = config;
@@ -36,7 +38,7 @@ export async function resolveHarness(config: RunConfig,
   }
   const catalog = await harnessCatalog(harness, codex && (async () => codex.catalog));
   assertSelection(harness, catalog, model, effort);
-  return { ...config, harness, model, effort };
+  return { ...config, harness, model, effort, coverage };
 }
 export function createHarness(options: HarnessOptions, config: ResolvedRunConfig): HarnessAdapter {
   const Adapter = config.harness === 'claude' ? ClaudeAdapter : CodexAdapter;

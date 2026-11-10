@@ -19,7 +19,7 @@ const codex = (defaults: Partial<CodexSelection> = {}) => async (): Promise<Code
 
 test('Claude is the exact default while Codex resolves and freezes its own settings', async () => {
   assert.deepEqual(await resolveHarness({ root: '/project' } as RunConfig, () => { throw new Error('No Codex for Claude'); }),
-    { root: '/project', harness: 'claude', model: 'claude-opus-5-5', effort: 'medium' });
+    { root: '/project', harness: 'claude', model: 'claude-opus-5-5', effort: 'medium', coverage: 85 });
   const resolved = await resolveHarness({ root: '/project', harness: 'codex' } as RunConfig,
     async cwd => { assert.equal(cwd, '/project'); return { model: 'gpt-6.1-sol', effort: 'high', catalog: codexCatalogFixture }; });
   assert.equal(resolved.model, 'gpt-6.1-sol'); assert.equal(resolved.effort, 'high');
