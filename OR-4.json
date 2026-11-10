@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "OR-4",
+  "taskHash": "6f6631a867853005659895f23bcb735db39bdd81b0146abfe9a2d6f0d9223094",
+  "scopes": [
+    "src",
+    "test",
+    "README.md"
+  ],
+  "claimant": "9d8c6de7-9be4-468b-9540-47407ffc9bfb",
+  "host": "Petars-iMac.local",
+  "branch": "outcome/OR-4-812ffa768dad",
+  "claimedAt": "2026-11-10T23:09:29.019Z"
+}
