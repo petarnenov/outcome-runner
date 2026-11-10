@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "id": "OR-1",
+  "taskHash": "5ed6cc731c73b60476f3621476f4d0b5a8e0e98d33c6be5d92185feb4305c474",
+  "authority": "owner-2026-11-10-pr4-alternate",
+  "specification": {
+    "openspec/changes/selectable-harness-model-effort/design.md": "a6d026b3d2519ef42b578118cd0f7e6042b25477d16761448b6af19dd03be679",
+    "openspec/changes/selectable-harness-model-effort/proposal.md": "a8c316533bc6e03710a544105bb157aa7baf50a528aded08f903b2adf0db52b7",
+    "openspec/changes/selectable-harness-model-effort/specs/harness-model-selection/spec.md": "8876fcb8ead81607a500ea5589fb3ffec9f88cd99169512be8e51fe3a698b5ad"
+  },
+  "review": {
+    "reviewer": "claude:10fb50a9-18ed-470a-a41f-43674bbaea9a",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "8fb6351f1d9d13e6fe5246f3d7c12ac5144e59766d24503c42e6dd51ef89efd7"
+    },
+    {
+      "path": "openspec/changes/selectable-harness-model-effort/design.md",
+      "hash": "a6d026b3d2519ef42b578118cd0f7e6042b25477d16761448b6af19dd03be679"
+    },
+    {
+      "path": "openspec/changes/selectable-harness-model-effort/proposal.md",
+      "hash": "a8c316533bc6e03710a544105bb157aa7baf50a528aded08f903b2adf0db52b7"
+    },
+    {
+      "path": "openspec/changes/selectable-harness-model-effort/specs/harness-model-selection/spec.md",
+      "hash": "8876fcb8ead81607a500ea5589fb3ffec9f88cd99169512be8e51fe3a698b5ad"
+    },
+    {
+      "path": "openspec/changes/selectable-harness-model-effort/tasks.md",
+      "hash": "1d17614f449a36e8f802606560e1070898c06e647c7e42c9edf2d23af0670d2e"
+    },
+    {
+      "path": "src/claude-adapter.ts",
+      "hash": "a07cb6b757a9f44741ed01224b50dc49b61b5af2107883effaf54f8616b67dc8"
+    },
+    {
+      "path": "src/cli.ts",
+      "hash": "7900db06b15b5b48c6dc26dffc0d5aae2403e7af9a3e331cad7bb788e48bee82"
+    },
+    {
+      "path": "src/codex-adapter.ts",
+      "hash": "88be748b5cc84351d26f791c324033eeda97f64e2a39c6b8fb66138f88c4af0e"
+    },
+    {
+      "path": "src/harness-catalog.ts",
+      "hash": "3e6f2ed58f428abfb954fd4a2f593c02a4e54cc6c73d84e1e8985c81dd9934f0"
+    },
+    {
+      "path": "src/harness.ts",
+      "hash": "a6dcabf7e4104793f4505edf8045e87909fe12617b8e47f8816fd49ecb3fad1f"
+    },
+    {
+      "path": "test/harness-catalog.test.ts",
+      "hash": "0b1688d7698e27ecaa51c6523be18cfbe56be088caf183ffc71b351b4d935241"
+    },
+    {
+      "path": "test/runner-claude.test.ts",
+      "hash": "9ae4620a808984d11118fff62e17d8a4646d2e7a879df0a95c4f285d25524f5f"
+    },
+    {
+      "path": "test/runner-harness.test.ts",
+      "hash": "aff1ec3a403d8521cef2ff3e329fbdee5578e6a8b8bb5391ca537f7b23124f4f"
+    },
+    {
+      "path": "test/runner.test.ts",
+      "hash": "952b1dd53058acff0fd37930ede583be662add2058ae280fa097b4a698a2fa11"
+    }
+  ],
+  "head": "90a0c9fcb63decd7802c6b7f190f4c1ca890cc92",
+  "base": "7b1f7fac6c2087ef4764f65e2ab146bff7a09abf"
+}
