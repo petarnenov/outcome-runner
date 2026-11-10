@@ -24,6 +24,7 @@ interface Script {
   answers?: string[];
   /** Statuses returned by successive `probe` calls; the last one repeats. */
   probe?: (number | null)[];
+  /** Status of the scripted install; omitted means success (0). */
   install?: number | null;
   config?: boolean | Error;
   files?: string[];
@@ -42,7 +43,10 @@ function scripted(script: Script = {}) {
       calls.probe.push([program, args, cwd]);
       return { status: statuses.length > 1 ? statuses.shift()! : statuses[0] };
     },
-    exec: (program, args, cwd) => { calls.exec.push([program, args, cwd]); return { status: script.install ?? 0 }; },
+    exec: (program, args, cwd) => {
+      calls.exec.push([program, args, cwd]);
+      return { status: script.install === undefined ? 0 : script.install };
+    },
     configPresent: (root, target) => {
       calls.configChecks.push([root, target]);
       if (script.config instanceof Error) throw script.config;

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
+import { isatty } from 'node:tty';
 import { git } from './git.ts';
 import { safePath } from './model.ts';
 import type { RunConfig } from './model.ts';
@@ -47,7 +48,7 @@ export const isInteractive = (stdin: TtyStream, stderr: TtyStream): boolean => B
 
 /** Prompts on `output` and reads one line from `input`; a closed input answers ''. */
 export function promptOn(input: Readable, output: Writable): (question: string) => Promise<string> {
-  return question => new Promise(resolve => {
+  return question => new Promise<string>(resolve => {
     const reader = createInterface({ input, terminal: false });
     reader.once('close', () => resolve(''));
     output.write(question);
@@ -72,8 +73,9 @@ export function configAtOrigin(root: string, target: string): boolean {
 
 export function defaultPreflightDeps(): PreflightDeps {
   return {
-    interactive: isInteractive(process.stdin, process.stderr),
-    ask: promptOn(process.stdin, process.stderr),
+    // Equivalent to process.stdin.isTTY && process.stderr.isTTY without opening the stdin stream.
+    interactive: isInteractive({ isTTY: isatty(0) }, { isTTY: isatty(2) }),
+    ask: question => promptOn(process.stdin, process.stderr)(question),
     say: text => { process.stderr.write(text); },
     probe: (program, args, cwd) => statusOf(spawnSync(program, args, { cwd, shell: false, stdio: 'ignore' })),
     exec: (program, args, cwd) => statusOf(spawnSync(program, args, { cwd, shell: false, stdio: ['ignore', 2, 2] })),
