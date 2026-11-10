@@ -86,7 +86,10 @@ async function run(mood: MascotMood, caption: string, options: MascotOptions, st
     state.finished = true;
     return;
   }
-  void caption; void HEIGHT; void HIDE; void wait;
+  const colour = env.NO_COLOR === undefined ? art.colour : undefined;
+  const frames = art.poses.map(pose => drawFrame(art, pose).map(line => paint(line, colour)));
+  const captionLine = `${String(caption).replace(/[\r\n]/gu, ' ')}\n`;
+  void frames; void captionLine; void HEIGHT; void HIDE; void wait;
 }
 
 function restore(state: PlayState): void {
