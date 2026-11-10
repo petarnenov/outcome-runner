@@ -10,10 +10,17 @@ npm i -g --allow-git=root github:petarnenov/outcome-runner
 
 npm 12 refuses Git installs unless `--allow-git=root` is given.
 
+To run it without a global install, replace `outcome-runner` in any command below:
+
+```sh
+npx --allow-git=root github:petarnenov/outcome-runner hash planning/outcomes.json
+```
+
 Run it from any directory inside the repository to work on. The project needs
 Git, Node 24 or newer, the selected harness CLI, OpenSpec CLI, the configured
 build tools and (for GitHub hosting) authenticated `gh`. The package has no
-dependencies beyond Node built-ins.
+runtime dependencies beyond Node built-ins; TypeScript is used only to build it
+during installation.
 
 ## Quick start
 
@@ -319,6 +326,10 @@ controller, not model execution. Real selected-harness one-task, three-task, rev
 and fresh-process recovery evidence must be recorded before rollout.
 
 ## Development
+
+Sources are TypeScript using only erasable syntax, so Node runs them directly.
+`npm run typecheck` checks types and `npm run build` emits the installed package
+to `dist/`.
 
 `npm test` runs the suite with scripted adapters. The `live:*` scripts exercise a
 real harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).

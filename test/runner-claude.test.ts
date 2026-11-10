@@ -5,30 +5,44 @@ import { PassThrough, Writable } from 'node:stream';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ClaudeAdapter, claudeEnvironment } from '../src/claude-adapter.mjs';
-import { RunStore } from '../src/run-store.mjs';
-import { CodexFiles, brokerTool } from '../src/codex-files.mjs';
+import { ClaudeAdapter, claudeEnvironment } from '../src/claude-adapter.ts';
+import type { AdapterOptions, SessionHandle, SpawnProcess, ToolDefinition, ToolInput, WorkerProcess, WorkerReply } from '../src/harness-adapter.ts';
+import { RunStore } from '../src/run-store.ts';
+import { CodexFiles, brokerTool } from '../src/codex-files.ts';
+import type { FakeChild } from './support/types.ts';
 
-const tool = { name: 'echo', description: 'Echo', inputSchema: { type: 'object' } };
+type ClaudeMessage = Parameters<ClaudeAdapter['observeMessage']>[0];
+type MessagePatch = Record<string, unknown>;
+
+interface FakeRun {
+  program: string;
+  args: string[];
+  options: unknown;
+  child: FakeChild;
+  emit: (message: unknown) => void;
+  prompt: string;
+}
+
+const tool = { name: 'echo', description: 'Echo', inputSchema: { type: 'object' } } as ToolDefinition;
 const session = 'ec05fd87-67cb-411d-a0b4-cfa78df2035d';
-const init = patch => ({ type: 'system', subtype: 'init', session_id: session,
+const init = (patch?: MessagePatch) => ({ type: 'system', subtype: 'init', session_id: session,
   model: 'claude-opus-5-5', claude_code_version: '2.1.321', permissionMode: 'dontAsk',
   tools: ['mcp__outcome__echo'], mcp_servers: [{ name: 'outcome', status: 'connected' }],
   skills: [], slash_commands: [], plugins: [], ...patch });
-const result = patch => ({ type: 'result', subtype: 'success', session_id: session, is_error: false,
+const result = (patch?: MessagePatch) => ({ type: 'result', subtype: 'success', session_id: session, is_error: false,
   result: 'Private completion text', modelUsage: { exact: { canonicalModel: 'claude-opus-5-5' } }, ...patch });
-const make = options => new ClaudeAdapter({ cwd: '/tmp', tools: [tool], handleTool: async (_name, input) => input, ...options });
+const make = (options?: Partial<AdapterOptions>) => new ClaudeAdapter({ cwd: '/tmp', tools: [tool], handleTool: async (_name, input) => input, ...options });
 
-function fakeProcess(run) {
+function fakeProcess(run: (invocation: FakeRun) => Promise<unknown>): SpawnProcess {
   return (program, args, options) => {
-    const child = new EventEmitter(); child.pid = 1; child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    const child = new EventEmitter() as FakeChild; child.pid = 1; child.stdout = new PassThrough(); child.stderr = new PassThrough();
     child.kill = () => { child.killed = true; };
-    const emit = message => child.stdout.write(JSON.stringify(message) + '\n');
+    const emit = (message: unknown) => child.stdout.write(JSON.stringify(message) + '\n');
     let prompt = '';
     child.stdin = new Writable({ write(chunk, _encoding, done) { prompt += chunk; done(); },
       final(done) { done(); setImmediate(() => run({ program, args, options, child, emit, prompt })
         .catch(error => child.emit('error', error))); } });
-    return child;
+    return child as unknown as WorkerProcess;
   };
 }
 
@@ -57,7 +71,7 @@ test('Claude environment and arguments isolate ambient capabilities without bypa
 test('private MCP endpoint authenticates callers and denies unknown or pre-init operations', async t => {
   let calls = 0; const adapter = make({ handleTool: async (_name, input) => { calls++; return input; } });
   const url = await adapter.serve(); t.after(() => adapter.close());
-  const send = (method, params = {}, extra = {}) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  const send = (method: string, params = {}, extra = {}) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), ...extra });
   assert.equal((await fetch(url + 'bad', { method: 'POST' })).status, 403);
   assert.equal((await fetch(url)).status, 403);
@@ -91,26 +105,26 @@ test('startup rejects drift, foreign tools, hooks, ambient plugins and fallback 
     { mcp_servers: [{ name: 'outcome', status: 'failed' }] }, { skills: ['geo.loop'] },
     { slash_commands: ['foreign'] }, { plugins: [{ name: 'foreign', path: '/plugin' }] },
     { plugins: [{ name: 'foreign', path: 'builtin' }] }, { session_id: 'bad' }]) {
-    const adapter = make(); adapter.child = { pid: 1 };
+    const adapter = make(); adapter.child = { pid: 1 } as WorkerProcess;
     await assert.rejects(adapter.observeMessage(init(patch)));
     assert.equal(adapter.certified, false);
   }
-  const newer = make(); newer.child = { pid: 1 };
+  const newer = make(); newer.child = { pid: 1 } as WorkerProcess;
   await newer.observeMessage(init({ claude_code_version: '2.2.0' }));
   assert.equal(newer.certified, true);
-  const adapter = make(); adapter.child = { pid: 1 };
+  const adapter = make(); adapter.child = { pid: 1 } as WorkerProcess;
   await adapter.observeMessage(init({ plugins: [{ name: 'cc-plugin-privacy', path: 'builtin' }] }));
   assert.equal(adapter.certified, true);
-  await assert.rejects(adapter.observeMessage({ type: 'system', subtype: 'hook_started' }), /hook/u);
-  await assert.rejects(adapter.observeMessage({ type: 'assistant', message: { model: 'other' } }), /model changed/u);
+  await assert.rejects(adapter.observeMessage({ type: 'system', subtype: 'hook_started' } as ClaudeMessage), /hook/u);
+  await assert.rejects(adapter.observeMessage({ type: 'assistant', message: { model: 'other' } } as ClaudeMessage), /model changed/u);
   for (const patch of [{ session_id: 'foreign' }, { is_error: true }, { subtype: 'error' },
     { modelUsage: null }, { modelUsage: {} }, { modelUsage: { other: { canonicalModel: 'other' } } }]) {
-    await assert.rejects(adapter.observeMessage(result(patch)), /pinned model/u);
+    await assert.rejects(adapter.observeMessage(result(patch) as unknown as ClaudeMessage), /pinned model/u);
   }
 });
 
 test('machine adapter retains private text and session identity across resume', async () => {
-  const handles = []; let started = 0;
+  const handles: SessionHandle[] = []; let started = 0;
   const adapter = make({ onHandle: handle => handles.push(handle), spawnProcess: fakeProcess(async ({ args, emit, child, prompt }) => {
     assert.ok(prompt.includes('mcp__outcome__')); started++;
     if (started === 2) assert.equal(args[args.indexOf('--resume') + 1], session);
@@ -118,19 +132,19 @@ test('machine adapter retains private text and session identity across resume', 
     emit(result()); child.emit('exit', 0);
   }) });
   const first = await adapter.startAction('First'); assert.equal(first.text, 'Private completion text');
-  assert.equal(first.status, 'worker-returned'); assert.equal(first.acceptanceId, undefined);
+  assert.equal(first.status, 'worker-returned'); assert.equal((first as WorkerReply & { acceptanceId?: string }).acceptanceId, undefined);
   const second = await adapter.resumeAction('Second', handles[0]); assert.equal(second.threadId, session);
   assert.equal(handles.length, 2); adapter.close();
   await assert.rejects(adapter.resumeAction('bad', { threadId: 'interactive-picker' }), /resume identity/u);
 });
 
 test('transport corruption, child failure and cancellation never claim completion', async () => {
-  for (const behavior of [async ({ child }) => child.emit('error', new Error('spawn failed')),
-    async ({ child }) => child.emit('exit', 0), async ({ child }) => { child.stdout.write('bad-json\n'); child.emit('exit', 1); }]) {
+  for (const behavior of [async ({ child }: FakeRun) => child.emit('error', new Error('spawn failed')),
+    async ({ child }: FakeRun) => child.emit('exit', 0), async ({ child }: FakeRun) => { child.stdout.write('bad-json\n'); child.emit('exit', 1); }]) {
     const adapter = make({ spawnProcess: fakeProcess(behavior) });
     await assert.rejects(adapter.startAction('private')); adapter.close();
   }
-  let adapter;
+  let adapter: ClaudeAdapter;
   adapter = make({ spawnProcess: fakeProcess(async () => adapter.cancelAction()) });
   await assert.rejects(adapter.startAction('cancel'), /interrupted/u); adapter.close();
   const unsupported = make({ executable: process.execPath });
@@ -148,10 +162,10 @@ test('real Claude Opus 5.5 medium uses only scoped broker and resumes without am
   const store = new RunStore(join(directory, 'state'), { leaves: ['A'], invocation: 'claude-smoke' }); t.after(() => store.close());
   const broker = new CodexFiles({ root: directory, scopes: [{ mode: 'write', path: 'output' }], store,
     identity: { worker: 'claude-smoke' }, revalidate: async () => true });
-  const handles = [];
+  const handles: SessionHandle[] = [];
   const create = () => make({ cwd: directory, tools: [brokerTool], onHandle: value => handles.push(value),
-    handleTool: (...args) => broker.call(...args) });
-  const prompt = name => 'Use backlog_tool write_file exactly once with input ' +
+    handleTool: (...args: [string, ToolInput]) => broker.call(...args) });
+  const prompt = (name: string) => 'Use backlog_tool write_file exactly once with input ' +
     JSON.stringify({ path: `output/${name}.txt`, content: name, expectedHash: null }) +
     '. Do not use any other operation or ask anyone anything. Return COMPLETE after the broker succeeds.';
   const first = create(); t.after(() => first.close()); assert.equal(first.probe().status, 'interface-ready');
@@ -189,7 +203,7 @@ test('nonzero transport diagnostics retain a bounded private stderr tail', async
     child.stderr.write('x'.repeat(5000) + 'PRIVATE: approve this request?');
     child.emit('exit', 23);
   }) });
-  await assert.rejects(adapter.startAction('private'), error => {
+  await assert.rejects(adapter.startAction('private'), (error: Error) => {
     assert.match(error.message, /\(23\).*PRIVATE: approve this request\?/u);
     assert.ok(error.message.length < 4200); return true;
   });

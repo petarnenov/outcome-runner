@@ -1,31 +1,60 @@
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import { fork, spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { git, command } from '../src/git.mjs';
-import { hash, validateConfig, validateQueue } from '../src/model.mjs';
-import { runQueue } from '../src/runner.mjs';
-import { ClaimLedger } from '../src/claims.mjs';
-import { RunStore } from '../src/run-store.mjs';
+import { git, command } from '../src/git.ts';
+import { hash, validateConfig, validateQueue } from '../src/model.ts';
+import type { CheckRecord, Harness, Project, PullRequest, Queue, ReviewRecord, RunConfig, Work, WorkerSession } from '../src/model.ts';
+import { runQueue } from '../src/runner.ts';
+import type { RunEvent } from '../src/runner.ts';
+import { ClaimLedger } from '../src/claims.ts';
+import { RunStore } from '../src/run-store.ts';
+import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolContext, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
 
-function fixture(t, { second = false } = {}) {
+interface FixtureHost {
+  find(branch: string): PullRequest | null;
+  create(work: Work, body?: string): PullRequest;
+  merge(pr: PullRequest, head: string): void;
+}
+
+interface ScriptedOptions extends Omit<HarnessOptions, 'handleTool'> {
+  // Method syntax keeps this assignable from HarnessOptions: scripted workers omit the context argument.
+  handleTool(name: string, input: ToolInput, context?: ToolContext): Promise<any>;
+}
+
+interface ChildOutcome { status?: string; interrupted?: boolean }
+
+interface ChildMessage {
+  type: string;
+  id: number;
+  method: keyof FixtureHost;
+  args: unknown[];
+  result: ChildOutcome;
+  message: string;
+}
+
+type Fixture = ReturnType<typeof fixture>;
+type RunResult = Awaited<ReturnType<typeof runQueue>>;
+
+function fixture(t: TestContext, { second = false } = {}) {
   const base = mkdtempSync(join(tmpdir(), 'outcome-test-')); t.after(() => {
     if (process.env.KEEP_OUTCOME_FIXTURE !== '1') rmSync(base, { recursive: true, force: true });
   });
   const remote = join(base, 'origin.git'); const root = join(base, 'project');
   mkdirSync(root); git(base, 'init', '--bare', remote); git(root, 'init', '-b', 'integration');
   git(root, 'config', 'user.name', 'Fixture Worker'); git(root, 'config', 'user.email', 'fixture@example.invalid');
-  const project = { queue: second ? 'planning/work.json' : 'docs/work-queue/queue.json',
+  const project: Project = { queue: second ? 'planning/work.json' : 'docs/work-queue/queue.json',
     changes: 'openspec/changes', receipts: second ? 'evidence/results' : 'docs/work-queue/receipts',
     target: second ? 'staging' : 'proposal', repository: 'fixture',
     commitScope: second ? 'counter' : 'fixture-tools', commitSuffix: second ? ' (PORT-1)' : '',
     planningCheck: { command: 'openspec', args: ['validate', '{change}', '--strict'] },
     checks: [{ command: 'make', args: [second ? 'verify-result' : 'pr-check'] },
       { command: 'node', args: ['--test', '{scope}/*.test.mjs'] }] };
-  const queue = { version: 1, tasks: ['A', 'B', 'C', 'D'].map((id, priority) => ({
+  const queue: Queue = { version: 1, tasks: ['A', 'B', 'C', 'D'].map((id, priority) => ({
     id, priority, title: `Implement finite counter ${id}`, change: `counter-${id.toLowerCase()}`,
     scopes: [`src/${id.toLowerCase()}`], dependencies: priority ? [['A'], ['B'], []][priority - 1] : [],
     criteria: [`Create src/${id.toLowerCase()}/result.mjs exporting next(n).`,
@@ -53,10 +82,10 @@ console.log('Fixture result checks passed');\n`);
   const integrator = join(base, 'integrator'); git(base, 'clone', remote, integrator);
   git(integrator, 'config', 'user.name', 'Fixture Integrator');
   git(integrator, 'config', 'user.email', 'integrator@example.invalid');
-  const records = [];
-  const host = { find: branch => records.find(pr => pr.branch === branch) ?? null,
+  const records: PullRequest[] = [];
+  const host: FixtureHost = { find: branch => records.find(pr => pr.branch === branch) ?? null,
     create(work) { const pr = { number: records.length + 1, branch: work.branch, state: 'OPEN',
-      headRefOid: git(work.path, 'rev-parse', 'HEAD') }; records.push(pr); return pr; },
+      headRefOid: git(work.path, 'rev-parse', 'HEAD') } as PullRequest; records.push(pr); return pr; },
     merge(pr, head) {
       assert.equal(head, pr.headRefOid); assert.equal(pr.state, 'OPEN');
       git(integrator, 'fetch', 'origin');
@@ -64,32 +93,32 @@ console.log('Fixture result checks passed');\n`);
       git(integrator, 'merge', '--no-ff', head, '-m', `feat(fixture-tools): accept ${pr.number}`);
       git(integrator, 'push', 'origin', `HEAD:${project.target}`); pr.state = 'MERGED';
     } };
-  const config = { root, harness: 'codex', model: 'gpt-6.1-sol', effort: 'medium', stateDirectory: join(base, 'state'), invocation: 'fixture', project,
+  const config: RunConfig = { root, harness: 'codex', model: 'gpt-6.1-sol', effort: 'medium', stateDirectory: join(base, 'state'), invocation: 'fixture', project,
     authority: { reference: 'fixture-owner-off', instruction: 'OFF implement these exact outcomes and normally merge.',
       target: project.target, tasks: Object.fromEntries(queue.tasks.map(task => [task.id, hash(task)])) } };
   return { base, root, project, queue, config, records, host };
 }
 
-function realHarness(config) {
-  config.harness = process.env.OUTCOME_TEST_HARNESS ?? 'codex';
+function realHarness(config: RunConfig) {
+  config.harness = (process.env.OUTCOME_TEST_HARNESS ?? 'codex') as Harness;
   config.model = config.harness === 'claude' ? 'claude-opus-5-5' : 'gpt-6.1-sol';
   config.effort = 'medium';
 }
 
-function scripted(options) {
+function scripted(options: ScriptedOptions): HarnessAdapter {
   return { probe: () => ({ status: 'interface-ready' }), close() {}, async startAction(prompt) {
-    const id = /Task ([A-D]);/u.exec(prompt)[1].toLowerCase();
+    const id = /Task ([A-D]);/u.exec(prompt)![1].toLowerCase();
     const directory = `openspec/changes/counter-${id}`;
-    const write = async (path, content) => {
+    const write = async (path: string, content: string) => {
       const before = await options.handleTool('backlog_tool', { operation: 'read_file', input: { path } });
       await options.handleTool('backlog_tool', { operation: 'write_file',
         input: { path, content, expectedHash: before.hash } });
     };
-    await options.onHandle({ threadId: 'scripted-unit-session' });
-    const context = await options.handleTool('backlog_tool', { operation: 'context', input: {} });
+    await options.onHandle!({ threadId: 'scripted-unit-session' });
+    const context = await options.handleTool('backlog_tool', { operation: 'context', input: {} as BrokerInput });
     assert.ok(context.files.length);
-    await assert.rejects(options.handleTool('backlog_tool', { operation: 'context', input: { offset: -1 } }), /offset/u);
-    let result = { outcome: 'ready', summary: 'Scripted test adapter', findings: [] };
+    await assert.rejects(options.handleTool('backlog_tool', { operation: 'context', input: { offset: -1 } as BrokerInput }), /offset/u);
+    let result: ToolInput = { outcome: 'ready', summary: 'Scripted test adapter', findings: [] };
     if (prompt.includes('Inspect current files')) result.inspected = [`src/${id}/requirements.md`];
     else if (prompt.includes('Create proposal.md')) {
       await write(`${directory}/proposal.md`, '# Proposal\n\n## Why\nImplement the finite counter.\n');
@@ -102,7 +131,7 @@ function scripted(options) {
     } else if (prompt.includes('Implement all approved')) {
       await write(`src/${id}/result.mjs`, 'export function next(n) { if (!Number.isFinite(n)) throw new TypeError(); return n + 1; }\n');
       await write(`src/${id}/result.test.mjs`, "import assert from 'node:assert/strict'; import {next} from './result.mjs'; assert.equal(next(1),2);\n");
-      await options.handleTool('backlog_tool', { operation: 'run_checks', input: {} });
+      await options.handleTool('backlog_tool', { operation: 'run_checks', input: {} as BrokerInput });
     } else {
       result.outcome = 'accepted';
       if (prompt.includes('Review actual implementation')) {
@@ -113,7 +142,7 @@ function scripted(options) {
       }
     }
     await options.handleTool('outcome_report', result);
-    return { threadId: 'scripted-unit-session', events: [], text: 'Private text must never prompt a human.' };
+    return { threadId: 'scripted-unit-session', events: [], text: 'Private text must never prompt a human.' } as unknown as WorkerReply;
   } };
 }
 
@@ -131,12 +160,12 @@ test('queue rejects cycles, duplicate change identities and controller scope wri
 });
 
 test('scripted outcome creates and reviews OpenSpec then accepts one result', async t => {
-  const f = fixture(t); const events = [];
+  const f = fixture(t); const events: RunEvent[] = [];
   const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host,
     createAdapter: scripted, report: event => events.push(event) });
   assert.equal(result.status, 'exhausted', JSON.stringify(result));
   assert.equal(f.records.length, 1); assert.equal(f.records[0].state, 'MERGED');
-  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json')));
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
   assert.ok(state.completed.A.specification); assert.ok(state.completed.A.planningReviews.length);
   assert.ok(!JSON.stringify(events).includes('Private text'));
 });
@@ -147,9 +176,9 @@ test(`${process.env.OUTCOME_TEST_HARNESS ?? 'codex'}: one real outcome starts wi
   const f = fixture(t); realHarness(f.config);
   const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host });
   assert.equal(result.status, 'exhausted', JSON.stringify(result));
-  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json')));
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
   assert.ok(state.completed.A.sessions.length >= 5); assert.equal(f.records.length, 1);
-  t.diagnostic(JSON.stringify({ harness: f.config.harness, model: f.config.model, effort: f.config.effort, result, sessions: state.completed.A.sessions.map(s => ({ purpose: s.purpose, threadId: s.threadId })),
+  t.diagnostic(JSON.stringify({ harness: f.config.harness, model: f.config.model, effort: f.config.effort, result, sessions: state.completed.A.sessions.map((s: WorkerSession) => ({ purpose: s.purpose, threadId: s.threadId })),
     checks: state.completed.A.checks, fixture: f.base }));
 });
 
@@ -160,15 +189,15 @@ test(`${process.env.OUTCOME_TEST_HARNESS ?? 'codex'}: three real outcomes repair
   const result = await runQueue({ ...f.config, maxAccepted: 3 }, { host: f.host,
     afterEffect: async (kind, work) => {
       if (kind === 'implementation' && !injected) {
-        injected = true; writeFileSync(join(work.path, 'src/a/requirements.md'),
-          readFileSync(join(work.path, 'src/a/requirements.md'), 'utf8') + '\nUnapproved modification for review detection.\n');
+        injected = true; writeFileSync(join((work as Work).path, 'src/a/requirements.md'),
+          readFileSync(join((work as Work).path, 'src/a/requirements.md'), 'utf8') + '\nUnapproved modification for review detection.\n');
       }
     } });
   assert.equal(result.status, 'limit-reached', JSON.stringify(result));
   assert.deepEqual(result.accepted, ['A', 'B', 'C']); assert.deepEqual(result.remaining, ['D']);
   assert.equal(f.records.length, 3);
-  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json')));
-  assert.ok(state.completed.A.reviews.some(r => r.outcome === 'changes-required'));
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+  assert.ok(state.completed.A.reviews.some((r: ReviewRecord) => r.outcome === 'changes-required'));
   t.diagnostic(JSON.stringify({ harness: f.config.harness, model: f.config.model, effort: f.config.effort, result, reviews: state.completed.A.reviews, fixture: f.base }));
 });
 
@@ -187,7 +216,7 @@ for (const boundary of ['claim', 'pr', 'merge']) test(`restart reconciles outcom
 test('copied distribution accepts a differently configured independent project', async t => {
   const f = fixture(t, { second: true }); const distribution = join(f.base, 'portable');
   cpSync('src', distribution, { recursive: true });
-  const { runQueue: portable } = await import(pathToFileURL(join(distribution, 'runner.mjs')));
+  const { runQueue: portable } = await import(pathToFileURL(join(distribution, 'runner.ts')).href);
   const result = await portable({ ...f.config, leaves: ['A'] }, { host: f.host, createAdapter: scripted });
   assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.equal(f.records[0].state, 'MERGED');
 });
@@ -195,7 +224,7 @@ test('copied distribution accepts a differently configured independent project',
 test('protected result stays incomplete while independent work proceeds without leaking worker output', async t => {
   const f = fixture(t); const merge = f.host.merge;
   f.host.merge = (pr, head) => {
-    if (pr.branch.startsWith('outcome/A-')) throw new Error('Please approve this merge?');
+    if (pr.branch!.startsWith('outcome/A-')) throw new Error('Please approve this merge?');
     return merge(pr, head);
   };
   const result = await runQueue(f.config, { host: f.host, createAdapter: scripted });
@@ -227,23 +256,23 @@ test('changed source and bound specification cannot gain execution authority', a
     tasks: { A: '0'.repeat(64) } } }, { host: f.host, createAdapter: scripted }), /source differs/u);
   const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host, createAdapter: scripted,
     afterEffect: async (kind, work) => {
-      if (kind === 'implementation') writeFileSync(join(work.path, work.directory, 'design.md'), '# Changed scope\n');
+      if (kind === 'implementation') writeFileSync(join((work as Work).path, (work as Work).directory, 'design.md'), '# Changed scope\n');
     } });
   assert.equal(result.status, 'incomplete'); assert.equal(f.records.length, 0);
-  assert.equal(result.blockers.A.stage, 'work');
-  const privateState = JSON.parse(readFileSync(result.blockers.A.diagnostics));
+  assert.equal(result.blockers!.A.stage, 'work');
+  const privateState = JSON.parse(readFileSync(result.blockers!.A.diagnostics, 'utf8'));
   assert.match(privateState.blocked.A.reason, /specification changed/u);
 });
 
 test('CLI reports bounded success, incomplete work and unavailable configuration', async t => {
   const f = fixture(t); const configPath = join(f.base, 'config.json');
-  const { main } = await import('../src/cli.mjs');
+  const { main } = await import('../src/cli.ts');
   const { root, stateDirectory, ...invocation } = f.config;
   writeFileSync(configPath, JSON.stringify(invocation));
-  for (const [status, expected] of [['exhausted', 0], ['limit-reached', 0], ['incomplete', 3]]) {
-    const output = [];
+  for (const [status, expected] of [['exhausted', 0], ['limit-reached', 0], ['incomplete', 3]] as [string, number][]) {
+    const output: Record<string, unknown>[] = [];
     assert.equal(await main(configPath, async (_, { report }) => {
-      report({ status: 'accepted', id: 'A' }); return { status };
+      report!({ status: 'accepted', id: 'A' }); return { status };
     }, text => output.push(JSON.parse(text)), { cwd: root }), expected);
     assert.equal(output[0].id, 'A'); assert.equal(output[1].status, status);
   }
@@ -251,17 +280,17 @@ test('CLI reports bounded success, incomplete work and unavailable configuration
 });
 
 test('GitHub host uses explicit target and never bypasses protected merges', async () => {
-  const { GitHubHost } = await import('../src/git.mjs');
-  assert.throws(() => new GitHubHost('.', {}), /Explicit/u);
-  const host = new GitHubHost('.', { target: 'staging', repository: 'fixture' });
-  const calls = []; let rows = []; let view = {};
+  const { GitHubHost } = await import('../src/git.ts');
+  assert.throws(() => new GitHubHost('.', {} as Project), /Explicit/u);
+  const host = new GitHubHost('.', { target: 'staging', repository: 'fixture' } as Project);
+  const calls: string[][] = []; let rows: { number: number }[] = []; let view = {};
   host.gh = (...args) => { calls.push(args); return args[1] === 'view' ? JSON.stringify(view) : JSON.stringify(rows); };
   assert.equal(host.find('branch'), null);
-  rows = [{ number: 1 }]; assert.equal(host.create({ id: 'A', branch: 'branch' }, '/body').number, 1);
+  rows = [{ number: 1 }]; assert.equal(host.create({ id: 'A', branch: 'branch' } as Work, '/body')!.number, 1);
   rows.push({ number: 2 }); assert.throws(() => host.find('branch'), /Multiple/u);
-  assert.throws(() => host.merge({ number: 1 }, 'head'), /protection/u);
+  assert.throws(() => host.merge({ number: 1 } as PullRequest, 'head'), /protection/u);
   view = { state: 'OPEN', headRefOid: 'head', baseRefName: 'staging', mergeStateStatus: 'CLEAN', isDraft: false };
-  host.merge({ number: 1 }, 'head');
+  host.merge({ number: 1 } as PullRequest, 'head');
   assert.ok(calls.some(args => args[1] === 'merge' && args.includes('--match-head-commit')));
   assert.ok(calls.every(args => !args.includes('--admin')));
 });
@@ -285,15 +314,15 @@ test(`${process.env.OUTCOME_TEST_HARNESS ?? 'codex'}: fresh process resumes real
 }, async t => {
   const f = fixture(t); realHarness(f.config); const configPath = join(f.base, 'invocation.json');
   writeFileSync(configPath, JSON.stringify({ ...f.config, leaves: ['A'], maxAccepted: 1 }));
-  const childRun = boundary => new Promise((resolve, reject) => {
-    const child = fork('test/support/work-queue-child.mjs', [configPath, boundary ?? ''],
+  const childRun = (boundary?: string) => new Promise<ChildOutcome>((resolve, reject) => {
+    const child = fork('test/support/work-queue-child.ts', [configPath, boundary ?? ''],
       { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
-    child.stdout.resume(); child.stderr.resume(); let result; let killed = false; let failure;
+    child.stdout!.resume(); child.stderr!.resume(); let result: ChildOutcome | undefined; let killed = false; let failure: Error | undefined;
     child.on('error', reject);
-    child.on('message', async message => {
+    child.on('message', async (message: ChildMessage) => {
       if (message.type === 'host') {
-        try { child.send({ id: message.id, result: await f.host[message.method](...message.args) }); }
-        catch (error) { child.send({ id: message.id, error: error.message }); }
+        try { child.send({ id: message.id, result: await (f.host[message.method] as (...args: unknown[]) => unknown)(...message.args) }); }
+        catch (error) { child.send({ id: message.id, error: (error as Error).message }); }
       } else if (message.type === 'boundary') { killed = true; child.kill('SIGKILL'); }
       else if (message.type === 'result') result = message.result;
       else if (message.type === 'error') failure = new Error(message.message);
@@ -306,17 +335,17 @@ test(`${process.env.OUTCOME_TEST_HARNESS ?? 'codex'}: fresh process resumes real
     });
   });
   assert.deepEqual(await childRun('pr'), { interrupted: true });
-  const before = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'))).current;
+  const before = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8')).current;
   const result = await childRun();
   assert.equal(result.status, 'limit-reached', JSON.stringify(result)); assert.equal(f.records.length, 1);
-  const after = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'))).completed.A;
+  const after = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8')).completed.A;
   assert.equal(before.operation, after.operation); assert.equal(before.branch, after.branch);
   t.diagnostic(JSON.stringify({ harness: f.config.harness, model: f.config.model, effort: f.config.effort, result, operation: after.operation, pr: after.pr.number, fixture: f.base }));
 });
 
 test('planning validation and review findings are repaired before implementation', async t => {
   const f = fixture(t); let planning = 0; let reviewed = false;
-  const adapter = options => {
+  const adapter = (options: ScriptedOptions): HarnessAdapter => {
     const inner = scripted({ ...options, handleTool: async (name, input) => {
       if (name === 'outcome_report' && input.outcome === 'accepted' && !reviewed) {
         reviewed = true; return options.handleTool(name, { ...input,
@@ -339,13 +368,13 @@ test('planning validation and review findings are repaired before implementation
 test('unresolved structured report and unavailable interface remain incomplete', async t => {
   const f = fixture(t);
   const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host,
-    createAdapter: () => ({ probe: () => ({ status: 'unsupported' }), close() {} }) });
+    createAdapter: () => ({ probe: () => ({ status: 'unsupported' }), close() {} }) as HarnessAdapter });
   assert.equal(result.status, 'incomplete'); assert.equal(f.records.length, 0);
-  assert.equal(result.blockers.A.stage, 'investigate');
-  assert.match(JSON.parse(readFileSync(result.blockers.A.diagnostics)).blocked.A.reason, /interface/u);
+  assert.equal(result.blockers!.A.stage, 'investigate');
+  assert.match(JSON.parse(readFileSync(result.blockers!.A.diagnostics, 'utf8')).blocked.A.reason, /interface/u);
   const retry = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host,
     createAdapter: () => ({ probe: () => ({ status: 'interface-ready' }), close() {},
-      async startAction() { return { threadId: 'no-report', events: [], text: 'Private question?' }; } }) });
+      async startAction() { return { threadId: 'no-report', events: [], text: 'Private question?' } as unknown as WorkerReply; } }) });
   assert.equal(retry.status, 'incomplete'); assert.ok(!JSON.stringify(retry).includes('Private question'));
 });
 
@@ -354,7 +383,7 @@ test('failed implementation checks are automatically repaired and too-large boun
   const result = await runQueue({ ...f.config, leaves: ['A'], maxAccepted: 2 }, { host: f.host,
     createAdapter: scripted, afterEffect: async (kind, work) => {
       if (kind === 'implementation' && !injected) {
-        injected = true; writeFileSync(join(work.path, 'src/a/result.mjs'), 'invalid syntax!');
+        injected = true; writeFileSync(join((work as Work).path, 'src/a/result.mjs'), 'invalid syntax!');
       }
     } });
   assert.equal(result.status, 'incomplete'); assert.deepEqual(result.accepted, ['A']);
@@ -374,13 +403,13 @@ test('implementation review repairs an in-scope finding and preserves immutable 
   const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host,
     createAdapter: scripted, afterEffect: async (kind, work) => {
       if (kind === 'implementation' && !injected) {
-        injected = true; writeFileSync(join(work.path, 'src/a/result.mjs'),
+        injected = true; writeFileSync(join((work as Work).path, 'src/a/result.mjs'),
           'export function next(n) { if (typeof n !== "number") throw new TypeError(); return n + 1; }\n');
       }
     } });
   assert.equal(result.status, 'exhausted');
-  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json')));
-  assert.ok(state.completed.A.reviews.some(row => row.outcome === 'changes-required'));
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+  assert.ok(state.completed.A.reviews.some((row: ReviewRecord) => row.outcome === 'changes-required'));
   assert.equal(state.completed.A.review.outcome, 'accepted');
 });
 
@@ -406,10 +435,10 @@ test(`${process.env.OUTCOME_TEST_HARNESS ?? 'codex'}: real portable copy accepts
 }, async t => {
   const f = fixture(t, { second: true }); realHarness(f.config); const distribution = join(f.base, 'portable');
   cpSync('src', distribution, { recursive: true });
-  const { runQueue: portable } = await import(pathToFileURL(join(distribution, 'runner.mjs')));
+  const { runQueue: portable } = await import(pathToFileURL(join(distribution, 'runner.ts')).href);
   const result = await portable({ ...f.config, leaves: ['A'] }, { host: f.host });
   assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.equal(f.records[0].state, 'MERGED');
-  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json')));
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
   t.diagnostic(JSON.stringify({ harness: f.config.harness, model: f.config.model, effort: f.config.effort, result, target: f.project.target, queue: f.project.queue,
     checks: state.completed.A.checks, fixture: f.base }));
 });
@@ -417,11 +446,11 @@ test(`${process.env.OUTCOME_TEST_HARNESS ?? 'codex'}: real portable copy accepts
 
 test('standalone CLI keeps raw startup errors in private diagnostics', t => {
   const f = fixture(t);
-  const child = spawnSync(process.execPath, [fileURLToPath(new URL('../bin/outcome-runner.mjs', import.meta.url)),
+  const child = spawnSync(process.execPath, [fileURLToPath(new URL('../bin/outcome-runner.ts', import.meta.url)),
     join(f.base, 'missing-config')], { encoding: 'utf8' });
   assert.equal(child.status, 4);
   const result = JSON.parse(child.stdout); assert.equal(result.reason, 'startup-or-run-failed');
-  const diagnostic = JSON.parse(readFileSync(result.diagnostics));
+  const diagnostic = JSON.parse(readFileSync(result.diagnostics, 'utf8'));
   assert.match(diagnostic.message, /ENOENT/u);
   t.after(() => rmSync(join(result.diagnostics, '..'), { recursive: true, force: true }));
 });
@@ -451,7 +480,7 @@ for (const fault of ['closed', 'missing', 'changed-head']) {
     assert.equal(result.status, 'incomplete'); assert.deepEqual(result.accepted, []);
     assert.deepEqual(result.remaining, ['A']); assert.equal(f.records.length, 1);
     assert.equal(merged, false);
-    const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json')));
+    const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
     assert.match(state.blocked.A.reason, fault === 'closed' ? /closed/u :
       fault === 'missing' ? /PR missing/u : /head or target changed/u);
     assert.equal(git(f.root, 'ls-tree', '-r', '--name-only', 'origin/proposal', '--',
@@ -460,15 +489,15 @@ for (const fault of ['closed', 'missing', 'changed-head']) {
 }
 
 test('published PR and receipt omit private review and check output', async t => {
-  const f = fixture(t); const create = f.host.create; let body;
+  const f = fixture(t); const create = f.host.create; let body!: string;
   const marker = 'May I ask for your permission?';
-  f.host.create = (work, path) => { body = readFileSync(path, 'utf8'); return create(work); };
-  const adapter = options => scripted({ ...options, handleTool: (name, input) => {
+  f.host.create = (work, path) => { body = readFileSync(path!, 'utf8'); return create(work); };
+  const adapter = (options: ScriptedOptions) => scripted({ ...options, handleTool: (name, input) => {
     if (name === 'outcome_report') input = { ...input, summary: marker };
     if (name === 'backlog_tool' && input.operation === 'write_file' &&
-        input.input.path.endsWith('result.test.mjs')) {
-      input = { ...input, input: { ...input.input,
-        content: input.input.content + `console.log(${JSON.stringify(marker)});\n` } };
+        input.input!.path.endsWith('result.test.mjs')) {
+      input = { ...input, input: { ...input.input!,
+        content: input.input!.content! + `console.log(${JSON.stringify(marker)});\n` } };
     }
     return options.handleTool(name, input);
   } });
@@ -478,9 +507,9 @@ test('published PR and receipt omit private review and check output', async t =>
   const receipt = git(f.root, 'show', 'origin/proposal:docs/work-queue/receipts/A.json');
   assert.ok(!body.includes(marker), 'PR body must not publish private text');
   assert.ok(!receipt.includes(marker), 'Receipt must not publish private text');
-  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json')));
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
   assert.equal(state.completed.A.review.summary, marker);
-  assert.ok(state.completed.A.checks.some(check => check.output.includes(marker)));
+  assert.ok(state.completed.A.checks.some((check: CheckRecord) => check.output!.includes(marker)));
   assert.equal(JSON.parse(receipt).review.accepted, true);
   assert.ok(body.includes('scripted-unit-session'));
 });
@@ -501,14 +530,14 @@ test('rejected harness change after completion preserves released ownership for 
   assert.equal(f.records.length, 2);
 });
 
-function machine(f, name) {
+function machine(f: Fixture, name: string) {
   const home = join(f.base, name); mkdirSync(home);
   const root = join(home, 'project'); git(home, 'clone', join(f.base, 'origin.git'), root);
   git(root, 'config', 'user.name', `Fixture ${name}`); git(root, 'config', 'user.email', 'machine@example.invalid');
   return { ...f.config, root, stateDirectory: join(home, 'state') };
 }
 
-function advanceTarget(f, path, name) {
+function advanceTarget(f: Fixture, path: string, name: string) {
   const clone = join(f.base, `advance-${name}`); git(f.base, 'clone', '-b', f.project.target, join(f.base, 'origin.git'), clone);
   git(clone, 'config', 'user.name', 'Fixture Advance'); git(clone, 'config', 'user.email', 'advance@example.invalid');
   mkdirSync(join(clone, path, '..'), { recursive: true }); writeFileSync(join(clone, path), `${name}\n`);
@@ -516,13 +545,13 @@ function advanceTarget(f, path, name) {
   git(clone, 'push', 'origin', `HEAD:${f.project.target}`);
 }
 
-const ledgerCommits = f => git(join(f.base, 'origin.git'), 'rev-list', '--count', 'work-queue-claims-proposal');
-const claimAt = (f, id) => JSON.parse(git(join(f.base, 'origin.git'), 'show', `work-queue-claims-proposal:${id}.json`));
-const blockedReason = result => JSON.parse(readFileSync(result.blockers.A.diagnostics)).blocked.A.reason;
+const ledgerCommits = (f: Fixture) => git(join(f.base, 'origin.git'), 'rev-list', '--count', 'work-queue-claims-proposal');
+const claimAt = (f: Fixture, id: string) => JSON.parse(git(join(f.base, 'origin.git'), 'show', `work-queue-claims-proposal:${id}.json`));
+const blockedReason = (result: RunResult) => JSON.parse(readFileSync(result.blockers!.A.diagnostics, 'utf8')).blocked.A.reason;
 
 test('two machines take different tasks and integrate each other results', async t => {
   const f = fixture(t); const first = machine(f, 'one'); const second = machine(f, 'two');
-  let parallel;
+  let parallel!: RunResult;
   const result = await runQueue({ ...first, leaves: ['A'] }, { host: f.host, createAdapter: scripted,
     afterEffect: async kind => {
       if (kind !== 'claim') return;
@@ -530,16 +559,16 @@ test('two machines take different tasks and integrate each other results', async
       parallel = await runQueue({ ...second, leaves: ['A', 'D'] }, { host: f.host, createAdapter: scripted });
     } });
   assert.equal(parallel.status, 'incomplete', JSON.stringify(parallel));
-  assert.deepEqual(parallel.accepted, ['D']); assert.ok(parallel.claimedElsewhere.A);
+  assert.deepEqual(parallel.accepted, ['D']); assert.ok(parallel.claimedElsewhere!.A);
   assert.equal(result.status, 'exhausted', JSON.stringify(result));
-  assert.equal(f.records.filter(pr => pr.branch.startsWith('outcome/A-')).length, 1);
+  assert.equal(f.records.filter(pr => pr.branch!.startsWith('outcome/A-')).length, 1);
   assert.equal(git(first.root, 'status', '--porcelain'), '');
 });
 
 test('a foreign claim blocks tasks with overlapping scopes until accepted', async t => {
   const f = fixture(t); const other = machine(f, 'other');
   const overlapping = structuredClone(f.queue);
-  overlapping.tasks.find(task => task.id === 'D').scopes = ['src/a/nested'];
+  overlapping.tasks.find(task => task.id === 'D')!.scopes = ['src/a/nested'];
   const ledger = new ClaimLedger(other.root, 'proposal');
   assert.equal(ledger.acquire(ledger.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'foreign', host: 'other' }, 'chore: claim A'), true);
   writeFileSync(join(f.root, f.project.queue), JSON.stringify(overlapping));
@@ -553,13 +582,13 @@ test('a foreign claim blocks tasks with overlapping scopes until accepted', asyn
 test('a lost claim race is not forced and the winner stays recorded', t => {
   const f = fixture(t); const one = machine(f, 'one'); const two = machine(f, 'two');
   const winner = new ClaimLedger(one.root, 'proposal'); const loser = new ClaimLedger(two.root, 'proposal');
-  const claim = (id, claimant) => ({ version: 1, id, scopes: [`src/${id}`], claimant, host: claimant });
+  const claim = (id: string, claimant: string) => ({ version: 1, id, scopes: [`src/${id}`], claimant, host: claimant });
   const stale = loser.pull(); const fresh = winner.pull();
   assert.equal(winner.acquire(fresh, claim('A', 'winner'), 'chore: claim A'), true);
   assert.equal(loser.acquire(stale, claim('A', 'loser'), 'chore: claim A'), false);
   assert.equal(claimAt(f, 'A').claimant, 'winner');
   const retried = loser.pull();
-  assert.equal(retried.claims.get('A').claimant, 'winner');
+  assert.equal(retried.claims.get('A')!.claimant, 'winner');
   assert.equal(loser.acquire(retried, claim('B', 'loser'), 'chore: claim B'), true);
   assert.equal(claimAt(f, 'A').claimant, 'winner'); assert.equal(claimAt(f, 'B').claimant, 'loser');
 });

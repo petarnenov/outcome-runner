@@ -2,14 +2,27 @@ import { closeSync, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, ope
   readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { hash, safePath } from './model.mjs';
+import type { BinaryLike } from 'node:crypto';
+import { hash, safePath } from './model.ts';
+import type { RunStore } from './run-store.ts';
+import type { ToolDefinition, ToolInput } from './harness-adapter.ts';
 
-const digest = value => createHash('sha256').update(value).digest('hex');
-const inside = (root, path) => {
+export interface FileScope { path: string; mode: string }
+
+interface CodexFilesOptions<Identity> {
+  root: string;
+  scopes: FileScope[];
+  store: RunStore;
+  identity: Identity;
+  revalidate: (identity: Identity) => Promise<boolean>;
+}
+
+const digest = (value: BinaryLike): string => createHash('sha256').update(value).digest('hex');
+const inside = (root: string, path: string): boolean => {
   const part = relative(root, path);
   return part !== '..' && !part.startsWith('../') && !part.startsWith('/');
 };
-export const brokerTool = {
+export const brokerTool: ToolDefinition = {
   type: 'function', name: 'backlog_tool',
   description: 'Read or write an authorized file; no command execution or human interaction.',
   inputSchema: { type: 'object', additionalProperties: false,
@@ -17,13 +30,19 @@ export const brokerTool = {
     required: ['operation', 'input'] },
 };
 
-export class CodexFiles {
-  constructor({ root, scopes, store, identity, revalidate }) {
+export class CodexFiles<Identity = unknown> {
+  root: string;
+  scopes: FileScope[];
+  store: RunStore;
+  identity: Identity;
+  revalidate: (identity: Identity) => Promise<boolean>;
+
+  constructor({ root, scopes, store, identity, revalidate }: CodexFilesOptions<Identity>) {
     this.root = realpathSync(root); this.scopes = scopes; this.store = store;
     this.identity = identity; this.revalidate = revalidate;
   }
 
-  path(path, write = false) {
+  path(path: string, write = false): string {
     safePath(path);
     if (!this.scopes.some(scope => (!write || scope.mode === 'write') &&
       (path === scope.path || path.startsWith(`${scope.path}/`)))) throw new Error('Path outside reserved scope');
@@ -45,12 +64,12 @@ export class CodexFiles {
     return target;
   }
 
-  async call(name, request) {
+  async call(name: string, request: ToolInput) {
     if (name !== 'backlog_tool' || !request || typeof request.input !== 'object') {
       throw new Error('Unknown broker request');
     }
     if (await this.revalidate(this.identity) !== true) throw new Error('Owner or authority changed');
-    const { operation, input } = request;
+    const { operation } = request; const input = request.input!;
     if (operation === 'read_file') {
       const target = this.path(input.path);
       return existsSync(target) ? { content: readFileSync(target, 'utf8'),

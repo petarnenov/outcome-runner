@@ -2,45 +2,96 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { isAtLeast } from './harness-version.mjs';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { Interface } from 'node:readline';
+import { isAtLeast } from './harness-version.ts';
+import type { AdapterEvent, AdapterOptions, HarnessAdapter, HarnessOptions, ProbeResult, SessionHandle,
+  SpawnProcess, ToolDefinition, ToolInput, WorkerProcess, WorkerReply } from './harness-adapter.ts';
+
+interface RpcRequest {
+  jsonrpc: string;
+  id?: unknown;
+  method: string;
+  params: { protocolVersion: string; name: string; arguments: ToolInput };
+}
+
+interface ClaudeMessage {
+  type: string;
+  subtype?: string;
+  session_id: string;
+  model: string;
+  claude_code_version: string;
+  permissionMode: string;
+  tools: string[];
+  mcp_servers: { name: string; status: string }[];
+  skills: unknown[];
+  slash_commands: unknown[];
+  plugins: { name: string; path: string }[];
+  message?: { model?: string };
+  is_error?: boolean;
+  modelUsage?: Record<string, { canonicalModel: string }>;
+  result?: string;
+}
 
 const minimumVersion = '2.1.321';
 const builtins = ['cc-plugin-agents-md', 'cc-plugin-telemetry', 'cc-plugin-privacy', 'cc-plugin-plugin-authoring'];
-export function claudeEnvironment(environment = process.env) {
+export function claudeEnvironment(environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return { ...Object.fromEntries(Object.entries(environment).filter(([name]) =>
     !name.startsWith('CLAUDE') || ['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'].includes(name))),
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', MCP_TOOL_TIMEOUT: '3600000' };
 }
-export class ClaudeAdapter {
+export class ClaudeAdapter implements HarnessAdapter {
+  cwd: string;
+  tools: ToolDefinition[];
+  handleTool: HarnessOptions['handleTool'];
+  onHandle: NonNullable<HarnessOptions['onHandle']>;
+  executable: string;
+  model: string;
+  effort: string;
+  spawnProcess: SpawnProcess;
+  environment: NodeJS.ProcessEnv;
+  events: AdapterEvent[];
+  certified: boolean;
+  token!: string;
+  server!: Server;
+  child!: WorkerProcess;
+  lines!: Interface;
+  threadId!: string;
+  expectedSession?: string;
+  stderrTail!: string;
+  result!: WorkerReply | null;
+  reject?: (reason: unknown) => void;
+
   constructor({ cwd, tools, handleTool, onHandle = async () => {}, executable = 'claude',
-    model = 'claude-opus-5-5', effort = 'medium', spawnProcess = spawn, environment = process.env }) {
+    model = 'claude-opus-5-5', effort = 'medium', spawnProcess = spawn, environment = process.env }: AdapterOptions) {
     if (model !== 'claude-opus-5-5' || effort !== 'medium') throw new Error('Unsupported Claude model or effort');
     if (!tools.length || new Set(tools.map(tool => tool.name)).size !== tools.length || tools.some(tool => !/^[a-zA-Z0-9_-]+$/u.test(tool.name))) throw new Error('Invalid private tool catalog');
     this.cwd = cwd; this.tools = tools; this.handleTool = handleTool; this.onHandle = onHandle;
     this.executable = executable; this.model = model; this.effort = effort; this.spawnProcess = spawnProcess;
     this.environment = claudeEnvironment(environment); this.events = []; this.certified = false;
   }
-  probe() {
+  probe(): ProbeResult {
     const observed = execFileSync(this.executable, ['--version'], {
       encoding: 'utf8', timeout: 10000, env: this.environment }).trim();
     const installed = /^(.+) \(Claude Code\)$/u.exec(observed)?.[1];
     return isAtLeast(installed, minimumVersion) ? { status: 'interface-ready', version: observed } :
       { status: 'unavailable', reason: 'uncertified-claude-version', version: observed };
   }
-  async serve() {
+  async serve(): Promise<string> {
     this.token = randomBytes(32).toString('hex');
     this.server = createServer((request, response) => this.receive(request, response));
-    await new Promise((resolve, reject) => {
-      this.server.once('error', reject); this.server.listen(0, '127.0.0.1', resolve);
+    await new Promise<void>((resolve, reject) => {
+      this.server.once('error', reject); this.server.listen(0, '127.0.0.1', () => resolve());
     });
-    return `http://127.0.0.1:${this.server.address().port}/${this.token}`;
+    return `http://127.0.0.1:${(this.server.address() as AddressInfo).port}/${this.token}`;
   }
-  async receive(request, response) {
+  async receive(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.url !== `/${this.token}` || request.headers.origin || request.method !== 'POST') {
       response.writeHead(403); response.end(); return;
     }
-    let message;
-    const send = payload => {
+    let message!: RpcRequest;
+    const send = (payload: object) => {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, ...payload }));
     };
@@ -66,14 +117,14 @@ export class ClaudeAdapter {
           send({ result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
         } catch (error) {
           send({ result: { isError: true, content: [{ type: 'text',
-            text: `Operation denied: ${error.message}. Continue within current authority.` }] } });
+            text: `Operation denied: ${(error as Error).message}. Continue within current authority.` }] } });
         }
       } else send({ error: { code: -32601, message: 'Only the current private tool catalog is available.' } });
     } catch {
       response.writeHead(400); response.end();
     }
   }
-  arguments(url, handle) {
+  arguments(url: string, handle: SessionHandle | null): string[] {
     const allowed = this.tools.map(tool => `mcp__outcome__${tool.name}`);
     return ['-p', '--model', this.model, '--effort', this.effort, '--tools', '',
       '--allowedTools', allowed.join(','), '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
@@ -84,7 +135,7 @@ export class ClaudeAdapter {
       '--output-format', 'stream-json', '--verbose', '--include-hook-events',
       ...(handle ? ['--resume', handle.threadId] : [])];
   }
-  async observeMessage(message) {
+  async observeMessage(message: ClaudeMessage): Promise<void> {
     if (message.type === 'system' && message.subtype === 'init') {
       const allowed = this.tools.map(tool => `mcp__outcome__${tool.name}`);
       if (message.model !== this.model || !isAtLeast(message.claude_code_version, minimumVersion) ||
@@ -115,7 +166,7 @@ export class ClaudeAdapter {
       this.result = { status: 'worker-returned', threadId: this.threadId, text: message.result ?? '', events: this.events };
     }
   }
-  async startAction(prompt, handle = null) {
+  async startAction(prompt: string, handle: SessionHandle | null = null): Promise<WorkerReply> {
     if (handle && !/^[a-f0-9-]{36}$/u.test(handle.threadId ?? '')) throw new Error('Invalid Claude resume identity');
     this.result = null; this.events = []; this.certified = false;
     this.expectedSession = handle?.threadId; this.stderrTail = '';
@@ -142,9 +193,9 @@ export class ClaudeAdapter {
       this.child.stdin.end(`${prompt}\nUse the matching mcp__outcome__ prefixed private tools.\n`);
     });
   }
-  resumeAction(prompt, handle) { return this.startAction(prompt, handle); }
-  async cancelAction() { this.reject?.(new Error('Claude action interrupted')); this.close(); }
-  close() {
+  resumeAction(prompt: string, handle: SessionHandle): Promise<WorkerReply> { return this.startAction(prompt, handle); }
+  async cancelAction(): Promise<void> { this.reject?.(new Error('Claude action interrupted')); this.close(); }
+  close(): void {
     this.certified = false; this.child?.kill('SIGTERM'); this.lines?.close();
     this.server?.closeAllConnections(); this.server?.close();
   }

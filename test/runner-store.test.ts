@@ -1,12 +1,14 @@
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { RunStore } from '../src/run-store.mjs';
+import { RunStore } from '../src/run-store.ts';
+import type { OperationResult, RunIdentity } from '../src/run-store.ts';
 
 const identity = { leaves: ['A'], invocation: 'one' };
-function directory(t) {
+function directory(t: TestContext) {
   const path = mkdtempSync(join(tmpdir(), 'codex-state-'));
   t.after(() => rmSync(path, { recursive: true, force: true })); return path;
 }
@@ -21,7 +23,7 @@ test('state survives restart, excludes concurrent owners and counts only accepte
   assert.deepEqual(store.state.accepted, {});
   store.outcome(op.id, { status: 'accepted', acceptanceId: 'receipt-A' });
   assert.equal(store.state.accepted['receipt-A'], op.id);
-  assert.throws(() => store.outcome('unknown', {}), /no durable intent/u);
+  assert.throws(() => store.outcome('unknown', {} as OperationResult), /no durable intent/u);
   store.cancel(); store.close();
   const resumed = new RunStore(path, identity); assert.equal(resumed.state.cancelled, true);
   assert.equal(resumed.state.accepted['receipt-A'], op.id); resumed.close();
@@ -34,7 +36,7 @@ test('state survives restart, excludes concurrent owners and counts only accepte
 test('state rejects unsafe locations, links and invalid frozen universes', t => {
   const root = directory(t); const repository = join(root, 'repo'); mkdirSync(repository);
   for (const leaves of [undefined, [], [''], ['A', 'A']]) {
-    assert.throws(() => new RunStore(join(root, 'bad'), { leaves }), /nonempty/u);
+    assert.throws(() => new RunStore(join(root, 'bad'), { leaves } as RunIdentity), /nonempty/u);
   }
   assert.throws(() => new RunStore(join(repository, 'state'), identity, { repositoryRoot: repository }), /outside/u);
   const alias = join(root, 'alias'); symlinkSync(repository, alias);

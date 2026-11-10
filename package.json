@@ -5,15 +5,22 @@
   "type": "module",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/petarnenov/outcome-runner.git" },
-  "bin": { "outcome-runner": "bin/outcome-runner.mjs" },
-  "files": ["bin", "src"],
+  "bin": { "outcome-runner": "dist/bin/outcome-runner.js" },
+  "files": ["dist"],
   "engines": { "node": ">=24" },
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\"",
-    "live:one": "LIVE_OUTCOME_ONE=1 node --test --test-name-pattern=\"one real outcome\" test/runner.test.mjs",
-    "live:three": "LIVE_OUTCOME_THREE=1 node --test --test-name-pattern=\"three real outcomes\" test/runner.test.mjs",
-    "live:restart": "LIVE_OUTCOME_RESTART=1 node --test --test-name-pattern=\"fresh process resumes real outcome\" test/runner.test.mjs",
-    "live:portable": "LIVE_OUTCOME_PORTABLE=1 node --test --test-name-pattern=\"real portable copy\" test/runner.test.mjs",
-    "live:claude-transport": "LIVE_OUTCOME_CLAUDE_TRANSPORT=1 node --test test/runner-claude.test.mjs"
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc",
+    "test": "node --test \"test/*.test.ts\"",
+    "live:one": "LIVE_OUTCOME_ONE=1 node --test --test-name-pattern=\"one real outcome\" test/runner.test.ts",
+    "live:three": "LIVE_OUTCOME_THREE=1 node --test --test-name-pattern=\"three real outcomes\" test/runner.test.ts",
+    "live:restart": "LIVE_OUTCOME_RESTART=1 node --test --test-name-pattern=\"fresh process resumes real outcome\" test/runner.test.ts",
+    "live:portable": "LIVE_OUTCOME_PORTABLE=1 node --test --test-name-pattern=\"real portable copy\" test/runner.test.ts",
+    "live:claude-transport": "LIVE_OUTCOME_CLAUDE_TRANSPORT=1 node --test test/runner-claude.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
   }
 }

@@ -4,10 +4,49 @@ import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync,
 import { join, relative, resolve } from 'node:path';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { hash } from './model.mjs';
+import { hash } from './model.ts';
+import type { Work } from './model.ts';
+
+export interface RunIdentity { leaves: string[]; [detail: string]: unknown }
+
+export interface OperationResult { status: string; acceptanceId?: string; [detail: string]: unknown }
+
+export interface Operation {
+  id: string;
+  action: unknown;
+  fingerprint: string;
+  status: string;
+  result?: OperationResult;
+}
+
+export interface BlockedEntry { reason: string; work: Work }
+
+export interface RunState {
+  version: number;
+  identityHash: string;
+  identity: RunIdentity;
+  frozen: string[];
+  operations: Record<string, Operation>;
+  accepted: Record<string, string>;
+  status: string;
+  cancelled: boolean;
+  sequence: number;
+  owner?: { host: string; pid: number; startedAt: string; token: string };
+  claimant?: string;
+  current?: Work | null;
+  completed?: Record<string, Work>;
+  blocked?: Record<string, BlockedEntry>;
+  baselineDone?: string[];
+}
 
 export class RunStore {
-  constructor(directory, identity, { repositoryRoot = null } = {}) {
+  directory: string;
+  file: string;
+  lock: DatabaseSync;
+  state!: RunState;
+
+  constructor(directory: string, identity: RunIdentity,
+    { repositoryRoot = null }: { repositoryRoot?: string | null } = {}) {
     this.directory = resolve(directory);
     if (!Array.isArray(identity?.leaves) || !identity.leaves.length ||
         identity.leaves.some(id => typeof id !== 'string' || !id) ||
@@ -59,7 +98,7 @@ export class RunStore {
     }
   }
 
-  update(fields) {
+  update(fields: Partial<RunState>): RunState {
     const next = { ...this.state, ...fields, sequence: this.state.sequence + 1 };
     const temporary = join(this.directory, `state-${randomUUID()}.tmp`);
     const fd = openSync(temporary, 'wx', 0o600);
@@ -72,7 +111,7 @@ export class RunStore {
     return next;
   }
 
-  intend(action, fingerprint) {
+  intend(action: unknown, fingerprint: string): Operation {
     const id = `run-${hash({ identity: this.state.identityHash, action, fingerprint })}`;
     if (!this.state.operations[id]) {
       this.update({ operations: { ...this.state.operations,
@@ -81,7 +120,7 @@ export class RunStore {
     return this.state.operations[id];
   }
 
-  outcome(id, result) {
+  outcome(id: string, result: OperationResult): RunState {
     const operation = this.state.operations[id];
     if (!operation) throw new Error('Outcome has no durable intent');
     const accepted = { ...this.state.accepted };
@@ -90,6 +129,6 @@ export class RunStore {
       [id]: { ...operation, status: result.status === 'unresolved' ? 'pending' : 'resolved', result } }, accepted });
   }
 
-  cancel() { this.update({ cancelled: true, status: 'cancelled' }); }
-  close() { this.lock.close(); }
+  cancel(): void { this.update({ cancelled: true, status: 'cancelled' }); }
+  close(): void { this.lock.close(); }
 }

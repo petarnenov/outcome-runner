@@ -1,38 +1,40 @@
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { main, printTaskHashes } from '../src/cli.mjs';
-import { git } from '../src/git.mjs';
-import { hash } from '../src/model.mjs';
+import { main, printTaskHashes } from '../src/cli.ts';
+import { git } from '../src/git.ts';
+import { hash } from '../src/model.ts';
+import type { RunConfig } from '../src/model.ts';
 
 const task = { id: 'A', title: 'One', change: 'one', priority: 1, criteria: ['Works.'], scopes: ['src/a'], dependencies: [] };
 
-function workspace(t) {
+function workspace(t: TestContext) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'outcome-cli-')));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   return base;
 }
-function repository(base, name) {
+function repository(base: string, name: string) {
   const root = join(base, name);
   mkdirSync(join(root, 'nested/deep'), { recursive: true });
   git(root, 'init', '-b', 'main');
   return root;
 }
-function invocationFile(base, content = { invocation: 'nightly' }) {
+function invocationFile(base: string, content: object = { invocation: 'nightly' }) {
   const path = join(base, 'invocation.json');
   writeFileSync(path, JSON.stringify(content));
   return path;
 }
-async function resolvedConfig(path, cwd, env = { XDG_STATE_HOME: '/state-home' }) {
-  let received;
+async function resolvedConfig(path: string, cwd: string, env: NodeJS.ProcessEnv = { XDG_STATE_HOME: '/state-home' }) {
+  let received!: RunConfig;
   const code = await main(path, async config => { received = config; return { status: 'exhausted' }; }, () => {}, { cwd, env });
   assert.equal(code, 0);
   return received;
 }
-async function assertRefused(path, cwd, env = {}) {
+async function assertRefused(path: string, cwd: string, env: NodeJS.ProcessEnv = {}) {
   const code = await main(path, async () => { throw new Error('Must not run'); }, () => {}, { cwd, env });
   assert.equal(code, 4);
 }
@@ -40,7 +42,7 @@ async function assertRefused(path, cwd, env = {}) {
 test('the installed link starts the command', t => {
   const base = workspace(t);
   const link = join(base, 'outcome-runner');
-  symlinkSync(resolve('bin/outcome-runner.mjs'), link);
+  symlinkSync(resolve('bin/outcome-runner.ts'), link);
   const queue = join(base, 'queue.json');
   writeFileSync(queue, JSON.stringify({ version: 1, tasks: [task] }));
   const result = spawnSync(link, ['hash', queue], { encoding: 'utf8' });
@@ -104,7 +106,7 @@ for (const invocation of ['../escape', 'a/b', '.hidden', '', undefined]) {
 }
 
 test('hash prints the mapping the runner compares with authority', t => {
-  const base = workspace(t); const queue = join(base, 'queue.json'); const lines = [];
+  const base = workspace(t); const queue = join(base, 'queue.json'); const lines: string[] = [];
   writeFileSync(queue, JSON.stringify({ version: 1, tasks: [task] }));
   assert.equal(printTaskHashes(queue, line => lines.push(line)), 0);
   assert.deepEqual(JSON.parse(lines[0]), { A: hash(task) });
@@ -112,7 +114,7 @@ test('hash prints the mapping the runner compares with authority', t => {
 
 for (const [name, content] of [['missing', null], ['invalid', '{"version":1,"tasks":[]}'], ['malformed', '{']]) {
   test(`hash prints no mapping for a ${name} queue`, t => {
-    const base = workspace(t); const queue = join(base, 'queue.json'); const lines = [];
+    const base = workspace(t); const queue = join(base, 'queue.json'); const lines: string[] = [];
     if (content !== null) writeFileSync(queue, content);
     assert.equal(printTaskHashes(queue, line => lines.push(line)), 4);
     assert.equal(JSON.parse(lines[0]).status, 'unavailable');

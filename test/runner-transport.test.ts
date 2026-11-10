@@ -5,41 +5,50 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CodexAdapter, codexEnvironment, codexRestrictions } from '../src/codex-adapter.mjs';
-import { RunStore } from '../src/run-store.mjs';
-import { CodexFiles, brokerTool } from '../src/codex-files.mjs';
+import { CodexAdapter, codexEnvironment, codexRestrictions } from '../src/codex-adapter.ts';
+import type { SessionHandle, ToolInput, WorkerProcess, WorkerReply } from '../src/harness-adapter.ts';
+import { RunStore } from '../src/run-store.ts';
+import { CodexFiles, brokerTool } from '../src/codex-files.ts';
+import type { FakeChild } from './support/types.ts';
+
+type CodexMessage = Parameters<CodexAdapter['receive']>[0];
+
+interface SentReply {
+  result: { success: boolean; contentItems: { text: string }[] };
+  error: { code: number };
+}
 
 function adapterFixture() {
-  const sent = [];
+  const sent: SentReply[] = [];
   const adapter = new CodexAdapter({ cwd: '/fixture', tools: [brokerTool],
     handleTool: async () => ({ status: 'completed' }) });
-  adapter.threadId = 'owned'; adapter.send = value => sent.push(value);
+  adapter.threadId = 'owned'; adapter.send = value => sent.push(value as SentReply);
   return { adapter, sent };
 }
 
 test('adapter routes only its private tools and denies every human-input request', async () => {
   const { adapter, sent } = adapterFixture();
   await adapter.receive({ id: 1, method: 'item/tool/call', params: {
-    threadId: 'owned', tool: 'backlog_tool', arguments: {} } });
+    threadId: 'owned', tool: 'backlog_tool', arguments: {} } } as CodexMessage);
   assert.equal(sent[0].result.success, true);
   for (const [index, method] of ['item/tool/requestUserInput',
     'item/commandExecution/requestApproval', 'item/fileChange/requestApproval',
     'item/permissions/requestApproval'].entries()) {
-    await adapter.receive({ id: index + 2, method, params: { threadId: 'owned' } });
+    await adapter.receive({ id: index + 2, method, params: { threadId: 'owned' } } as CodexMessage);
   }
   assert.ok(sent.slice(1).every(item => item.error.code === -32000));
   await adapter.receive({ id: 6, method: 'item/tool/call', params: {
-    threadId: 'foreign', tool: 'backlog_tool', arguments: {} } });
-  assert.equal(sent.at(-1).error.code, -32000);
+    threadId: 'foreign', tool: 'backlog_tool', arguments: {} } } as CodexMessage);
+  assert.equal(sent.at(-1)!.error.code, -32000);
 });
 
 test('raw text stays private and worker completion never claims task acceptance', async () => {
   const { adapter } = adapterFixture();
   await adapter.receive({ method: 'item/completed', params: { threadId: 'owned',
-    item: { type: 'agentMessage', text: 'Please approve this?' } } });
-  const promise = new Promise((resolve, reject) => { adapter.turn = { resolve, reject }; });
+    item: { type: 'agentMessage', text: 'Please approve this?' } } } as CodexMessage);
+  const promise = new Promise<WorkerReply & { acceptanceId?: string }>((resolve, reject) => { adapter.turn = { resolve, reject }; });
   await adapter.receive({ method: 'turn/completed', params: { threadId: 'owned',
-    turn: { status: 'completed' } } });
+    turn: { status: 'completed' } } } as CodexMessage);
   const result = await promise;
   assert.equal(result.status, 'worker-returned');
   assert.equal(result.acceptanceId, undefined);
@@ -65,15 +74,15 @@ test('installed Codex uses scoped broker across actual session resume', {
   t.after(() => store.close());
   const broker = new CodexFiles({ root: directory, scopes: [{ mode: 'write', path: 'output' }],
     store, identity: { worker: 'codex-smoke', generation: 1 }, revalidate: async () => true });
-  let handle;
-  const handles = [];
+  let handle!: SessionHandle;
+  const handles: SessionHandle[] = [];
   const create = () => new CodexAdapter({ cwd: directory, tools: [brokerTool],
     model: 'gpt-6.1-sol', effort: 'medium',
     onHandle: async value => { handle = value; handles.push(value); },
-    handleTool: (...args) => broker.call(...args) });
+    handleTool: (...args: [string, ToolInput]) => broker.call(...args) });
   const first = create(); t.after(() => first.close());
   assert.equal(first.probe().status, 'interface-ready');
-  const prompt = file => `Use backlog_tool exactly once with operation write_file and input ` +
+  const prompt = (file: string) => `Use backlog_tool exactly once with operation write_file and input ` +
     JSON.stringify({ path: `output/${file}.txt`, content: file, expectedHash: null }) +
     '. Do not use other tools or ask any person anything. Report completion after the broker succeeds.';
   const result = await first.startAction(prompt('first'));
@@ -92,17 +101,17 @@ test('installed Codex uses scoped broker across actual session resume', {
     brokerOperations: Object.keys(store.state.operations).length, resumed: true, humanPrompts: 0 }));
 });
 
-function transportFixture(overrides = {}) {
-  const calls = [];
-  const child = new EventEmitter();
+function transportFixture(overrides: Record<string, unknown> = {}) {
+  const calls: any[] = [];
+  const child = new EventEmitter() as FakeChild;
   child.pid = 123; child.stdout = new PassThrough(); child.stderr = new PassThrough();
-  const send = message => child.stdout.write(`${JSON.stringify(message)}\n`);
+  const send = (message: unknown) => child.stdout.write(`${JSON.stringify(message)}\n`);
   child.stdin = new Writable({ write(chunk, encoding, done) {
     const request = JSON.parse(chunk.toString()); calls.push(request);
     queueMicrotask(() => {
       if (request.id === undefined || !request.method) return;
       if (overrides.error === request.method) { send({ id: request.id, error: { code: -1 } }); return; }
-      const responses = { initialize: {}, 'config/read': { config: { mcp_servers: { inherited: {} } } },
+      const responses: Record<string, unknown> = { initialize: {}, 'config/read': { config: { mcp_servers: { inherited: {} } } },
         'thread/start': { thread: { id: 'controlled' }, model: 'transport-test' },
         'thread/resume': { thread: { id: 'controlled' }, model: 'transport-test' },
         'mcpServerStatus/list': { data: [{ runtimeStatus: 'disabled', tools: {} }] },
@@ -115,7 +124,7 @@ function transportFixture(overrides = {}) {
   } });
   child.kill = () => { child.stdout.end(); child.stderr.end(); child.emit('exit'); };
   const adapter = new CodexAdapter({ cwd: '/fixture', tools: [brokerTool], handleTool: async () => ({}),
-    spawnProcess: (file, args, options) => { calls.push({ file, args, options }); return child; },
+    spawnProcess: (file, args, options) => { calls.push({ file, args, options }); return child as unknown as WorkerProcess; },
     onHandle: async () => calls.push({ handleSaved: true }) });
   return { adapter, child, calls, send };
 }
@@ -154,10 +163,10 @@ test('transport failure rejects pending operations and private tool errors retur
   const { adapter, sent } = adapterFixture();
   adapter.handleTool = async () => { throw new Error('Expected file hash is stale'); };
   await adapter.receive({ id: 9, method: 'item/tool/call', params: { threadId: 'owned',
-    tool: 'backlog_tool', arguments: {} } });
+    tool: 'backlog_tool', arguments: {} } } as CodexMessage);
   assert.equal(sent[0].result.success, false);
   assert.match(sent[0].result.contentItems[0].text, /stale/u);
-  await adapter.receive({ id: 999, result: {} });
+  await adapter.receive({ id: 999, result: {} } as CodexMessage);
 });
 
 test('Codex requests frozen model and effort and rejects a different actual model', async () => {

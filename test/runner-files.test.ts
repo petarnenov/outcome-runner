@@ -1,12 +1,14 @@
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RunStore } from '../src/run-store.mjs';
-import { CodexFiles } from '../src/codex-files.mjs';
+import { RunStore } from '../src/run-store.ts';
+import { CodexFiles } from '../src/codex-files.ts';
+import type { BrokerInput } from '../src/harness-adapter.ts';
 
-function fixture(t) {
+function fixture(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), 'off-broker-'));
   const root = join(directory, 'work'); mkdirSync(root);
   const store = new RunStore(join(directory, 'state'), { leaves: ['A'], invocation: 'test' });
@@ -38,7 +40,7 @@ test('broker denies traversal, symlink escape, native tools and human-input call
       input: { path, content: 'denied', expectedHash: null } }));
   }
   for (const operation of ['shell', 'request_user_input', 'approve', 'spawn_agent']) {
-    await assert.rejects(() => f.broker.call('backlog_tool', { operation, input: {} }), /Unknown fixed operation/);
+    await assert.rejects(() => f.broker.call('backlog_tool', { operation, input: {} as BrokerInput }), /Unknown fixed operation/);
   }
   assert.equal(Object.keys(f.store.state.operations).length, 0);
 });
@@ -51,6 +53,6 @@ test('fixed files reject malformed requests and support missing-file inspection'
   await assert.rejects(f.broker.call('other', {}), /Unknown/u);
   for (const input of [{ path: 'src/a', content: 1, expectedHash: null },
     { path: 'src/a', content: 'one', expectedHash: 'invalid' }]) {
-    await assert.rejects(f.broker.call('backlog_tool', { operation: 'write_file', input }), /bounded/u);
+    await assert.rejects(f.broker.call('backlog_tool', { operation: 'write_file', input: input as BrokerInput }), /bounded/u);
   }
 });
