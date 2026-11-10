@@ -18,8 +18,9 @@ function compare(a: string, b: string): number {
 }
 
 function breakingFooter(body: string): boolean {
-  // Footers begin at a paragraph boundary. Their values may continue across lines.
-  const blocks = body.trim().split(/\r?\n\s*\r?\n/);
+  // Split on blank lines without stripping indentation from footer-looking examples.
+  // Empty boundary blocks are harmless; footer values may continue across lines.
+  const blocks = body.split(/\r?\n[\t ]*\r?\n/);
   const start = blocks.findIndex(block => /^(?:BREAKING CHANGE|[A-Za-z0-9][A-Za-z0-9_-]*)(?:: | #)/.test(block));
   return start >= 0 && blocks.slice(start).some(block =>
     /(?:^|\r?\n)(?:BREAKING CHANGE|BREAKING-CHANGE): \S/.test(block));
