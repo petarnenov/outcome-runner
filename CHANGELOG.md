@@ -1,3 +1,20 @@
+## 0.2.0 - 2026-11-10
+
+### Features
+
+- implement OR-10 (f89bce5)
+- implement OR-10 (de694ee)
+- implement OR-10 (3c4dd5c)
+- implement OR-10 (231d989)
+- implement OR-10 (2718061)
+- implement OR-10 (c585210)
+- implement OR-10 (6c68231)
+- implement OR-10 (e5b1688)
+- implement OR-10 (a85b818)
+- implement OR-10 (e4d4a11)
+- implement OR-10 (af380ce)
+- implement OR-10 (a07d56b)
+
 ## 0.1.0 - 2026-11-10
 
 ### Features
