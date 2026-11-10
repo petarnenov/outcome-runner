@@ -43,6 +43,9 @@ echo 'schema: spec-driven' > openspec/config.yaml
 
 **3. Describe the tasks in `planning/outcomes.json`**
 
+Write it by hand or generate it from Jira, text or a file; see
+[Creating the queue file](#creating-the-queue-file).
+
 ```json
 {
   "version": 1,
@@ -138,6 +141,83 @@ After an interruption, run the **same command with the same file** to resume. Do
 not delete the state under `~/.local/state/outcome-runner/`. The runner also
 creates a `work-queue-claims-<target>` branch. It is never merged; keep it while
 work is unfinished.
+
+## Creating the queue file
+
+`outcome-runner` has no command that writes `planning/outcomes.json`. Write it by
+hand or with a harness; the runner only validates and executes it. The source
+(Jira, text or a file) changes only the last line of the prompt.
+
+**1. Open a harness in the repository**
+
+```sh
+cd /path/to/project
+claude    # or codex
+```
+
+**2. Give it this prompt and fill in `SOURCE`**
+
+```text
+Create planning/outcomes.json from the source below. Read the repository first
+so scopes and criteria match the real code. Write only that file.
+
+Format: { "version": 1, "tasks": [ ... ] }
+Each task has:
+- id: unique, letters, digits, ".", "_", "-"
+- title: short and nonempty
+- change: unique lowercase kebab-case OpenSpec change name
+- priority: integer, smaller runs first
+- scopes: repository-relative directories this task may change; no "..",
+  no absolute paths, no wildcards; never planning/, evidence/results or
+  openspec/changes
+- dependencies: ids of tasks that must be accepted first; no cycles
+- criteria: nonempty list of concrete, verifiable requirements
+
+One task must fit one OpenSpec change and one Pull Request. Split larger work.
+Include tests in the criteria. Do not invent requirements missing from the
+source; list open questions in your reply instead.
+
+SOURCE: <see the table below>
+```
+
+Adjust the paths in `scopes` if your invocation uses different `queue`,
+`receipts` or `changes` locations.
+
+**3. Choose the source**
+
+| Source | What to write after `SOURCE:` |
+|---|---|
+| Jira | `Jira ticket PROJ-123 and its subtasks. Read them with the Atlassian tools.` |
+| Text | Paste the description directly |
+| File | `The file docs/spec.md` |
+| Several | List them, for example a ticket and a file |
+
+Jira needs a harness with Atlassian access, such as an Atlassian MCP server.
+Without it, paste the ticket text and use the Text source.
+
+**4. Review the file yourself**
+
+- `scopes`: do they cover everything the task must change? A task cannot write
+  outside them.
+- `criteria`: they are the contract the worker follows and the reviewer checks.
+  Vague criteria produce vague results.
+- Open questions: resolve any the harness reported before the run. The run asks
+  nothing.
+
+**5. Validate the file**
+
+```sh
+outcome-runner hash planning/outcomes.json
+```
+
+A printed ID-to-hash map means the format is valid. On `unavailable`, the reason
+is in the `diagnostics` file. Scope overlap with the queue, receipts or changes
+is only detected when a run starts.
+
+**6. Continue from Quick start step 4**
+
+Commit and push, then create the invocation file. A hash is not permission: put
+your actual instruction in `authority.instruction`.
 
 ## How it works
 
