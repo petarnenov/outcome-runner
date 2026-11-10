@@ -139,6 +139,25 @@ test('invalid, prose, other types and release messages leave all state intact', 
   assert.deepEqual(snapshot(cwd), before);
 });
 
+for (const marker of ['BREAKING CHANGE', 'BREAKING-CHANGE']) {
+  for (const indent of ['    ', '\t']) {
+    test('indented ' + marker + ' example is ignored: ' + JSON.stringify(indent), t => {
+      const { cwd } = fixture(t);
+      commit(cwd, 'docs: explain commit syntax\n\n' + indent + marker + ': example only');
+      const before = snapshot(cwd);
+      assert.equal(release(cwd), 'no release\n');
+      assert.equal(release(cwd, true), 'no release\n');
+      assert.deepEqual(snapshot(cwd), before);
+
+      const hash = commit(cwd, 'refactor: change API\n\n' + marker + ': migrate callers\n continued explanation');
+      const result = release(cwd);
+      assert.ok(result.startsWith('2.0.0\n'));
+      assert.ok(result.includes('### Breaking changes\n\n- change API (' + hash + ')'));
+      assert.ok(!result.includes('explain commit syntax'));
+    });
+  }
+}
+
 test('merged branches contribute; actual conventional merge messages do not', t => {
   const { cwd } = fixture(t);
   git(cwd, 'checkout', '-b', 'feature');
