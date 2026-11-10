@@ -9,6 +9,7 @@ import type { Project, PullRequest } from '../src/model.ts';
 for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'missing',
   'read-failure', 'mixed', 'shared-exhaustion', 'unknown-foreign', 'fallback-branch'] as const) {
   test(`GitHubHost stale head: ${scenario}`, async t => {
+    try {
     const base = mkdtempSync(join(tmpdir(), 'stale-host-'));
     t.after(() => rmSync(base, { recursive: true, force: true }));
     const root = join(base, 'root'); const origin = join(base, 'origin.git');
@@ -59,5 +60,6 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     if (['foreign', 'missing', 'read-failure', 'unknown-foreign'].includes(scenario)) assert.equal(views, 1);
     if (scenario === 'moves') assert.equal(views, 2);
     if (scenario === 'mixed') assert.equal(views, 4);
+    } catch (error) { console.error('GitHub stale-head regression', scenario, error); throw error; }
   });
 }

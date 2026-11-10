@@ -891,7 +891,9 @@ test('coverage restart preserves frozen state and ownership and accepts equivale
 for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'missing-ref', 'read-failure',
   'target-race', 'local-mutation', 'target-during-wait', 'closed', 'missing-pr'] as const) {
   test(`runner stale head: ${scenario}`, async t => {
+    try {
     const f = fixture(t);
+    const previousHead = git(f.root, 'rev-parse', 'HEAD');
     const find = f.host.find; const merge = f.host.merge;
     let published = false; let views = 0; let merges = 0; let delays = 0;
     let oldHead = ''; let waitSnapshot = ''; let reset = false;
@@ -912,7 +914,7 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
       views += 1;
       if (scenario === 'missing-pr' && views === 2) return null;
       const convergeAt = scenario === 'final' ? 100 : 4;
-      const headRefOid = scenario === 'exhausts' || views < convergeAt ? 'previous-head' : actual;
+      const headRefOid = scenario === 'exhausts' || views < convergeAt ? (scenario === 'target-race' ? oldHead : previousHead) : actual;
       pr.headRefOid = actual;
       return { ...pr, headRefOid, state: scenario === 'closed' && views === 2 ? 'CLOSED' : pr.state };
     };
@@ -962,5 +964,6 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     if (!success && !['closed', 'missing-pr', 'read-failure'].includes(scenario)) {
       assert.equal(blockedReason(result), 'Checked head or target changed');
     }
+    } catch (error) { console.error('Runner stale-head regression', scenario, error); throw error; }
   });
 }
