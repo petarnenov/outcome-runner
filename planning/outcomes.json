@@ -259,6 +259,27 @@
         "Tests use scripted hosts and Git fixtures and cover: a pull request reporting the previous head for several views and then the recorded head is merged without blocking; the full race of a target advance during the merge stage followed by a stale head; origin's branch moved by someone else blocks without merging; a head still stale after the view limit blocks without merging; and the same cases inside GitHubHost.merge. No test waits in real time.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-14",
+      "title": "Update documentation and archive the OpenSpec change before merge",
+      "change": "document-and-archive-before-merge",
+      "priority": 9,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-13"],
+      "criteria": [
+        "The stage order of a task becomes: implementation review accepted, documentation, documentation review, project checks, archive, receipt, publish, pull request, merge. Every new stage is saved in the run state and resumes after a restart without repeating a completed step; in particular the archive never runs twice.",
+        "Documentation stage: a worker session with the selected harness updates every documentation file inside the task scopes (README files, Markdown files and directories such as docs) so that it matches the implemented behaviour and the task criteria. It may write only documentation files inside the task scopes. Documentation outside the scopes that needs changes is reported as findings and listed in the pull request body under 'Documentation outside scope'.",
+        "Documentation review stage: an independent review session checks the documentation changes against the implementation, the criteria and the scope, and reports accepted only with zero findings. Like the planning and implementation stages it allows at most 4 rounds; when unresolved the task is blocked with 'Documentation review remains unresolved'. After acceptance the project checks run again and must pass.",
+        "Archive stage: the runner archives the OpenSpec change with the new optional project command archive, run as an argument array in the worktree with the {change} placeholder; the default is openspec archive {change} --yes. The archive moves the change directory to <changes>/archive/<YYYY-MM-DD>-<change> and applies the spec deltas to openspec/specs. A failing archive command blocks the task with its bounded failure output.",
+        "After the archive, the specification binding follows the files: each bound path is re-keyed to its archived path, and the runner verifies that every bound file exists there with the same hash; otherwise the task is blocked with 'Archived specification differs from binding'. Later integrity checks use the archived paths.",
+        "The result manifest accepts paths inside the task scopes, the archived change directory and the openspec/specs files written by the archive; any other path still blocks the task. The receipt records the archived specification paths, and receipt validation accepts them. Existing receipts that reference unarchived paths stay valid.",
+        "When the target advances, a change of the target to the same openspec/specs files or to the archived change directory blocks the task like a change inside its scope.",
+        "The pull request body lists the updated documentation files and the archived change directory.",
+        "Tests use scripted adapters, Git fixtures and a scripted archive command and cover: documentation written only inside the scopes; documentation outside the scopes reported in the pull request body; a documentation review that needs a second round; an unresolved documentation review; checks re-run after documentation; the archive relocation and spec update; re-keyed binding and a hash mismatch after archive; manifest acceptance of archived and spec paths and rejection of other paths; receipt validation with archived paths and with an existing unarchived receipt; a restart between archive and receipt not archiving again; and a target change to the same spec file blocking the task.",
+        "README documents the new stages, the archive command and its default, and where archived changes and updated specs end up.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
