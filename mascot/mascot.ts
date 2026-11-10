@@ -23,6 +23,8 @@ interface Pose { eyes?: [string, string]; x?: number; lift?: boolean; extra?: st
 
 interface MoodArt { colour: number; eyes: [string, string]; mouth: string; delay: number; poses: Pose[] }
 
+interface PlayState { stream: MascotStream | undefined; hideAttempted: boolean; frameAttempted: boolean; finished: boolean }
+
 const HEIGHT = 7;
 const HIDE = '\x1b[?25l';
 const SHOW = '\x1b[?25h';
@@ -70,58 +72,73 @@ function paint(line: string, colour: number | undefined): string {
   return colour === undefined || line === '' ? line : `\x1b[${colour}m${line}${RESET}`;
 }
 
+function joinLines(frame: string[], prefix: string): string {
+  return frame.map(line => `${prefix}${line}\n`).join('');
+}
+
+function defaultIsTTY(stream: MascotStream): boolean {
+  return stream.isTTY === true;
+}
+
+async function defaultWait(ms: number, signal?: AbortSignal): Promise<void> {
+  await delay(ms, undefined, { signal });
+}
+
 function attempt(stream: MascotStream, chunk: string): void {
   try { stream.write(chunk); } catch { /* restoring the terminal is best effort */ }
 }
 
-const lines = (frame: string[], prefix = ''): string => frame.map(line => `${prefix}${line}\n`).join('');
+async function run(mood: MascotMood, caption: string, options: MascotOptions, state: PlayState): Promise<void> {
+  const stream: MascotStream = options.stream ?? process.stderr;
+  state.stream = stream;
+  const isTTY = options.isTTY ?? defaultIsTTY;
+  const env: Record<string, string | undefined> = options.env ?? process.env;
+  const wait = options.wait ?? defaultWait;
+  const signal = options.signal;
+  if (!Object.hasOwn(MOODS, mood) || !isTTY(stream) || env.OUTCOME_RUNNER_MASCOT === '0' || signal?.aborted === true) {
+    state.finished = true;
+    return;
+  }
+  const art = MOODS[mood];
+  const colour = env.NO_COLOR === undefined ? art.colour : undefined;
+  const frames = art.poses.map(pose => drawFrame(art, pose).map(line => paint(line, colour)));
+  const captionLine = `${String(caption).replace(/[\r\n]/gu, ' ')}\n`;
+  if (env.TERM === 'dumb') {
+    stream.write(joinLines(frames[frames.length - 1], '') + captionLine);
+    state.finished = true;
+    return;
+  }
+  state.hideAttempted = true;
+  stream.write(HIDE);
+  state.frameAttempted = true;
+  stream.write(joinLines(frames[0], ''));
+  for (const frame of frames.slice(1)) {
+    await wait(art.delay, signal);
+    if (signal?.aborted === true) return;
+    stream.write(`\x1b[${HEIGHT}A${joinLines(frame, '\r\x1b[2K')}`);
+  }
+  stream.write(captionLine);
+  state.finished = true;
+}
+
+function restore(state: PlayState): void {
+  const stream = state.stream;
+  if (stream === undefined) return;
+  if (!state.finished && state.frameAttempted) attempt(stream, '\n');
+  if (state.hideAttempted) attempt(stream, SHOW);
+}
 
 /**
  * Plays a short mood animation in place, then leaves the last frame and the caption on screen.
  * The returned promise resolves when the animation ends and never rejects.
  */
 export async function playMascot(mood: MascotMood, caption: string, options: MascotOptions = {}): Promise<void> {
-  let stream: MascotStream | undefined;
-  let hideAttempted = false;
-  let frameAttempted = false;
-  let finished = false;
+  const state: PlayState = { stream: undefined, hideAttempted: false, frameAttempted: false, finished: false };
   try {
-    stream = options.stream ?? process.stderr;
-    const isTTY = options.isTTY ?? ((target: MascotStream) => target.isTTY === true);
-    const env = options.env ?? process.env;
-    const wait = options.wait ?? ((ms: number, signal?: AbortSignal) => delay(ms, undefined, { signal }));
-    const signal = options.signal;
-    if (!Object.hasOwn(MOODS, mood) || !isTTY(stream) || env.OUTCOME_RUNNER_MASCOT === '0' || signal?.aborted === true) {
-      finished = true;
-      return;
-    }
-    const art = MOODS[mood];
-    const colour = env.NO_COLOR === undefined ? art.colour : undefined;
-    const frames = art.poses.map(pose => drawFrame(art, pose).map(line => paint(line, colour)));
-    const captionLine = `${String(caption).replace(/[\r\n]/gu, ' ')}\n`;
-    const last = frames[frames.length - 1];
-    if (env.TERM === 'dumb') {
-      stream.write(lines(last) + captionLine);
-      finished = true;
-      return;
-    }
-    hideAttempted = true;
-    stream.write(HIDE);
-    frameAttempted = true;
-    stream.write(lines(frames[0]));
-    for (const frame of frames.slice(1)) {
-      await wait(art.delay, signal);
-      if (signal?.aborted === true) return;
-      stream.write(`\x1b[${HEIGHT}A${lines(frame, '\r\x1b[2K')}`);
-    }
-    stream.write(captionLine);
-    finished = true;
+    await run(mood, caption, options, state);
   } catch {
     // A failing write, a rejecting timer or an abort stops the animation.
   } finally {
-    if (stream !== undefined) {
-      if (!finished && frameAttempted) attempt(stream, '\n');
-      if (hideAttempted) attempt(stream, SHOW);
-    }
+    restore(state);
   }
 }
