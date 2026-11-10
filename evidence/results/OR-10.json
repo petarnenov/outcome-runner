@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "id": "OR-10",
+  "taskHash": "c0267afa6306650cac57ddb3e2267a3f79536c09412da749cd470ff0ef14cc25",
+  "authority": "owner-2026-11-10-pr12-parallel",
+  "specification": {
+    "openspec/changes/animated-outcome-mascot/design.md": "9dd4fb9ce931a4e29ad0e2b0c040c119349578ba0b44be5eb9a90da24489d025",
+    "openspec/changes/animated-outcome-mascot/proposal.md": "fe1687f9812453cd41ef7e47b17ec08870846b1b46dda29551733ee2cfab6a4f",
+    "openspec/changes/animated-outcome-mascot/specs/terminal-mascot/spec.md": "7cc60fa64101712f1c2b0d0c196347f356c5e8f7ffde15fb60244e51dfcf5607"
+  },
+  "review": {
+    "reviewer": "claude:a767418a-6e9e-49df-955c-7b1efb4ec174",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "mascot/README.md",
+      "hash": "441fd0a4a9b29b0afac7cee8d64b938584792df36f9247b035a02c03bd1a17d0"
+    },
+    {
+      "path": "mascot/mascot.test.ts",
+      "hash": "6a1520cd8ed66ade0128ed86a3d569c1b8ce423cf31f4e254e1c7c1365a5be38"
+    },
+    {
+      "path": "mascot/mascot.ts",
+      "hash": "ff8ed43d59463f3e2e8b8bd6a8a691d5dfb816d22b8c1e705f50c0da361750bb"
+    },
+    {
+      "path": "openspec/changes/animated-outcome-mascot/design.md",
+      "hash": "9dd4fb9ce931a4e29ad0e2b0c040c119349578ba0b44be5eb9a90da24489d025"
+    },
+    {
+      "path": "openspec/changes/animated-outcome-mascot/proposal.md",
+      "hash": "fe1687f9812453cd41ef7e47b17ec08870846b1b46dda29551733ee2cfab6a4f"
+    },
+    {
+      "path": "openspec/changes/animated-outcome-mascot/specs/terminal-mascot/spec.md",
+      "hash": "7cc60fa64101712f1c2b0d0c196347f356c5e8f7ffde15fb60244e51dfcf5607"
+    },
+    {
+      "path": "openspec/changes/animated-outcome-mascot/tasks.md",
+      "hash": "094509aeb78d3d8a5de33e11273808e828e9c0288e46eced172d88c3263a1a65"
+    },
+    {
+      "path": "package.json",
+      "hash": "2ad975f7309e7253ad6bd921c38c1aad6ea3f960a28988771175488326871249"
+    },
+    {
+      "path": "tsconfig.json",
+      "hash": "135eb0909392d212bc62abfc23edd114b2dbb8c52dc0e8949b0ddd39fa48b6c1"
+    }
+  ],
+  "head": "f89bce5d048316924a82b93cac27dee74566347e",
+  "base": "81f52ef1d6a6ad7f71e6d00be1e003a777a21c7b"
+}
