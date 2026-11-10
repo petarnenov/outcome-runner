@@ -289,11 +289,43 @@ test('GitHub host uses explicit target and never bypasses protected merges', asy
   assert.equal(host.find('branch'), null);
   rows = [{ number: 1 }]; assert.equal(host.create({ id: 'A', branch: 'branch' } as Work, '/body')!.number, 1);
   rows.push({ number: 2 }); assert.throws(() => host.find('branch'), /Multiple/u);
-  assert.throws(() => host.merge({ number: 1 } as PullRequest, 'head'), /protection/u);
+  await assert.rejects(host.merge({ number: 1 } as PullRequest, 'head'), /protection/u);
   view = { state: 'OPEN', headRefOid: 'head', baseRefName: 'staging', mergeStateStatus: 'CLEAN', isDraft: false };
-  host.merge({ number: 1 } as PullRequest, 'head');
+  await host.merge({ number: 1 } as PullRequest, 'head');
   assert.ok(calls.some(args => args[1] === 'merge' && args.includes('--match-head-commit')));
   assert.ok(calls.every(args => !args.includes('--admin')));
+});
+
+function mergeHost(GitHubHost: typeof import('../src/git.ts').GitHubHost, statuses: string[]) {
+  const host = new GitHubHost('.', { target: 'staging', repository: 'fixture' } as Project, 0);
+  const calls = { views: 0, merges: 0 };
+  host.gh = (...args) => {
+    if (args[1] === 'merge') { calls.merges += 1; return ''; }
+    const mergeStateStatus = statuses[Math.min(calls.views, statuses.length - 1)]; calls.views += 1;
+    return JSON.stringify({ state: 'OPEN', headRefOid: 'head', baseRefName: 'staging', mergeStateStatus, isDraft: false });
+  };
+  return { host, calls };
+}
+
+test('merge waits while GitHub is still computing mergeability', async () => {
+  const { GitHubHost } = await import('../src/git.ts');
+  const { host, calls } = mergeHost(GitHubHost, ['UNKNOWN', 'UNKNOWN', 'CLEAN']);
+  await host.merge({ number: 1 } as PullRequest, 'head');
+  assert.deepEqual(calls, { views: 3, merges: 1 });
+});
+
+test('merge gives up when mergeability never settles', async () => {
+  const { GitHubHost } = await import('../src/git.ts');
+  const { host, calls } = mergeHost(GitHubHost, ['UNKNOWN']);
+  await assert.rejects(host.merge({ number: 1 } as PullRequest, 'head'), /UNKNOWN/u);
+  assert.deepEqual(calls, { views: 20, merges: 0 });
+});
+
+test('merge does not wait out a settled blocked status', async () => {
+  const { GitHubHost } = await import('../src/git.ts');
+  const { host, calls } = mergeHost(GitHubHost, ['BLOCKED', 'CLEAN']);
+  await assert.rejects(host.merge({ number: 1 } as PullRequest, 'head'), /BLOCKED/u);
+  assert.deepEqual(calls, { views: 1, merges: 0 });
 });
 
 test('previously accepted dependency is usable outside selected tasks and counts zero', async t => {

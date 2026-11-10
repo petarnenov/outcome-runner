@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import type { ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { digest, safePath } from './model.ts';
 import { readPage } from './text-page.ts';
 import type { TextPage } from './text-page.ts';
@@ -75,13 +76,18 @@ export function receiptAt(root: string, revision: string, path: string, taskHash
   }
   return receipt;
 }
+interface MergeView { headRefOid: string; baseRefName: string; mergeStateStatus: string; state: string; isDraft: boolean }
+
+const MERGE_STATE_VIEWS = 20;
+
 export class GitHubHost {
   root: string;
   project: Project;
+  mergeStatePollMs: number;
 
-  constructor(root: string, project: Project) {
+  constructor(root: string, project: Project, mergeStatePollMs = 3000) {
     if (!project.repository) throw new Error('Explicit PR repository is required');
-    this.root = root; this.project = project;
+    this.root = root; this.project = project; this.mergeStatePollMs = mergeStatePollMs;
   }
   gh(...args: string[]): string { return command(this.root, 'gh', [...args, '--repo', this.project.repository!]); }
   find(branch: string): PullRequest | null {
@@ -95,11 +101,25 @@ export class GitHubHost {
       '--title', `feat(${this.project.commitScope ?? 'work-queue'}): complete ${work.id}${this.project.commitSuffix ?? ''}`, '--body-file', body);
     return this.find(work.branch);
   }
-  merge(pr: PullRequest, head: string): void {
-    const row = JSON.parse(this.gh('pr', 'view', String(pr.number), '--json',
-      'headRefOid,baseRefName,mergeStateStatus,state,isDraft'));
+  async merge(pr: PullRequest, head: string): Promise<void> {
+    const row = await this.settledMergeView(pr);
     if (row.state !== 'OPEN' || row.headRefOid !== head || row.baseRefName !== this.project.target ||
-        row.mergeStateStatus !== 'CLEAN' || row.isDraft) throw new Error('PR protection or identity blocks merge');
+        row.mergeStateStatus !== 'CLEAN' || row.isDraft) {
+      throw new Error(`PR protection or identity blocks merge (${row.mergeStateStatus})`);
+    }
     this.gh('pr', 'merge', String(pr.number), '--merge', '--match-head-commit', head);
+  }
+  mergeView(pr: PullRequest): MergeView {
+    return JSON.parse(this.gh('pr', 'view', String(pr.number), '--json',
+      'headRefOid,baseRefName,mergeStateStatus,state,isDraft'));
+  }
+  // GitHub computes mergeability in the background after a PR is created.
+  async settledMergeView(pr: PullRequest): Promise<MergeView> {
+    let row = this.mergeView(pr);
+    for (let view = 1; row.mergeStateStatus === 'UNKNOWN' && view < MERGE_STATE_VIEWS; view += 1) {
+      await delay(this.mergeStatePollMs);
+      row = this.mergeView(pr);
+    }
+    return row;
   }
 }
