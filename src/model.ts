@@ -188,7 +188,7 @@ export function validateConfig<T extends RunConfig>(config: T): T {
     throw new Error('Invalid project commit metadata');
   }
   [project.queue, project.changes, project.receipts].forEach(safePath);
-  if (!Array.isArray(project.checks) || !project.checks.length || !project.planningCheck) {
+  if (!Array.isArray(project.checks) || !project.planningCheck) {
     throw new Error('Planning and result checks are mandatory');
   }
   for (const check of [...project.checks, project.planningCheck, ...(project.setup ?? [])]) {

@@ -234,6 +234,11 @@ test('copied distribution accepts a differently configured independent project',
   const f = fixture(t, { second: true }); const distribution = join(f.base, 'portable');
   cpSync('src', distribution, { recursive: true });
   const { runQueue: portable } = await import(pathToFileURL(join(distribution, 'runner.ts')).href);
+  for (const coverage of [0, 101, 85.5, '90', null]) {
+    await assert.rejects(portable({ ...f.config, coverage }), /Invalid coverage/u);
+  }
+  await assert.rejects(portable({ ...f.config, project: { ...f.project,
+    checks: [{ command: 'node', args: ['--test'] }] } }), /A coverage gate check is required/u);
   const result = await portable({ ...f.config, leaves: ['A'] }, { host: f.host, createAdapter: scripted });
   assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.equal(f.records[0].state, 'MERGED');
 });
@@ -796,6 +801,7 @@ test('coverage startup failures are private, exit 4 and allocate nothing', async
       ({ args: [`--coverage=${value}`], message: /Invalid coverage/u })),
     ...[['--coverage='], ['--coverage=90', '--coverage=91']].map(args => ({ args, message: /coverage/u })),
     ...[
+      { checks: [] },
       { checks: [{ command: 'node', args: ['--test'] }] },
       { checks: [{ command: 'node', args: ['--test'] }], planningCheck: { command: 'node', args: ['{coverage}'] } },
       { checks: [{ command: 'node', args: ['--test'] }], setup: [{ command: 'node', args: ['{coverage}'] }] },
