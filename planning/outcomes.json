@@ -227,6 +227,21 @@
         "README documents when each mood appears, links mascot/README.md for the previews, and explains how to turn the mascot off.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-12",
+      "title": "Install test prerequisites in the release workflow",
+      "change": "release-workflow-test-prerequisites",
+      "priority": 12,
+      "scopes": [".github", "docs"],
+      "dependencies": ["OR-9"],
+      "criteria": [
+        "The test suite runs openspec validate through the runner's planning check, so npm test fails in GitHub Actions when the OpenSpec CLI is missing; the first Release run on main failed this way with 27 failing tests.",
+        "Before npm test, .github/workflows/release.yml installs the OpenSpec CLI with npm install -g @fission-ai/openspec@1.17.0 and prints openspec --version in a separate step, so a missing or broken CLI fails before the tests.",
+        "No other step of the workflow changes: triggers, concurrency, permissions, checkout, Node 24, npm ci, typecheck, test, release script, atomic push and GitHub Release stay as they are.",
+        "docs/releasing.md lists the OpenSpec CLI and its pinned version as a prerequisite of the workflow's test step and explains that the version is updated in the workflow file.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
