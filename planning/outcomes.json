@@ -187,6 +187,46 @@
         "docs/releasing.md documents the bump rules, the commit message format with examples, the workflow, the dry run and what to do when a release push is rejected.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-10",
+      "title": "Animated mascot module",
+      "change": "animated-outcome-mascot",
+      "priority": 10,
+      "scopes": ["mascot", "package.json", "tsconfig.json"],
+      "dependencies": ["OR-9"],
+      "criteria": [
+        "Add mascot/mascot.ts, TypeScript with erasable syntax only and Node built-ins only, with an original small mascot drawn with Unicode block characters and ANSI colours, at most 7 lines high and 20 columns wide. It is inspired by the style of a compact terminal logo but does not reproduce the Claude Code logo or any other existing logo or character.",
+        "The module offers exactly these moods, each with its own eyes, mouth and colour: happy (green), angry (red), celebrating (yellow, with sparkles), content (cyan), sleepy (blue), sad (blue), startled (yellow) and dizzy (magenta).",
+        "It exports one function that plays a given mood with a given caption line: an animation of 3 to 6 frames lasting at most 1.5 seconds in total, redrawn in place, after which the last frame stays on screen followed by the caption. The returned promise resolves when the animation ends and never rejects.",
+        "It writes to stderr by default and writes nothing when the stream is not a TTY or the environment variable OUTCOME_RUNNER_MASCOT is 0. With NO_COLOR set it keeps the same shapes without colours. With TERM=dumb it prints only the last frame and the caption, without cursor movement.",
+        "The cursor is hidden while an animation plays and always shown again afterwards, also when the animation is stopped through an AbortSignal option or a write fails.",
+        "The output stream, TTY detection, environment, frame timer and abort signal are injectable.",
+        "mascot/mascot.test.ts uses a fake timer and an in-memory stream, never sleeps, and covers: every mood with its frame count, height and width limits and the 1.5-second limit; the caption after the last frame; no output for a non-TTY stream and for OUTCOME_RUNNER_MASCOT=0; no colour codes with NO_COLOR; only the last frame with TERM=dumb; the cursor restored after an abort and after a failing write; and a promise that never rejects.",
+        "package.json: the test script also runs mascot/*.test.ts and keeps the 85% line, branch and function coverage thresholds. tsconfig.json includes mascot so npm run typecheck checks it.",
+        "mascot/README.md shows the last frame of every mood as a plain-text preview and documents the exported function and its options.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-11",
+      "title": "Show the mascot when tasks and runs end",
+      "change": "show-outcome-mascot",
+      "priority": 11,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-5", "OR-10"],
+      "criteria": [
+        "The runner plays the mascot from mascot/mascot.ts when a task or a run ends: happy when a task is accepted and merged; angry when a task is blocked; celebrating when a run ends exhausted; content when a run ends limit-reached; sleepy when a run ends incomplete without blockers, only waiting for claimed or dependent work; sad when a run ends incomplete with blockers; startled when a run is cancelled by SIGINT or SIGTERM; dizzy when the runner exits with code 4.",
+        "Every event status the runner reports and every final run status maps to exactly one mood; a test fails when a status the runner can produce has no mood.",
+        "Captions: for a task, the task ID and what happened (for example 'OR-1 merged' or 'OR-1 blocked: <reason, at most 60 characters>'); for a run, its status and the accepted and remaining counts.",
+        "The mascot is written to stderr only; the JSON lines on stdout are byte-for-byte unchanged.",
+        "The flag --no-mascot turns the mascot off and is accepted together with the other CLI flags; OUTCOME_RUNNER_MASCOT=0 also turns it off.",
+        "A SIGINT or SIGTERM during an animation stops it through its abort signal, so the cursor is shown again before the runner finishes cancelling.",
+        "A mascot failure never changes the runner result, its exit code or its state.",
+        "Tests use an injected mascot player and cover: the mood and caption for every task event and run status, including exit code 4 and a blocked reason longer than 60 characters; --no-mascot and OUTCOME_RUNNER_MASCOT=0; stdout identical with and without the mascot; abort on SIGINT during an animation; and a failing player leaving the result and exit code unchanged.",
+        "README documents when each mood appears, links mascot/README.md for the previews, and explains how to turn the mascot off.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }

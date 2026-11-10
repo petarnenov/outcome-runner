@@ -2,6 +2,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { Interface } from 'node:readline';
 import { isAtLeast } from './harness-version.ts';
+import { codexCatalog } from './harness-catalog.ts';
+import type { Catalog } from './harness-catalog.ts';
 import type { AdapterEvent, AdapterOptions, HarnessAdapter, ProbeResult, SessionHandle, SpawnProcess,
   ToolDefinition, ToolInput, WorkerProcess, WorkerReply, HarnessOptions } from './harness-adapter.ts';
 
@@ -73,6 +75,7 @@ export class CodexAdapter implements HarnessAdapter {
   pending: Map<number, PendingRpc>;
   sequence: number;
   events: AdapterEvent[];
+  connected: boolean;
   child!: WorkerProcess;
   lines!: Interface;
   threadId!: string;
@@ -86,7 +89,7 @@ export class CodexAdapter implements HarnessAdapter {
     this.cwd = cwd; this.tools = tools; this.handleTool = handleTool; this.onHandle = onHandle;
     this.executable = executable; this.mcpServers = mcpServers; this.spawnProcess = spawnProcess;
     this.environment = codexEnvironment(environment);
-    this.pending = new Map(); this.sequence = 0; this.events = [];
+    this.pending = new Map(); this.sequence = 0; this.events = []; this.connected = false;
   }
 
   probe(): ProbeResult {
@@ -109,6 +112,12 @@ export class CodexAdapter implements HarnessAdapter {
     }) as Promise<Result>;
   }
 
+  /** Lists the models and efforts this Codex offers over the already connected app-server session. */
+  async models(): Promise<Catalog> {
+    if (!this.connected) throw new Error('Codex adapter is not connected');
+    return codexCatalog(<Result>(method: string, params: object) => this.rpc<Result>(method, params));
+  }
+
   async connect(): Promise<void> {
     const args = ['app-server', '--stdio', '--strict-config'];
     if (this.model) args.push('-c', `model=${JSON.stringify(this.model)}`);
@@ -122,6 +131,7 @@ export class CodexAdapter implements HarnessAdapter {
     }
     this.child = this.spawnProcess(this.executable, args, {
       cwd: this.cwd, env: this.environment, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.connected = true;
     this.child.stderr.on('data', () => {});
     this.lines = createInterface({ input: this.child.stdout });
     this.lines.on('line', line => {
@@ -129,7 +139,10 @@ export class CodexAdapter implements HarnessAdapter {
       catch { this.fail(new Error('Malformed Codex transport')); }
     });
     this.child.on('error', error => this.fail(error));
-    this.child.on('exit', () => this.fail(Object.assign(new Error('Codex transport exited'), { code: 'ECONNRESET' })));
+    this.child.on('exit', () => {
+      this.connected = false;
+      this.fail(Object.assign(new Error('Codex transport exited'), { code: 'ECONNRESET' }));
+    });
     await this.rpc('initialize', { clientInfo: { name: 'backlog_off', version: '2' },
       capabilities: { experimentalApi: true } });
     this.send({ method: 'initialized', params: {} });
@@ -221,5 +234,5 @@ export class CodexAdapter implements HarnessAdapter {
     if (this.threadId && this.turnId) await this.rpc('turn/interrupt', {
       threadId: this.threadId, turnId: this.turnId });
   }
-  close(): void { this.child?.stdin.end(); this.child?.kill('SIGTERM'); this.lines?.close(); }
+  close(): void { this.connected = false; this.child?.stdin.end(); this.child?.kill('SIGTERM'); this.lines?.close(); }
 }
