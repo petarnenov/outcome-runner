@@ -121,3 +121,24 @@ for (const [name, content] of [['missing', null], ['invalid', '{"version":1,"tas
     assert.equal(lines.length, 1);
   });
 }
+
+test('coverage resolves defaults, JSON values and CLI overrides before the runner', async t => {
+  const base = workspace(t); const root = repository(base, 'project');
+  for (const [json, args, expected] of [
+    [{}, [], 85],
+    [{ coverage: 90 }, [], 90],
+    [{ coverage: 90 }, ['--coverage=95'], 95],
+    [{ coverage: 'invalid' }, ['--coverage=92'], 92],
+    ...[1, 100].flatMap(coverage => [[{ coverage }, [], coverage], [{}, [`--coverage=${coverage}`], coverage]]),
+  ] as [object, string[], number][]) {
+    let received!: RunConfig;
+    assert.equal(await main(invocationFile(base, { invocation: 'nightly', ...json }),
+      async config => { received = config; return { status: 'exhausted' }; }, () => {}, { cwd: root, args }), 0);
+    assert.equal(received.coverage, expected);
+  }
+  let received!: RunConfig;
+  assert.equal(await main(invocationFile(base), async config => {
+    received = config; return { status: 'exhausted' };
+  }, () => {}, { cwd: root, args: ['--effort=high', '--coverage=93', '--model=claude-sonnet-5-5', '--harness=claude'] }), 0);
+  assert.equal(received.coverage, 93); assert.equal(received.effort, 'high');
+});

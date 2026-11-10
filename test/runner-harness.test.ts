@@ -19,7 +19,7 @@ const codex = (defaults: Partial<CodexSelection> = {}) => async (): Promise<Code
 
 test('Claude is the exact default while Codex resolves and freezes its own settings', async () => {
   assert.deepEqual(await resolveHarness({ root: '/project' } as RunConfig, () => { throw new Error('No Codex for Claude'); }),
-    { root: '/project', harness: 'claude', model: 'claude-opus-5-5', effort: 'medium' });
+    { root: '/project', harness: 'claude', model: 'claude-opus-5-5', effort: 'medium', coverage: 85 });
   const resolved = await resolveHarness({ root: '/project', harness: 'codex' } as RunConfig,
     async cwd => { assert.equal(cwd, '/project'); return { model: 'gpt-6.1-sol', effort: 'high', catalog: codexCatalogFixture }; });
   assert.equal(resolved.model, 'gpt-6.1-sol'); assert.equal(resolved.effort, 'high');
@@ -58,7 +58,7 @@ test('resolved harness model and effort changes and legacy identity cannot rewri
   const first = new RunStore(directory, identity); first.close();
   const before = readFileSync(join(directory, 'state.json'), 'utf8');
   const sonnet = await resolveHarness({ model: 'claude-sonnet-5-5' } as RunConfig);
-  for (const patch of [{ harness: 'codex' }, { model: sonnet.model }, { effort: 'high' }]) {
+  for (const patch of [{ harness: 'codex' }, { model: sonnet.model }, { effort: 'high' }, { coverage: 90 }]) {
     assert.throws(() => new RunStore(directory, { ...identity, ...patch }), /incompatible/u);
     assert.equal(readFileSync(join(directory, 'state.json'), 'utf8'), before);
   }

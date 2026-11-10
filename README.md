@@ -107,6 +107,7 @@ Save it as, for example, `~/invocations/my-project-1.json`:
   "invocation": "my-project-1",
   "leaves": ["TASK-1"],
   "maxAccepted": 1,
+  "coverage": 85,
   "authority": {
     "reference": "owner-2026-01-31",
     "instruction": "The actual instruction authorizing this work",
@@ -120,13 +121,14 @@ Save it as, for example, `~/invocations/my-project-1.json`:
     "target": "main",
     "repository": "OWNER/REPOSITORY",
     "planningCheck": { "command": "openspec", "args": ["validate", "{change}", "--strict"] },
-    "checks": [{ "command": "node", "args": ["--test", "{scope}/*.test.mjs"] }]
+    "checks": [{ "command": "node", "args": ["--test", "--experimental-test-coverage", "--test-coverage-lines={coverage}", "{scope}/*.test.mjs"] }]
   }
 }
 ```
 
 - Do not set `root` or `stateDirectory`; the run is refused if you do.
-- Replace `checks` with the project's real checks, for example `make verify`.
+- Replace `checks` with the project's real checks, including a coverage gate
+  with `{coverage}` in an argument.
 - If a fresh worktree needs dependencies, add
   `"setup": [{ "command": "npm", "args": ["ci"] }]` to `project`.
 - Without `leaves`, every task in `authority.tasks` runs.
@@ -285,7 +287,7 @@ covering owner instruction. Do not transfer grants between projects.
 The `project` object supplies repository-relative `queue`, `changes`, `receipts`,
 Git `target`, explicit PR `repository`, mandatory `planningCheck`, nonempty
 `checks` and optional `setup`, `commitScope` and `commitSuffix`. Commands have fixed `command` and `args` fields.
-Arguments may contain `{change}`, `{target}` and `{scope}` (the first authorized product scope). They run as argument arrays,
+Arguments may contain `{coverage}`, `{change}`, `{target}` and `{scope}` (the first authorized product scope). They run as argument arrays,
 not worker-supplied shell strings. The owner must review these commands and
 include every project-required gate. A check exiting successfully is evidence
 only for what that check actually validates.
@@ -300,7 +302,7 @@ security decisions.
 ```sh
 cd /path/to/repository
 outcome-runner hash path/to/queue.json
-outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>]
+outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>]
 ```
 
 Claude is used when both the CLI and JSON harness are omitted, or when
@@ -329,7 +331,22 @@ selected harness's catalog, or an effort the selected model does not support, is
 refused before allocation with exit code 4 and a diagnostics message naming the
 rejected value. Omitted fields still fall back to the defaults above.
 
-The resolved harness, model and effort are frozen in invocation identity. A
+JSON `coverage` is optional and defaults to 85. It must be a numeric integer
+from 1 through 100; `--coverage=<n>` overrides it. This flag can appear in any
+order with the selection flags, once and with a nonempty value. Invalid coverage
+is refused with exit code 4 and private diagnostics before allocation.
+
+At least one `project.checks` argument must contain literal `{coverage}`, or
+startup is refused with exit code 4 and diagnostics saying
+`A coverage gate check is required`. A placeholder only in setup, planning checks
+or an executable does not qualify. Every occurrence in check arguments expands
+to the resolved decimal threshold, for example `--test-coverage-lines=90` for
+coverage 90. Choose a command that enforces that gate, such as the Node coverage
+check in the invocation example. Every worker prompt states the percentage.
+
+The resolved harness, model, effort and coverage are frozen in invocation identity.
+Omitted coverage and explicit 85 are equivalent; a changed threshold is refused
+on restart without changing saved state or ownership. A
 restart with changed settings or legacy state without this identity is refused;
 finish that invocation using its original runner and configuration. Do not erase
 state or ownership to migrate active work. Start a new invocation only once the

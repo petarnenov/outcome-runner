@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "id": "OR-2",
+  "taskHash": "b07bf4f82ae526becf0e1d0b31e9e20cce3dd40f416da80a2d03f637c382417c",
+  "authority": "owner-2026-11-10-pr4-alternate",
+  "specification": {
+    "openspec/changes/configurable-test-coverage-threshold/design.md": "bb760d38313e8121c5870690b2fd85ece279641b86e4bb1ea540e7c6aa8f150e",
+    "openspec/changes/configurable-test-coverage-threshold/proposal.md": "7777f6ceb13acac5b0613a27c4d5839045c0f29ae6ceca5122908165334eef20",
+    "openspec/changes/configurable-test-coverage-threshold/specs/test-coverage/spec.md": "7f2193ef664864b8b2ca01232bcd3a0a008cd2cda271d230cdedecaf99235b7c"
+  },
+  "review": {
+    "reviewer": "codex:01a1c741-6e18-7f00-b14a-71870ac9f7f6",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "2411d22c971952cc19560f4414b5d5523b0671baadbc56789e5a8ef27d90ba04"
+    },
+    {
+      "path": "openspec/changes/configurable-test-coverage-threshold/design.md",
+      "hash": "bb760d38313e8121c5870690b2fd85ece279641b86e4bb1ea540e7c6aa8f150e"
+    },
+    {
+      "path": "openspec/changes/configurable-test-coverage-threshold/proposal.md",
+      "hash": "7777f6ceb13acac5b0613a27c4d5839045c0f29ae6ceca5122908165334eef20"
+    },
+    {
+      "path": "openspec/changes/configurable-test-coverage-threshold/specs/test-coverage/spec.md",
+      "hash": "7f2193ef664864b8b2ca01232bcd3a0a008cd2cda271d230cdedecaf99235b7c"
+    },
+    {
+      "path": "openspec/changes/configurable-test-coverage-threshold/tasks.md",
+      "hash": "008d4401763e63bb32551543da2cab8a778275ee0abd2bade5b329e79b6bc010"
+    },
+    {
+      "path": "src/cli.ts",
+      "hash": "a9f6c8cb8b8049ac284ea8edb8bedb1ab2f9bd1be138d4b47e6128156f981bbb"
+    },
+    {
+      "path": "src/harness.ts",
+      "hash": "fe2a87b32b4410f5b515a47565f080c16b51e90c2c58cdfd47a3a704f7b46b72"
+    },
+    {
+      "path": "src/model.ts",
+      "hash": "4e74e180826d3118a6f0924d9fb137179017e2c0b07f1cc9fc22bb0b8f990684"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "f6219b95b6be8e2983b9c0b84081e8b5ebbbe7f5c7609d7f37ae25a94f0602e5"
+    },
+    {
+      "path": "test/cli.test.ts",
+      "hash": "1b0b667dd936506720f27162cdaec797609952d2dd21a65c03719c2073324522"
+    },
+    {
+      "path": "test/harness-catalog.test.ts",
+      "hash": "ec22427749240fe1da1da20ec5dc5a5b04b6e500f1a05e68544361441ccd5556"
+    },
+    {
+      "path": "test/runner-harness.test.ts",
+      "hash": "05a7dacd7166dbd0eee664ff3cd78ae355af8c1b289de9c00da6d0a1960e4db2"
+    },
+    {
+      "path": "test/runner.test.ts",
+      "hash": "28c05425e78295693770aecf5deaffb0884fb606682d621ed38115bf94a16ccc"
+    }
+  ],
+  "head": "8c290e9ae3a5e01ad3500d931bd639d14b778e2b",
+  "base": "9cd62a45d184f1e1d90f46c9e024daa459cb55c3"
+}

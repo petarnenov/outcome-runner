@@ -116,7 +116,7 @@ test('selection names the rejected model or effort', async () => {
   for (const model of ['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2']) {
     for (const effort of ['low', 'xhigh', 'max']) {
       assert.deepEqual(await resolveHarness({ model, effort } as RunConfig),
-        { harness: 'claude', model, effort });
+        { harness: 'claude', model, effort, coverage: 85 });
     }
   }
 });
@@ -155,7 +155,7 @@ test('CLI flags parse in any order, at most once each, and override the invocati
   assert.deepEqual(parseFlags([]), {});
   for (const args of [['--model=a', '--model=b'], ['--model='], ['--verbose'], ['--effort'], ['--harness=other'],
     ['--effort=low', '--effort=low'], ['model=a']]) {
-    assert.throws(() => parseFlags(args), /Expected --harness=<claude\|codex>, --model=<id> and --effort=<level>/u);
+    assert.throws(() => parseFlags(args), /Expected --harness=<claude\|codex>, --model=<id>, --effort=<level> and --coverage=<n>/u);
   }
   const directory = mkdtempSync(join(tmpdir(), 'catalog-cli-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'config.json');
