@@ -42,7 +42,7 @@ interface Run { stream: MemoryStream; waits: number[]; text: string }
 async function play(mood: MascotMood, caption = 'caption', options: MascotOptions = {}, stream = new MemoryStream()): Promise<Run> {
   const waits: number[] = [];
   const promise = playMascot(mood, caption, {
-    stream, isTTY: () => true, env: {}, wait: async ms => { waits.push(ms); }, ...options,
+    stream, isTTY: () => true, env: {}, wait: async (ms: number) => { waits.push(ms); }, ...options,
   });
   await assert.doesNotReject(promise);
   return { stream, waits, text: stream.text };
@@ -76,9 +76,18 @@ const width = (line: string): number => [...plain(line)].length;
 async function captureStderr(run: () => Promise<void>): Promise<string[]> {
   const chunks: string[] = [];
   const original = process.stderr.write;
-  process.stderr.write = ((chunk: string | Uint8Array) => { chunks.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  const record = (chunk: string | Uint8Array): boolean => { chunks.push(String(chunk)); return true; };
+  process.stderr.write = record as unknown as typeof process.stderr.write;
   try { await run(); } finally { process.stderr.write = original; }
   return chunks;
+}
+
+function faceOf(frame: string[]): { eyes: string; mouth: string } {
+  const face = frame.map(plain).join('\n');
+  const eyes = /█ +(\S) +(\S) +█/u.exec(face);
+  const mouth = /█ +(\S) +█/u.exec(face);
+  if (eyes === null || mouth === null) throw new Error('frame without a face');
+  return { eyes: `${eyes[1]}${eyes[2]}`, mouth: mouth[1] };
 }
 
 test('the only runtime export is playMascot', () => {
@@ -111,16 +120,13 @@ test('every mood has its own eyes, mouth and face', async () => {
   const eyes = new Set<string>();
   const mouths = new Set<string>();
   for (const mood of MOODS) {
-    const last = parse((await play(mood)).text).frames.at(-1) ?? [];
-    const face = last.map(plain).join('\n');
-    const eye = /█ +(\S) +(\S) +█/u.exec(face);
-    const mouth = /█ +(\S) +█/u.exec(face);
-    assert.ok(eye !== null && mouth !== null, `${mood} has a face`);
-    eyes.add(`${eye[1]}${eye[2]}`);
-    mouths.add(mouth[1]);
+    const face = faceOf(parse((await play(mood)).text).frames.at(-1) ?? []);
+    eyes.add(face.eyes);
+    mouths.add(face.mouth);
   }
   assert.equal(eyes.size, MOODS.length);
   assert.equal(mouths.size, MOODS.length);
+  assert.throws(() => faceOf(['no face']), /without a face/u);
 });
 
 test('celebrating shows sparkles outside the body', async () => {
@@ -196,7 +202,7 @@ test('an abort stops the animation and shows the cursor', async () => {
   const signals: (AbortSignal | undefined)[] = [];
   await assert.doesNotReject(playMascot('dizzy', 'never', {
     stream, isTTY: () => true, env: {}, signal: controller.signal,
-    wait: async (ms, signal) => { waits.push(ms); signals.push(signal); if (waits.length === 2) controller.abort(); },
+    wait: async (ms: number, signal?: AbortSignal) => { waits.push(ms); signals.push(signal); if (waits.length === 2) controller.abort(); },
   }));
   assert.equal(waits.length, 2);
   assert.ok(signals.every(signal => signal === controller.signal));
@@ -258,7 +264,8 @@ test('a rejecting timer resolves and shows the cursor', async () => {
 });
 
 test('an unknown mood or failing TTY detection resolves without output', async () => {
-  const unknown = await play('grumpy' as MascotMood);
+  const unknownMood: string = 'grumpy';
+  const unknown = await play(unknownMood as MascotMood);
   assert.deepEqual(unknown.stream.chunks, []);
   const failing = await play('happy', 'x', { isTTY: () => { throw new Error('detection failed'); } });
   assert.deepEqual(failing.stream.chunks, []);
