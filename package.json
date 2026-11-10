@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",
     "typecheck": "tsc",
-    "test": "node --test \"test/*.test.ts\"",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude=\"test/**\" --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=85 \"test/*.test.ts\"",
     "live:one": "LIVE_OUTCOME_ONE=1 node --test --test-name-pattern=\"one real outcome\" test/runner.test.ts",
     "live:three": "LIVE_OUTCOME_THREE=1 node --test --test-name-pattern=\"three real outcomes\" test/runner.test.ts",
     "live:restart": "LIVE_OUTCOME_RESTART=1 node --test --test-name-pattern=\"fresh process resumes real outcome\" test/runner.test.ts",
