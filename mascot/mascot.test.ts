@@ -159,13 +159,13 @@ function decode(line: string): Cell[] {
   return cells;
 }
 const LAST_FRAMES: Record<MascotMood, string[]> = {
-  happy: ['   ▀▄ ▄▀    ♪',' ▄███████▄ ','██▄▄███▄▄██','▄ ▀ ▀▀▀ ▀ ▄'],
+  happy: ['   ▀▄ ▄▀    ♪',' ▄███████▄ ','██▄▄███▄▄██','▄ █ ▀▀▀ █ ▄'],
   angry: ['   ▀▄ ▄▀    #',' ▄███████▄ ','██▀▄███▄▀██',' ▄▀▄▀▀▀▄▀▄ '],
-  celebrating: ['   ▀▄ ▄▀    *',' ▄███████▄  .','██▀▄███▄▀██','▄ ▀ ▀▀▀ ▀ ▄ +'],
-  content: ['   ▀▄ ▄▀   ',' ▄███████▄ ','██ ▄███▄ ██','▄ ▀ ▀▀▀ ▀ ▄'],
+  celebrating: ['   ▀▄ ▄▀    *',' ▄███████▄  .','██▀▄███▄▀██','▄ █ ▀▀▀ █ ▄ +'],
+  content: ['   ▀▄ ▄▀   ',' ▄███████▄ ','██ ▄███▄ ██','▄ █ ▀▀▀ █ ▄'],
   sleepy: ['   ▀▄ ▄▀    zZ',' ▄███████▄ ','██▀▀███▀▀██',' ▄▀▄▀▀▀▄▀▄ '],
   sad: ['   ▀▄ ▄▀   ',' ▄███████▄ ','██▄ ███ ▄██',' ▄▀ ▀▀▀▄▀▄ '],
-  startled: ['   ▀▄ ▄▀    !!',' ▄███████▄ ','██  ███  ██','▄ ▀ ▀▀▀ ▀ ▄'],
+  startled: ['   ▀▄ ▄▀    !!',' ▄███████▄ ','██  ███  ██','▄ █ ▀▀▀ █ ▄'],
   dizzy: ['    ▀▄ ▄▀    *','  ▄███████▄ ',' ██▄▀███▀▄██','  ▄▀▄▀▀▀▄▀▄ '],
 };
 test('the only runtime export is playMascot', () => {
@@ -187,6 +187,7 @@ for (const mood of MOODS) {
       assert.equal(frame.length, 4);
       for (const [lineIndex, line] of frame.entries()) {
         assert.ok(width(line) <= 14);
+        assert.match(line, /\x1b\[0m *$/u, 'styles reset before the next line or caption');
         const cells = decode(line);
         const offset = fixture[2];
         assert.deepEqual(cells.slice(0, offset), Array.from({length:offset}, () => ({ glyph:' ', fg:undefined, bg:undefined })));
@@ -268,16 +269,19 @@ test('OUTCOME_RUNNER_MASCOT=0 disables output', async () => {
   assert.notDeepEqual(enabled.stream.chunks, []);
 });
 
-test('TERM=dumb prints only the last frame and the caption', async () => {
+test('TERM=dumb prints only the last frame and sanitized caption in both colour modes', async () => {
   for (const mood of MOODS) {
-    const last = parse((await play(mood)).text).frames.at(-1) ?? [];
-    const { text, waits } = await play(mood, 'Done', { env: { TERM: 'dumb' } });
-    assert.equal(text, `${last.join('\n')}\nDone\n`);
-    assert.doesNotMatch(text, CURSOR);
-    assert.deepEqual(waits, []);
+    for (const env of [{ TERM: 'dumb' }, { TERM: 'dumb', NO_COLOR: '' }]) {
+      const last = env.NO_COLOR === undefined
+        ? parse((await play(mood)).text).frames.at(-1) ?? []
+        : LAST_FRAMES[mood];
+      const { text, waits } = await play(mood, 'Done\r\nnow', { env });
+      assert.equal(text, `${last.join('\n')}\nDone  now\n`);
+      assert.doesNotMatch(text, CURSOR);
+      assert.deepEqual(waits, []);
+      if (env.NO_COLOR !== undefined) assert.ok(!text.includes('\x1b'));
+    }
   }
-  const { text } = await play('dizzy', 'Done', { env: { TERM: 'dumb', NO_COLOR: '1' } });
-  assert.ok(!text.includes('\x1b'));
 });
 
 test('an abort stops the animation and shows the cursor', async () => {

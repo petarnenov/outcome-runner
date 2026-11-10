@@ -25,7 +25,7 @@ Eye whites and tears disappear; all other pixels become solid.
    ▀▄ ▄▀    ♪
  ▄███████▄ 
 ██▄▄███▄▄██
-▄ ▀ ▀▀▀ ▀ ▄
+▄ █ ▀▀▀ █ ▄
 ```
 
 ### `angry`
@@ -43,7 +43,7 @@ Eye whites and tears disappear; all other pixels become solid.
    ▀▄ ▄▀    *
  ▄███████▄  .
 ██▀▄███▄▀██
-▄ ▀ ▀▀▀ ▀ ▄ +
+▄ █ ▀▀▀ █ ▄ +
 ```
 
 ### `content`
@@ -52,7 +52,7 @@ Eye whites and tears disappear; all other pixels become solid.
    ▀▄ ▄▀   
  ▄███████▄ 
 ██ ▄███▄ ██
-▄ ▀ ▀▀▀ ▀ ▄
+▄ █ ▀▀▀ █ ▄
 ```
 
 ### `sleepy`
@@ -79,7 +79,7 @@ Eye whites and tears disappear; all other pixels become solid.
    ▀▄ ▄▀    !!
  ▄███████▄ 
 ██  ███  ██
-▄ ▀ ▀▀▀ ▀ ▄
+▄ █ ▀▀▀ █ ▄
 ```
 
 ### `dizzy`
