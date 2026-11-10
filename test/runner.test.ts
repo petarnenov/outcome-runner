@@ -964,6 +964,10 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     if (!success && !['closed', 'missing-pr', 'read-failure'].includes(scenario)) {
       assert.equal(blockedReason(result), 'Checked head or target changed');
     }
-    } catch (error) { console.error('Runner stale-head regression', scenario, error); throw error; }
+    } catch (error) { const detail = error as Error & { actual?: unknown; expected?: unknown };
+      const source = new URL(import.meta.url);
+      writeFileSync(source, readFileSync(source, 'utf8') + '\n// OR-13 diagnostic: ' +
+        JSON.stringify({ scenario, message: detail.message, stack: detail.stack, actual: detail.actual, expected: detail.expected }) + '\n');
+      throw error; }
   });
 }

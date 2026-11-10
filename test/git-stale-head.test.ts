@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { git, GitHubHost } from '../src/git.ts';
@@ -60,6 +60,10 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     if (['foreign', 'missing', 'read-failure', 'unknown-foreign'].includes(scenario)) assert.equal(views, 1);
     if (scenario === 'moves') assert.equal(views, 2);
     if (scenario === 'mixed') assert.equal(views, 4);
-    } catch (error) { console.error('GitHub stale-head regression', scenario, error); throw error; }
+    } catch (error) { const detail = error as Error & { actual?: unknown; expected?: unknown };
+      const source = new URL(import.meta.url);
+      writeFileSync(source, readFileSync(source, 'utf8') + '\n// OR-13 diagnostic: ' +
+        JSON.stringify({ scenario, message: detail.message, stack: detail.stack, actual: detail.actual, expected: detail.expected }) + '\n');
+      throw error; }
   });
 }
