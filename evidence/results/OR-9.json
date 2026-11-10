@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "id": "OR-9",
+  "taskHash": "2193f3539c93a059edc8c9686589416b03b9f6455e5bfcfcedf8b3d4be4f7660",
+  "authority": "owner-2026-11-10-pr9-parallel",
+  "specification": {
+    "openspec/changes/automatic-semantic-versioning/design.md": "90c79bee26b2ef9b6abcbb18423801b0d48314789187626cf8f2b7ebb855af5c",
+    "openspec/changes/automatic-semantic-versioning/proposal.md": "ee5de52dbdbfa4b88fc4a5fadc7e0d619b568409ff2f2a8259c5fb7e8abe60ab",
+    "openspec/changes/automatic-semantic-versioning/specs/automatic-semantic-versioning/spec.md": "48c4adad7742d00ea1d3b73f9c191150f3b295933499fb922ba63c2165cddc00"
+  },
+  "review": {
+    "reviewer": "codex:01a1c741-91f3-7ff0-8cf0-e3884687ce34",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": ".github/workflows/release.yml",
+      "hash": "b84499f860bdcd05d5ef665a9df8b55923eadbf1ddc15d434a350f742682e2bd"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "hash": "3e79c4cafb504a21f8913e4e0e66f2ff7b1192a127c6f564aab379c8b5fa9bdd"
+    },
+    {
+      "path": "docs/releasing.md",
+      "hash": "935ef05269da824af1fd1a49344982d584a6917d6ad5ecc18ea756f364ea92eb"
+    },
+    {
+      "path": "openspec/changes/automatic-semantic-versioning/design.md",
+      "hash": "90c79bee26b2ef9b6abcbb18423801b0d48314789187626cf8f2b7ebb855af5c"
+    },
+    {
+      "path": "openspec/changes/automatic-semantic-versioning/proposal.md",
+      "hash": "ee5de52dbdbfa4b88fc4a5fadc7e0d619b568409ff2f2a8259c5fb7e8abe60ab"
+    },
+    {
+      "path": "openspec/changes/automatic-semantic-versioning/specs/automatic-semantic-versioning/spec.md",
+      "hash": "48c4adad7742d00ea1d3b73f9c191150f3b295933499fb922ba63c2165cddc00"
+    },
+    {
+      "path": "openspec/changes/automatic-semantic-versioning/tasks.md",
+      "hash": "b18b9e03f4898cfee549bdc7e0fd2b6dd0916219773dea90eb8421befb4003fd"
+    },
+    {
+      "path": "package.json",
+      "hash": "fb61c9e9192c36bab9fb90c85cc7db6848d90532561a6218cf8f8bcee98e68c1"
+    },
+    {
+      "path": "scripts/release.test.ts",
+      "hash": "f8fed26a8ca2635f21b53994f854b4131e6c732f91272eff2fb311a400fcedfd"
+    },
+    {
+      "path": "scripts/release.ts",
+      "hash": "cde0e658c7cdd1a874c74023642a0b75bb871733ef55f6b690074d6179938fb1"
+    },
+    {
+      "path": "tsconfig.json",
+      "hash": "f3d439a38dc9b014745c5f171af722a56b381503cb64e97b28f3623b3c35b5ac"
+    }
+  ],
+  "head": "d9570eeb5b3a15e1657d554a224838d4ab176228",
+  "base": "75e103e3def7643c808d688e5344f5fb71d35275"
+}
