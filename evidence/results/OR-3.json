@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "id": "OR-3",
+  "taskHash": "9885a4b125ddf04b31ae468b8eb06e7ccef53e18a45a43253538ee747ed2c87e",
+  "authority": "owner-2026-11-10-pr4-alternate",
+  "specification": {
+    "openspec/changes/openspec-preflight-install-offer/design.md": "fc18ce6ad9edd701ba712b21cd6900b8f3c60b1e356cdd4bca3dec47dbde8e30",
+    "openspec/changes/openspec-preflight-install-offer/proposal.md": "b8a3a247c5e4d9e17e31bbc0f95034fbe995e694c834b70f200724507fb92bcd",
+    "openspec/changes/openspec-preflight-install-offer/specs/openspec-preflight/spec.md": "18583595b1a1e8bebca7b4a581068219a16ad36a7c61783655d79e1149a8a8cc"
+  },
+  "review": {
+    "reviewer": "claude:8561d4c8-fe87-453f-8d6f-2f3d2183b912",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "c3c9e755e92e74b83ae5c4500a09e1b832e584e994d0b215f0457fa88c948a4a"
+    },
+    {
+      "path": "openspec/changes/openspec-preflight-install-offer/design.md",
+      "hash": "fc18ce6ad9edd701ba712b21cd6900b8f3c60b1e356cdd4bca3dec47dbde8e30"
+    },
+    {
+      "path": "openspec/changes/openspec-preflight-install-offer/proposal.md",
+      "hash": "b8a3a247c5e4d9e17e31bbc0f95034fbe995e694c834b70f200724507fb92bcd"
+    },
+    {
+      "path": "openspec/changes/openspec-preflight-install-offer/specs/openspec-preflight/spec.md",
+      "hash": "18583595b1a1e8bebca7b4a581068219a16ad36a7c61783655d79e1149a8a8cc"
+    },
+    {
+      "path": "openspec/changes/openspec-preflight-install-offer/tasks.md",
+      "hash": "c5d40b76f21100551b1c308a1fbbb78b6e323709cb89fa38e20f9f82cd45a27f"
+    },
+    {
+      "path": "openspec/changes/openspec-preflight-install-offer/verification.md",
+      "hash": "02d8708f28746e42367a755382fc764430403a0cc51a819ea8d717729e0cdfb2"
+    },
+    {
+      "path": "src/cli.ts",
+      "hash": "ef66cfa609cf21d9003ed9dccde2bb72672b61b7c13b94760761efb6e80f4379"
+    },
+    {
+      "path": "src/openspec-preflight.ts",
+      "hash": "12aaf3c0f4e96d014de6928407d73d5c2706bd3de464a5e0d0bc3c646722b02f"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "09ca04438564b7aeeb1188a918103234379820894b36b8de324b4cfbc207ddf4"
+    },
+    {
+      "path": "test/harness-catalog.test.ts",
+      "hash": "ebd85a9f11dfb2beb2774b25ebb1d4f6b62021bcdbe6f2656c95391fc53b9c4f"
+    },
+    {
+      "path": "test/openspec-preflight.test.ts",
+      "hash": "1437216b302a42c57a2c760449bb0363a9e5cb4264142ca239969a1b76d4bf3d"
+    },
+    {
+      "path": "test/runner.test.ts",
+      "hash": "44db22d488be77cacb7d764fceb1c0689e77415e546e8cd6b17f7e3460acb774"
+    },
+    {
+      "path": "test/support/openspec-preflight-child.ts",
+      "hash": "444efbdeb9fda0670a8d64a4d37c7d636c1ba7b3746182c110261025597bbd78"
+    },
+    {
+      "path": "test/support/work-queue-child.ts",
+      "hash": "cf33785985d5a5bbe5ece1db31c11bebbeea9a75e1fb4ae63c5c2aee317c2826"
+    },
+    {
+      "path": "test/zz-debug-capture.test.ts",
+      "hash": "31af3b77ffd7ceb3ee5cc602fdef998626a3d9ce651bfbdeda50b2a69b1da801"
+    }
+  ],
+  "head": "4d01efa09abffe5e43b0b8b8cc65cabbf277ce53",
+  "base": "e9749ba1301cc0b82f00cfb23c4a300413047826"
+}
