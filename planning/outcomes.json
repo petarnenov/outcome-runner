@@ -280,6 +280,26 @@
         "README documents the new stages, the archive command and its default, and where archived changes and updated specs end up.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-15",
+      "title": "Pixel mascot redesign approved by the owner",
+      "change": "redesign-mascot-pixel-sprite",
+      "priority": 15,
+      "scopes": ["mascot"],
+      "dependencies": ["OR-10"],
+      "criteria": [
+        "Replace the OR-10 mascot art in mascot/mascot.ts with the pixel sprite the owner approved on 2026-11-11, derived from the owner's reference image: antennae, a wide body with two eye slots and X-shaped legs. The exported function, its options and the eight moods do not change.",
+        "The sprite is 11 by 8 pixels. Rows 0 to 5, top to bottom, are '...B...B...', '....B.B....', '..BBBBBBB..', '.BBBBBBBBB.', 'BB00BBB11BB', 'BB00BBB11BB'. Rows 6 and 7 are the legs in one of two poses: pose 0 '..B.BBB.B..' and '.B.B...B.B.'; pose 1 '..B.BBB.B..' and 'B.B.....B.B'. '.' is empty, B is body, 0 is the left eye and 1 the right eye.",
+        "Each eye is 2 by 2 pixels at columns 2 and 3 (left) and 8 and 7 (right, mirrored) of rows 4 and 5. Eye patterns, top row then bottom row: open 'WW','WK'; happy 'WW','BB'; angry 'BW','WK'; sad 'WW','KW'; sleepy 'BB','WW'; wide 'WW','WW'; swirlA 'KW','WK'; swirlB 'WK','KW'; star 'SW','WS'. W is eye white (colour 231), K pupil (16), S sparkle (226). Cheeks C (211) sit at row 5, columns 1 and 9. A tear T (117) sits at column 3 of row 6 or 7.",
+        "Rendering uses two pixel rows per text line, so the sprite is 11 columns by 4 lines: a cell with both pixels set prints '▀' with the top pixel as foreground and the bottom pixel as background ANSI 256 colour, a cell with only the top or only the bottom pixel prints '▀' or '▄' in that colour, and an empty cell prints a space. With NO_COLOR no colour codes are written, eye whites and tears print as empty, and every other pixel prints as solid.",
+        "Body colours: happy 78, angry 160, celebrating 220, content 44, sleepy 69, sad 61, startled 208, dizzy 170. Decorations print one space to the right of the sprite on a given line: '♪' (229), '#' (196), '+', '*' and '.' sparkles (229, 213, 117), 'z' and 'zZ' (153), '!' and '!!' (196). Every frame, decorations and offsets included, is at most 4 lines high and 14 columns wide.",
+        "Frames per mood, in order (eyes, legs pose, extras): happy: open/0; happy/1; happy/0 with cheeks; happy/1 with cheeks and '♪' on line 0. angry: angry eyes, legs 0, offset 0, 1, 0, 1 columns to the right, then offset 0 with '#' on line 0. celebrating: star eyes, legs 0, 1, 0, 1, with sparkles changing between lines 0 to 3 each frame. content: open/0; sleepy/0; open/1. sleepy: sleepy eyes with 'z' on line 1, then 'z' on line 0, then 'zZ' on line 0. sad: sad eyes with the tear at row 6, row 7, no tear with legs 1, then the tear at row 7. startled: open/1; wide/0 with '!'; wide/1 with '!!'. dizzy: swirlA with '*' on line 0; swirlB offset 1 with '*' on line 1; swirlA with '*' on line 2; swirlB offset 1 with '*' on line 0.",
+        "The OR-10 rules still hold: 3 to 6 frames and at most 1.5 seconds per mood, redrawn in place, last frame left on screen with the caption, stderr only, TTY only, OUTCOME_RUNNER_MASCOT=0, TERM=dumb printing only the last frame, cursor hidden while playing and restored after an abort or a failed write, and a promise that never rejects.",
+        "mascot/mascot.test.ts checks: the sprite rows and leg poses; every eye pattern and its mirror; the frame sequence of every mood; the half-block rendering for top-only, bottom-only, both and empty cells with the right foreground and background colours; the NO_COLOR rendering; at most 4 lines and 14 columns for every frame; and the unchanged OR-10 rules.",
+        "mascot/README.md replaces the previews with the NO_COLOR last frame of every mood and states that the design comes from the owner's reference sprite.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
