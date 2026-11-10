@@ -142,6 +142,28 @@
         "Tests use a temporary XDG_STATE_HOME and cover: records for exit codes 0, 3 and 4 and for cancellation; two runs appending two parseable lines; required fields and per-task data for an accepted and a blocked task; absence of the authority instruction, prompts and private output; and an unwritable ledger leaving the exit code unchanged. No test starts a real harness.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-8",
+      "title": "Test framework preflight with install offer",
+      "change": "test-framework-preflight",
+      "priority": 8,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-4"],
+      "criteria": [
+        "After the OpenSpec preflight and the harness, model, effort and coverage selection, and before any claim or worktree is created, the runner checks whether the repository at origin/<target> has a prepared test framework.",
+        "For a repository with package.json at its root, a test framework is installed when scripts.test exists, differs from npm's default placeholder 'echo \"Error: no test specified\" && exit 1', and runs either node --test or one of vitest, jest, mocha or ava listed in dependencies or devDependencies; it is prepared when, in addition, scripts.test enforces line, branch and function coverage thresholds.",
+        "Interactive (same TTY rule and stderr output as the OpenSpec preflight), no installed test framework: the runner asks which framework to set up, offering node:test (preselected, built into Node, nothing to install), vitest and jest. For vitest it runs npm install --save-dev vitest @vitest/coverage-v8 and for jest npm install --save-dev jest, each as an argument array in the working tree.",
+        "After installation, or when a framework is installed but not prepared and the user agrees, the runner sets only scripts.test in package.json so that it runs the tests with line, branch and function coverage thresholds equal to the resolved coverage threshold (85 by default): node --test --experimental-test-coverage --test-coverage-lines=<n> --test-coverage-branches=<n> --test-coverage-functions=<n> for node:test, vitest run --coverage --coverage.thresholds.lines=<n> --coverage.thresholds.branches=<n> --coverage.thresholds.functions=<n> for vitest, and jest --coverage with an equivalent --coverageThreshold for jest. The rest of package.json keeps its content and key order.",
+        "The runner never commits or pushes these changes; after a successful setup it exits with code 4 and a message listing the changed files to commit and push. When the user declines, or an install command fails, it exits with code 4 and diagnostics reason test-framework-missing.",
+        "Non-interactive: nothing is installed or changed and nothing is asked; a repository without a prepared test framework exits with code 4 and diagnostics reason test-framework-missing.",
+        "When the test framework is prepared, startup continues without any test framework prompt.",
+        "A repository without package.json at its root gets one stderr line saying that test framework detection supports only Node projects, and startup continues.",
+        "Prompt input, command execution and file writes are injectable so tests script answers and commands; no test runs npm or a real TTY.",
+        "Tests cover: prepared framework; installed framework without thresholds with yes and with no; missing framework choosing node:test, vitest and jest; failing install; a non-default coverage threshold written into scripts.test; package.json key order preserved; non-interactive refusal; and a repository without package.json.",
+        "README documents the test framework preflight, the offered frameworks, the coverage thresholds it writes and the non-interactive behaviour.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
