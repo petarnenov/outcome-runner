@@ -70,10 +70,10 @@ outcome-runner hash path/to/queue.json
 outcome-runner /path/to/invocation.json
 ```
 
-Claude is the default: authenticated Claude Code **2.1.321**, exact model
+Claude is the default: authenticated Claude Code **2.1.321 or newer**, exact model
 `claude-opus-5-5`, effort `medium`. No fallback is permitted. Select Codex with
 `outcome-runner /path/to/invocation.json --harness=codex` or JSON
-`"harness": "codex"`. Codex requires certified CLI **0.167.0**; omitted Codex
+`"harness": "codex"`. Codex requires CLI **0.167.0 or newer**; omitted Codex
 `model` and `effort` are resolved from its local configuration before allocation.
 The CLI flag overrides the JSON harness only; explicit model/effort values remain.
 Leave those optional fields unset for a shared template, or use values consistent

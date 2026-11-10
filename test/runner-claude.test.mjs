@@ -85,7 +85,7 @@ test('private MCP endpoint authenticates callers and denies unknown or pre-init 
 });
 
 test('startup rejects drift, foreign tools, hooks, ambient plugins and fallback models', async () => {
-  for (const patch of [{ model: 'other' }, { claude_code_version: 'future' }, { permissionMode: 'auto' },
+  for (const patch of [{ model: 'other' }, { claude_code_version: 'future' }, { claude_code_version: '2.1.320' }, { permissionMode: 'auto' },
     { tools: ['Bash'] }, { tools: null }, { mcp_servers: [] },
     { mcp_servers: [{ name: 'foreign', status: 'connected' }] },
     { mcp_servers: [{ name: 'outcome', status: 'failed' }] }, { skills: ['geo.loop'] },
@@ -95,6 +95,9 @@ test('startup rejects drift, foreign tools, hooks, ambient plugins and fallback 
     await assert.rejects(adapter.observeMessage(init(patch)));
     assert.equal(adapter.certified, false);
   }
+  const newer = make(); newer.child = { pid: 1 };
+  await newer.observeMessage(init({ claude_code_version: '2.2.0' }));
+  assert.equal(newer.certified, true);
   const adapter = make(); adapter.child = { pid: 1 };
   await adapter.observeMessage(init({ plugins: [{ name: 'cc-plugin-privacy', path: 'builtin' }] }));
   assert.equal(adapter.certified, true);

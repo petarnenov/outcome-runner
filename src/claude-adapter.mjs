@@ -2,8 +2,9 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { isAtLeast } from './harness-version.mjs';
 
-const version = '2.1.321';
+const minimumVersion = '2.1.321';
 const builtins = ['cc-plugin-agents-md', 'cc-plugin-telemetry', 'cc-plugin-privacy', 'cc-plugin-plugin-authoring'];
 export function claudeEnvironment(environment = process.env) {
   return { ...Object.fromEntries(Object.entries(environment).filter(([name]) =>
@@ -22,7 +23,8 @@ export class ClaudeAdapter {
   probe() {
     const observed = execFileSync(this.executable, ['--version'], {
       encoding: 'utf8', timeout: 10000, env: this.environment }).trim();
-    return observed === `${version} (Claude Code)` ? { status: 'interface-ready', version: observed } :
+    const installed = /^(.+) \(Claude Code\)$/u.exec(observed)?.[1];
+    return isAtLeast(installed, minimumVersion) ? { status: 'interface-ready', version: observed } :
       { status: 'unavailable', reason: 'uncertified-claude-version', version: observed };
   }
   async serve() {
@@ -85,7 +87,7 @@ export class ClaudeAdapter {
   async observeMessage(message) {
     if (message.type === 'system' && message.subtype === 'init') {
       const allowed = this.tools.map(tool => `mcp__outcome__${tool.name}`);
-      if (message.model !== this.model || message.claude_code_version !== version ||
+      if (message.model !== this.model || !isAtLeast(message.claude_code_version, minimumVersion) ||
           message.permissionMode !== 'dontAsk' || !Array.isArray(message.tools) ||
           message.tools.length !== allowed.length || message.tools.some(name => !allowed.includes(name)) ||
           message.mcp_servers?.length !== 1 || message.mcp_servers[0].name !== 'outcome' ||

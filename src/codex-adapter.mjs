@@ -1,5 +1,8 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { isAtLeast } from './harness-version.mjs';
+
+const minimumVersion = '0.167.0';
 
 export const codexRestrictions = {
   'approval_policy': 'never', 'web_search': 'disabled', 'agents.enabled': false,
@@ -29,7 +32,7 @@ export class CodexAdapter {
   probe() {
     const version = execFileSync(this.executable, ['--version'], {
       encoding: 'utf8', timeout: 10000, env: this.environment }).trim();
-    if (version !== 'codex-cli 0.167.0') return { status: 'unavailable', reason: 'uncertified-codex-version', version };
+    if (!isAtLeast(/^codex-cli (.+)$/u.exec(version)?.[1], minimumVersion)) return { status: 'unavailable', reason: 'uncertified-codex-version', version };
     return { status: 'interface-ready', version };
   }
 
