@@ -165,6 +165,28 @@
         "README documents the harness-based technology analysis, how recommendations are chosen and confirmed, the coverage thresholds they apply and the non-interactive behaviour.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-9",
+      "title": "Automatic semantic versioning from Conventional Commits",
+      "change": "automatic-semantic-versioning",
+      "priority": 9,
+      "scopes": [".github", "scripts", "docs", "package.json", "tsconfig.json", "CHANGELOG.md"],
+      "dependencies": [],
+      "criteria": [
+        "Add scripts/release.ts, TypeScript with erasable syntax only and Node built-ins only, that computes the next Semantic Versioning 2.0.0 version from the Conventional Commits 1.0.0 messages (subject and body) of every commit reachable from HEAD and not from the latest tag matching vMAJOR.MINOR.PATCH, including commits of merged branches.",
+        "Bump rules: a type followed by '!' before the colon, or a 'BREAKING CHANGE:' or 'BREAKING-CHANGE:' footer, bumps MAJOR and resets MINOR and PATCH; otherwise any feat bumps MINOR and resets PATCH; otherwise any fix or perf bumps PATCH; otherwise there is no release. Scopes in the type, such as feat(work-queue), are accepted. Merge commit subjects and messages that do not follow Conventional Commits are ignored.",
+        "Commits whose subject starts with 'chore(release):' are ignored, so a release commit never causes another release.",
+        "When no vMAJOR.MINOR.PATCH tag exists, the first release tags the current package.json version without bumping it.",
+        "On a release the script sets the version in package.json and in package-lock.json (its root version and packages[\"\"].version), leaving every other byte of both files unchanged; prepends to CHANGELOG.md, creating it when missing, a section '## X.Y.Z - YYYY-MM-DD' with the groups 'Breaking changes', 'Features' and 'Fixes', each listing the commit descriptions without the type prefix and with the short hash, and omitting empty groups; creates the commit 'chore(release): vX.Y.Z' containing only these files; and creates the annotated tag vX.Y.Z on it. The script never pushes.",
+        "With --dry-run the script prints the next version, or 'no release', and the changelog section, and changes no file, commit or tag.",
+        "Add .github/workflows/release.yml: on push to main, with concurrency group release and cancel-in-progress false, permissions contents write, checkout with full history and tags, Node 24, npm ci, npm run typecheck and npm test; then it runs the release script and, when a release was made, pushes the commit and the tag in one atomic push without force and creates a GitHub Release for the tag whose notes are the new changelog section. When main moved meanwhile and the push is rejected, the job fails without retrying or force-pushing.",
+        "The workflow does not release when the pushed head commit is a release commit.",
+        "package.json gains the script release:dry-run running node scripts/release.ts --dry-run; the test script also runs scripts/*.test.ts and keeps the 85% line, branch and function coverage thresholds; tsconfig.json includes scripts so npm run typecheck checks it. The build output in dist does not include scripts.",
+        "scripts/release.test.ts runs against temporary Git repositories and covers: breaking change by '!' and by footer, feat, fix, perf, no release, scoped types, merge commits, ignored release commits, the bootstrap release without tags, package.json and package-lock.json changes limited to the version, the CHANGELOG section and its empty groups omitted, the annotated tag, and a dry run that changes nothing.",
+        "docs/releasing.md documents the bump rules, the commit message format with examples, the workflow, the dry run and what to do when a release push is rejected.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
