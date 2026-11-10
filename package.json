@@ -1,0 +1,19 @@
+{
+  "name": "outcome-runner",
+  "version": "0.1.0",
+  "description": "Unattended OpenSpec outcome runner for the Git repository it is started in",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/petarnenov/outcome-runner.git" },
+  "bin": { "outcome-runner": "bin/outcome-runner.mjs" },
+  "files": ["bin", "src"],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "live:one": "LIVE_OUTCOME_ONE=1 node --test --test-name-pattern=\"one real outcome\" test/runner.test.mjs",
+    "live:three": "LIVE_OUTCOME_THREE=1 node --test --test-name-pattern=\"three real outcomes\" test/runner.test.mjs",
+    "live:restart": "LIVE_OUTCOME_RESTART=1 node --test --test-name-pattern=\"fresh process resumes real outcome\" test/runner.test.mjs",
+    "live:portable": "LIVE_OUTCOME_PORTABLE=1 node --test --test-name-pattern=\"real portable copy\" test/runner.test.mjs",
+    "live:claude-transport": "LIVE_OUTCOME_CLAUDE_TRANSPORT=1 node --test test/runner-claude.test.mjs"
+  }
+}
