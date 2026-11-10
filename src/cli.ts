@@ -18,12 +18,14 @@ const writeOutput: Output = line => process.stdout.write(line);
 const readJson = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
 const flagPattern = /^--(harness|model|effort|coverage)=(.+)$/u;
 
+/** Uses an error's specific `reason` (for example from the OpenSpec preflight) or the generic startup reason. */
 function reportFailure(error: unknown, output: Output): number {
-  const { message, stack } = error as Error;
+  const { message, stack, reason: specific } = error as Error & { reason?: unknown };
+  const reason = typeof specific === 'string' && specific ? specific : 'startup-or-run-failed';
   const directory = mkdtempSync(join(tmpdir(), 'work-queue-error-'));
   const diagnostics = join(directory, 'error.json');
-  writeFileSync(diagnostics, JSON.stringify({ message, stack }), { mode: 0o600 });
-  output(JSON.stringify({ status: 'unavailable', reason: 'startup-or-run-failed', diagnostics }) + '\n');
+  writeFileSync(diagnostics, JSON.stringify({ reason, message, stack }), { mode: 0o600 });
+  output(JSON.stringify({ status: 'unavailable', reason, diagnostics }) + '\n');
   return 4;
 }
 

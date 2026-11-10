@@ -13,6 +13,8 @@ import { RunStore } from './run-store.ts';
 import { ClaimLedger } from './claims.ts';
 import { CodexFiles, brokerTool } from './codex-files.ts';
 import { resolveHarness, createHarness } from './harness.ts';
+import { openspecPreflight } from './openspec-preflight.ts';
+import type { PreflightDeps } from './openspec-preflight.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
 
 export interface PullRequestHost {
@@ -28,6 +30,8 @@ export interface RunOptions {
   createAdapter?: (options: HarnessOptions) => HarnessAdapter;
   afterEffect?: (operation: string, subject: Work | PullRequest | null) => Promise<void>;
   report?: (event: RunEvent) => void;
+  /** Injectable effects of the OpenSpec preflight; omitted fields use the real process, TTY and filesystem. */
+  openspec?: Partial<PreflightDeps>;
 }
 
 interface CommandFailure extends Error { stderr?: string | Buffer }
@@ -73,6 +77,8 @@ export function packet(root: string, directory: string): Record<string, string> 
 }
 
 export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
+  // The OpenSpec preflight precedes harness resolution, the lock, claims and worktrees.
+  await openspecPreflight(requested, options.openspec);
   const config = await resolveHarness(requested);
   validateConfig(config);
   const { afterEffect = async () => {}, report = () => {} } = options;

@@ -39,7 +39,9 @@ write `npx --allow-git=root github:petarnenov/outcome-runner` instead, and run i
 from inside the repository in the same way.
 
 You also need Git with a commit identity, OpenSpec CLI, authenticated `gh`, and
-authenticated Claude Code 2.1.321 or newer (or Codex 0.167.0 or newer).
+authenticated Claude Code 2.1.321 or newer (or Codex 0.167.0 or newer). Started
+from a terminal, the runner offers to install a missing OpenSpec CLI; see
+[OpenSpec preflight](#openspec-preflight).
 
 **2. Prepare the project**
 
@@ -51,6 +53,9 @@ mkdir -p openspec/changes planning evidence/results
 touch openspec/changes/.gitkeep evidence/results/.gitkeep
 echo 'schema: spec-driven' > openspec/config.yaml
 ```
+
+Started from a terminal, the runner offers to create the missing OpenSpec files
+for you; you still commit and push them yourself.
 
 **3. Describe the tasks in `planning/outcomes.json`**
 
@@ -164,12 +169,66 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
 | 3 | Incomplete, for example blocked dependencies or a protected merge |
-| 4 | Did not run; the reason is in the `diagnostics` file it prints |
+| 4 | Did not run; the printed `reason` (for example `openspec-missing`) and the `diagnostics` file explain why |
 
 After an interruption, run the **same command with the same file** to resume. Do
 not delete the state under `~/.local/state/outcome-runner/`. The runner also
 creates a `work-queue-claims-<target>` branch. It is never merged; keep it while
 work is unfinished.
+
+## OpenSpec preflight
+
+Before anything else (harness checks, any selection prompt, the lock, claims and
+worktrees) the runner checks two things:
+
+1. The OpenSpec CLI is available: `openspec --version` exits 0. Its output is
+   discarded, so a passing check prints nothing.
+2. `openspec/config.yaml` exists at `origin/<target>`. The runner fetches
+   `origin <target>` and looks there; a config that exists only in your working
+   tree counts as missing.
+
+When both hold, startup continues without any OpenSpec prompt or output.
+
+The startup is **interactive only when both stdin and stderr are terminals
+(TTYs)**. All questions and explanations are written to stderr; stdout keeps only
+the JSON lines. An empty answer means no; only `y` or `yes` means yes.
+
+Interactive, missing CLI: the runner asks whether to install it with
+
+```sh
+npm install -g @fission-ai/openspec@latest
+```
+
+On yes it runs exactly that command (as an argument array, without a shell, with
+npm's output on stderr) and checks again. On no, a failing install, or a check
+that still fails afterwards, it exits with code 4 and reason `openspec-missing`.
+
+Interactive, missing `openspec/config.yaml` at `origin/<target>`: the runner asks
+whether to create the project layout in the working tree:
+
+- `openspec/config.yaml` containing `schema: spec-driven`;
+- `<changes>/.gitkeep` and `<receipts>/.gitkeep`, using the invocation's
+  `project.changes` and `project.receipts` directories.
+
+On yes it creates only the files that are missing (existing files are never
+overwritten) and **never commits or pushes**. It then exits with code 4 and
+reason `openspec-layout-created`, telling you to commit and push the created
+files to `origin/<target>` and run again. On no it exits with code 4 and reason
+`openspec-not-initialized`.
+
+Non-interactive (for example CI, a pipe, or stderr redirected to a file): nothing
+is asked, installed or created. A missing CLI exits with code 4 and reason
+`openspec-missing`; a missing config exits with code 4 and reason
+`openspec-not-initialized`.
+
+If Git cannot read `origin/<target>` during the config check (no network, no
+`origin` remote, an unknown target branch), the run exits with code 4 and reason
+`startup-or-run-failed`; nothing is asked or created, because the runner cannot
+tell whether the config exists.
+
+The reason is printed in the stdout line
+`{"status":"unavailable","reason":"...","diagnostics":"..."}` and repeated in
+the private diagnostics file.
 
 ## Creating the queue file
 
@@ -305,6 +364,8 @@ outcome-runner hash path/to/queue.json
 outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>]
 ```
 
+Every start first runs the [OpenSpec preflight](#openspec-preflight).
+
 Claude is used when both the CLI and JSON harness are omitted, or when
 `--harness=claude` or JSON `"harness": "claude"` is given. It requires
 authenticated Claude Code **2.1.321 or newer**. Its model and effort are then
@@ -387,8 +448,10 @@ tests directly, without a build. `npm run typecheck` checks types and
 `npm run build` emits the installed package to `dist/`.
 
 `npm test` runs the suite with scripted adapters and fails when line, branch or
-function coverage of the sources falls below 85%. The `live:*` scripts exercise a
-real harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
+function coverage of the sources falls below 85%. Tests script the OpenSpec
+preflight's prompts, processes and files; they never run npm, openspec or a real
+TTY. The `live:*` scripts exercise a real harness; set `OUTCOME_TEST_HARNESS` to
+`claude` or `codex` (default `codex`).
 
 ## License
 

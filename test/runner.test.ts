@@ -10,12 +10,20 @@ import { git, command } from '../src/git.ts';
 import { hash, validateConfig, validateQueue } from '../src/model.ts';
 import type { CheckRecord, Harness, Project, PullRequest, Queue, ReviewRecord, RunConfig, Work, WorkerSession } from '../src/model.ts';
 import { main } from '../src/cli.ts';
-import { runQueue } from '../src/runner.ts';
+import { runQueue as runQueueWithPreflight } from '../src/runner.ts';
 import { PAGE_BYTES } from '../src/text-page.ts';
-import type { RunEvent } from '../src/runner.ts';
+import type { RunEvent, RunOptions } from '../src/runner.ts';
 import { ClaimLedger } from '../src/claims.ts';
 import { RunStore } from '../src/run-store.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolContext, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
+
+// Scripted runs pass a scripted OpenSpec preflight so no test runs the openspec binary;
+// test/openspec-preflight.test.ts covers the real checks.
+const passingOpenspec: RunOptions['openspec'] = { probe: () => ({ status: 0 }), configPresent: () => true };
+const runQueue: typeof runQueueWithPreflight = (config, options = {}) =>
+  runQueueWithPreflight(config, { openspec: passingOpenspec, ...options });
+const withPassingOpenspec = (portable: typeof runQueueWithPreflight): typeof runQueueWithPreflight =>
+  (config, options = {}) => portable(config, { openspec: passingOpenspec, ...options });
 
 interface FixtureHost {
   find(branch: string): PullRequest | null;
@@ -219,9 +227,10 @@ for (const boundary of ['claim', 'pr', 'merge']) test(`restart reconciles outcom
 test('copied distribution accepts a differently configured independent project', async t => {
   const f = fixture(t, { second: true }); const distribution = join(f.base, 'portable');
   cpSync('src', distribution, { recursive: true });
-  const { runQueue: portable } = await import(pathToFileURL(join(distribution, 'runner.ts')).href);
+  const { runQueue: copied } = await import(pathToFileURL(join(distribution, 'runner.ts')).href);
+  const portable = withPassingOpenspec(copied);
   for (const coverage of [0, 101, 85.5, '90', null]) {
-    await assert.rejects(portable({ ...f.config, coverage }), /Invalid coverage/u);
+    await assert.rejects(portable({ ...f.config, coverage } as RunConfig), /Invalid coverage/u);
   }
   await assert.rejects(portable({ ...f.config, project: { ...f.project,
     checks: [{ command: 'node', args: ['--test'] }] } }), /A coverage gate check is required/u);
@@ -557,7 +566,8 @@ test(`${process.env.OUTCOME_TEST_HARNESS ?? 'codex'}: real portable copy accepts
 }, async t => {
   const f = fixture(t, { second: true }); realHarness(f.config); const distribution = join(f.base, 'portable');
   cpSync('src', distribution, { recursive: true });
-  const { runQueue: portable } = await import(pathToFileURL(join(distribution, 'runner.ts')).href);
+  const { runQueue: copied } = await import(pathToFileURL(join(distribution, 'runner.ts')).href);
+  const portable = withPassingOpenspec(copied);
   const result = await portable({ ...f.config, leaves: ['A'] }, { host: f.host });
   assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.equal(f.records[0].state, 'MERGED');
   const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
@@ -798,7 +808,7 @@ test('coverage startup failures are private, exit 4 and allocate nothing', async
     const { args = [], message, ...patch } = entry;
     writeFileSync(path, JSON.stringify({ ...invocation, ...patch }));
     let output = '';
-    assert.equal(await main(path, undefined, line => { output += line; },
+    assert.equal(await main(path, runQueue, line => { output += line; },
       { cwd: f.root, env: { XDG_STATE_HOME: join(f.base, 'private-state') }, args }), 4);
     const diagnostic = JSON.parse(output).diagnostics as string;
     assert.match(JSON.parse(readFileSync(diagnostic, 'utf8')).message, message);

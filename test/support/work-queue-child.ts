@@ -21,6 +21,8 @@ try {
   const result = await runQueue(JSON.parse(readFileSync(process.argv[2], 'utf8')), {
     host: Object.fromEntries(['find', 'create', 'merge'].map(method => [method,
       (...args: unknown[]) => request(method, args)])) as unknown as PullRequestHost,
+    // The fixture is initialized on origin; a scripted preflight keeps the openspec binary out of the check.
+    openspec: { probe: () => ({ status: 0 }), configPresent: () => true },
     afterEffect: async operation => {
       if (operation === process.argv[3]) {
         process.send!({ type: 'boundary', operation }); await new Promise(() => {});
