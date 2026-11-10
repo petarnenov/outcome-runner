@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "OR-15",
+  "taskHash": "1eb75ee8b9b59d5b4b2c13deefb85158c9b071be2bcb8fb09ca07385c124d05d",
+  "scopes": [
+    "mascot"
+  ],
+  "claimant": "29813aed-3436-4960-aaa2-fe04e78d020b",
+  "host": "Petars-iMac.local",
+  "branch": "outcome/OR-15-63828a2a4837",
+  "claimedAt": "2026-11-10T22:05:35.970Z"
+}
