@@ -21,7 +21,7 @@ import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolContext, ToolInpu
 // test/openspec-preflight.test.ts covers the real checks.
 const passingOpenspec: RunOptions['openspec'] = { probe: () => ({ status: 0 }), configPresent: () => true };
 const runQueue: typeof runQueueWithPreflight = (config, options = {}) =>
-  runQueueWithPreflight(config, { openspec: passingOpenspec, ...options });
+  runQueueWithPreflight(config, { openspec: passingOpenspec, mergePolling: { delay: async () => {} }, ...options });
 const withPassingOpenspec = (portable: typeof runQueueWithPreflight): typeof runQueueWithPreflight =>
   (config, options = {}) => portable(config, { openspec: passingOpenspec, ...options });
 
@@ -904,12 +904,14 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     f.host.find = branch => {
       const pr = find(branch);
       if (!pr || !published) return pr;
+      const stage = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8')).current.stage;
+      if (stage !== 'merge') return pr;
       const actual = scenario === 'missing-ref' ? oldHead : git(join(f.base, 'origin.git'), 'rev-parse', `refs/heads/${branch}`);
       // The first merge view observes the advanced target before the new publish.
       if (scenario === 'target-race' && actual === oldHead) return { ...pr };
       views += 1;
       if (scenario === 'missing-pr' && views === 2) return null;
-      const convergeAt = scenario === 'final' ? 5 : 4;
+      const convergeAt = scenario === 'final' ? 100 : 4;
       const headRefOid = scenario === 'exhausts' || views < convergeAt ? 'previous-head' : actual;
       pr.headRefOid = actual;
       return { ...pr, headRefOid, state: scenario === 'closed' && views === 2 ? 'CLOSED' : pr.state };
@@ -930,7 +932,7 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
         if (scenario === 'missing-ref') git(join(f.base, 'origin.git'), 'update-ref', '-d',
           `refs/heads/${f.records[0].branch}`);
       },
-      mergePolling: { views: 5, delay: async ms => {
+      mergePolling: { views: scenario === 'final' ? undefined : 5, delay: async ms => {
         assert.equal(ms, 3000); delays += 1;
         if (waitSnapshot && !reset) assert.equal(snapshot(), waitSnapshot);
         waitSnapshot = snapshot(); reset = false;
@@ -954,7 +956,8 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     assert.equal(result.status, success ? 'exhausted' : 'incomplete', JSON.stringify(result));
     assert.equal(merges, success ? 1 : 0);
     assert.equal(f.records.length, 1);
-    if (scenario === 'final' || scenario === 'exhausts') { assert.equal(views, 5); assert.equal(delays, 4); }
+    if (scenario === 'final') { assert.equal(views, 100); assert.equal(delays, 99); }
+    if (scenario === 'exhausts') { assert.equal(views, 5); assert.equal(delays, 4); }
     if (scenario === 'converges' || scenario === 'target-race') { assert.equal(views, 4); assert.equal(delays, 3); }
     if (!success && !['closed', 'missing-pr', 'read-failure'].includes(scenario)) {
       assert.equal(blockedReason(result), 'Checked head or target changed');

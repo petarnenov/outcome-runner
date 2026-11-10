@@ -25,7 +25,7 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     if (scenario === 'read-failure') git(root, 'remote', 'set-url', 'origin', join(base, 'absent.git'));
     const calls: string[][] = []; const delays: number[] = []; let views = 0;
     const host = new GitHubHost(root, { repository: 'fixture', target: 'main' } as Project, undefined,
-      { views: 5, delay: async ms => {
+      { views: ['final', 'exhausts'].includes(scenario) ? undefined : 5, delay: async ms => {
         delays.push(ms);
         assert.equal(git(root, 'rev-parse', 'HEAD'), head);
         assert.equal(git(root, 'status', '--porcelain'), '');
@@ -36,7 +36,7 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
       calls.push(args);
       if (args[1] === 'merge') return '';
       assert.equal(args[1], 'view'); views += 1;
-      const convergeAt = scenario === 'final' ? 5 : scenario === 'mixed' ? 3 : 4;
+      const convergeAt = scenario === 'final' ? 100 : scenario === 'mixed' ? 3 : 4;
       const stale = scenario === 'exhausts' || views < convergeAt;
       const unknown = scenario === 'unknown-foreign' || scenario === 'shared-exhaustion' ||
         scenario === 'mixed' && views <= 3;
@@ -54,7 +54,8 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     assert.ok(delays.every(ms => ms === 3000));
     assert.equal(delays.length, views - 1);
     assert.ok(calls.every(args => args[1] === 'view' || args[1] === 'merge'));
-    if (['final', 'exhausts', 'shared-exhaustion'].includes(scenario)) assert.equal(views, 5);
+    if (['final', 'exhausts'].includes(scenario)) assert.equal(views, 100);
+    if (scenario === 'shared-exhaustion') assert.equal(views, 5);
     if (['foreign', 'missing', 'read-failure', 'unknown-foreign'].includes(scenario)) assert.equal(views, 1);
     if (scenario === 'moves') assert.equal(views, 2);
     if (scenario === 'mixed') assert.equal(views, 4);
