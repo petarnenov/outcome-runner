@@ -6,6 +6,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Interface } from 'node:readline';
 import { isAtLeast } from './harness-version.ts';
+import { assertSelection, claudeCatalog, defaultSelection } from './harness-catalog.ts';
 import type { AdapterEvent, AdapterOptions, HarnessAdapter, HarnessOptions, ProbeResult, SessionHandle,
   SpawnProcess, ToolDefinition, ToolInput, WorkerProcess, WorkerReply } from './harness-adapter.ts';
 
@@ -64,11 +65,12 @@ export class ClaudeAdapter implements HarnessAdapter {
   reject?: (reason: unknown) => void;
 
   constructor({ cwd, tools, handleTool, onHandle = async () => {}, executable = 'claude',
-    model = 'claude-opus-5-5', effort = 'medium', spawnProcess = spawn, environment = process.env }: AdapterOptions) {
-    if (model !== 'claude-opus-5-5' || effort !== 'medium') throw new Error('Unsupported Claude model or effort');
+    model = defaultSelection.model, effort = defaultSelection.effort, spawnProcess = spawn,
+    environment = process.env }: AdapterOptions) {
+    assertSelection('claude', claudeCatalog, String(model), String(effort));
     if (!tools.length || new Set(tools.map(tool => tool.name)).size !== tools.length || tools.some(tool => !/^[a-zA-Z0-9_-]+$/u.test(tool.name))) throw new Error('Invalid private tool catalog');
     this.cwd = cwd; this.tools = tools; this.handleTool = handleTool; this.onHandle = onHandle;
-    this.executable = executable; this.model = model; this.effort = effort; this.spawnProcess = spawnProcess;
+    this.executable = executable; this.model = String(model); this.effort = String(effort); this.spawnProcess = spawnProcess;
     this.environment = claudeEnvironment(environment); this.events = []; this.certified = false;
   }
   probe(): ProbeResult {

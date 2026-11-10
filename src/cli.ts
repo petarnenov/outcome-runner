@@ -5,15 +5,18 @@ import { runQueue } from './runner.ts';
 import type { RunOptions } from './runner.ts';
 import { hash, validateQueue } from './model.ts';
 import type { Harness, RunConfig } from './model.ts';
+import { harnesses } from './harness-catalog.ts';
 import { resolveRunPaths } from './run-paths.ts';
 
 type Output = (line: string) => unknown;
 type Runner = (config: RunConfig, options: RunOptions) => Promise<{ status: string }>;
+type Flag = 'harness' | 'model' | 'effort';
 
 interface MainOptions { args?: string[]; cwd?: string; env?: NodeJS.ProcessEnv }
 
 const writeOutput: Output = line => process.stdout.write(line);
 const readJson = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
+const flagPattern = /^--(harness|model|effort)=(.+)$/u;
 
 function reportFailure(error: unknown, output: Output): number {
   const { message, stack } = error as Error;
@@ -24,14 +27,29 @@ function reportFailure(error: unknown, output: Output): number {
   return 4;
 }
 
+/** Parses `--harness=`, `--model=` and `--effort=`, in any order, each at most once and nonempty. */
+export function parseFlags(args: string[]): Partial<Record<Flag, string>> {
+  const flags: Partial<Record<Flag, string>> = {};
+  for (const arg of args) {
+    const match = flagPattern.exec(arg);
+    const name = match?.[1] as Flag | undefined;
+    if (!match || !name || name in flags || (name === 'harness' && !harnesses.includes(match[2] as Harness))) {
+      throw new Error('Expected --harness=<claude|codex>, --model=<id> and --effort=<level>, each at most once; ' +
+        `rejected ${JSON.stringify(arg)}`);
+    }
+    flags[name] = match[2];
+  }
+  return flags;
+}
+
 export async function main(path: string, runner: Runner = runQueue, output: Output = writeOutput,
   { args = [], cwd, env }: MainOptions = {}): Promise<number> {
   try {
     const config = resolveRunPaths(readJson(path), { cwd, env });
-    if (args.length > 1 || args.some(arg => !/^--harness=(codex|claude)$/u.test(arg))) {
-      throw new Error('Expected --harness=codex or --harness=claude');
-    }
-    if (args.length) config.harness = args[0].slice('--harness='.length) as Harness;
+    const flags = parseFlags(args);
+    if (flags.harness) config.harness = flags.harness as Harness;
+    if (flags.model) config.model = flags.model;
+    if (flags.effort) config.effort = flags.effort;
     const result = await runner(config, { report: event => output(JSON.stringify(event) + '\n') });
     output(JSON.stringify(result) + '\n');
     return ['exhausted', 'limit-reached'].includes(result.status) ? 0 : 3;
