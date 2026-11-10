@@ -7,6 +7,8 @@ Releases use Conventional Commits 1.0.0 and Semantic Versioning 2.0.0. Write a s
 - `refactor!: remove legacy transport` or `feat(queue)!: change ownership` requests MAJOR and resets MINOR and PATCH, including on 0.x versions.
 - Other nonbreaking types, such as docs and chore, request no release.
 
+Types are case-insensitive: `FEAT(queue): add scheduling`, `Fix: repair` and `PERF: reduce polling` request the same bumps as their lowercase forms. Breaking footer markers must use uppercase `BREAKING CHANGE` or `BREAKING-CHANGE`. Footer tokens may contain digits, such as `Issue-123: migration reference`, before a breaking footer in the same block.
+
 A valid subject can also declare a breaking change in a footer:
 
 ```text

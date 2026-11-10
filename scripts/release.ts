@@ -20,7 +20,7 @@ function compare(a: string, b: string): number {
 function breakingFooter(body: string): boolean {
   // Footers begin at a paragraph boundary. Their values may continue across lines.
   const blocks = body.trim().split(/\r?\n\s*\r?\n/);
-  const start = blocks.findIndex(block => /^(?:BREAKING CHANGE|[A-Za-z][A-Za-z-]*)(?:: | #)/.test(block));
+  const start = blocks.findIndex(block => /^(?:BREAKING CHANGE|[A-Za-z0-9][A-Za-z0-9_-]*)(?:: | #)/.test(block));
   return start >= 0 && blocks.slice(start).some(block =>
     /(?:^|\r?\n)(?:BREAKING CHANGE|BREAKING-CHANGE): \S/.test(block));
 }
@@ -34,8 +34,9 @@ function entries(cwd: string, tag: string | undefined): Entry[] {
     if (subject.startsWith('chore(release):')) return [];
     const match = /^([A-Za-z][A-Za-z0-9-]*)(?:\([^()\r\n]+\))?(!)?: (\S.*)$/.exec(subject);
     if (!match) return [];
+    const type = match[1].toLowerCase();
     const level = match[2] || breakingFooter(body.join('\n')) ? 3
-      : match[1] === 'feat' ? 2 : ['fix', 'perf'].includes(match[1]) ? 1 : 0;
+      : type === 'feat' ? 2 : ['fix', 'perf'].includes(type) ? 1 : 0;
     return level ? [{ description: match[3], hash: git(cwd, 'rev-parse', '--short', hash), level }] : [];
   });
 }
