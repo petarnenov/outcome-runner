@@ -5,7 +5,7 @@ Git repository, implements each through its own OpenSpec change and Pull Request
 and records accepted results in the repository.
 
 ```sh
-npm i -g outcome-runner
+npm i -g github:petarnenov/outcome-runner
 ```
 
 Run it from any directory inside the repository to work on. The project needs
