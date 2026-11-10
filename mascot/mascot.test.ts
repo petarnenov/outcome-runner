@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import * as mascotModule from './mascot.ts';
 import { playMascot } from './mascot.ts';
@@ -158,7 +159,7 @@ function decode(line: string): Cell[] {
   return cells;
 }
 const LAST_FRAMES: Record<MascotMood, string[]> = {
-  happy: ['   ▀▄ ▄▀    ♪',' ▄███████▄ ','█▄  ███  ▄█','▄ ▀ ▀▀▀ ▀ ▄'],
+  happy: ['   ▀▄ ▄▀    ♪',' ▄███████▄ ','██▄▄███▄▄██','▄ ▀ ▀▀▀ ▀ ▄'],
   angry: ['   ▀▄ ▄▀    #',' ▄███████▄ ','██▀▄███▄▀██',' ▄▀▄▀▀▀▄▀▄ '],
   celebrating: ['   ▀▄ ▄▀    *',' ▄███████▄  .','██▀▄███▄▀██','▄ ▀ ▀▀▀ ▀ ▄ +'],
   content: ['   ▀▄ ▄▀   ',' ▄███████▄ ','██ ▄███▄ ██','▄ ▀ ▀▀▀ ▀ ▄'],
@@ -372,4 +373,20 @@ test('a fully injected run never touches stderr', async () => {
   assert.ok(!chunks.join('').includes('injected'));
   assert.ok(!chunks.join('').includes(HIDE));
   assert.equal(parse(stream.text).caption, 'injected');
+});
+
+test('README previews match all independent NO_COLOR last-frame fixtures', () => {
+  const readme = readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+  assert.match(readme, /owner's reference sprite/u);
+  assert.match(readme, /2026-11-11/u);
+  for (const mood of MOODS) {
+    assert.ok(readme.includes(`### \`${mood}\`\n\n\`\`\`text\n${LAST_FRAMES[mood].join('\n')}\n\`\`\``));
+  }
+});
+
+test('a failing caption write resolves and restores the cursor', async () => {
+  const count = (await play('happy')).stream.chunks.length;
+  const { stream } = await play('happy', 'caption', {}, new MemoryStream(count - 1));
+  assert.equal(stream.chunks.at(-1), SHOW);
+  assert.equal(stream.chunks.at(-2), '\n');
 });

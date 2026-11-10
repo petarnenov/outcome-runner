@@ -24,7 +24,7 @@ Eye whites and tears disappear; all other pixels become solid.
 ```text
    ▀▄ ▄▀    ♪
  ▄███████▄ 
-█▄  ███  ▄█
+██▄▄███▄▄██
 ▄ ▀ ▀▀▀ ▀ ▄
 ```
 
