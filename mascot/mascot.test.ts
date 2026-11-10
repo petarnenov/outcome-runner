@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import * as mascotModule from './mascot.ts';
 import { playMascot } from './mascot.ts';
@@ -8,17 +9,17 @@ const HIDE = '\x1b[?25l';
 const SHOW = '\x1b[?25h';
 const SGR = /\x1b\[[0-9;]*m/gu;
 const CURSOR = /\x1b\[\?25[lh]|\x1b\[\d+A|\r/u;
-const HEIGHT = 7;
+const HEIGHT = 4;
 
-const EXPECTED: Record<MascotMood, { colour: number; frames: number }> = {
-  happy: { colour: 32, frames: 4 },
-  angry: { colour: 31, frames: 4 },
-  celebrating: { colour: 33, frames: 6 },
-  content: { colour: 36, frames: 3 },
-  sleepy: { colour: 34, frames: 5 },
-  sad: { colour: 34, frames: 4 },
-  startled: { colour: 33, frames: 3 },
-  dizzy: { colour: 35, frames: 6 },
+const EXPECTED: Record<MascotMood, { colour: number; frames: number; delay: number }> = {
+  happy: { colour: 78, frames: 4, delay: 200 },
+  angry: { colour: 160, frames: 5, delay: 150 },
+  celebrating: { colour: 220, frames: 4, delay: 150 },
+  content: { colour: 44, frames: 3, delay: 400 },
+  sleepy: { colour: 69, frames: 3, delay: 250 },
+  sad: { colour: 61, frames: 4, delay: 300 },
+  startled: { colour: 208, frames: 3, delay: 200 },
+  dizzy: { colour: 170, frames: 4, delay: 200 },
 };
 const MOODS = Object.keys(EXPECTED) as MascotMood[];
 
@@ -82,57 +83,155 @@ async function captureStderr(run: () => Promise<void>): Promise<string[]> {
   return chunks;
 }
 
-function faceOf(frame: string[]): { eyes: string; mouth: string } {
-  const face = frame.map(plain).join('\n');
-  const eyes = /█ +(\S) +(\S) +█/u.exec(face);
-  const mouth = /█ +(\S) +█/u.exec(face);
-  if (eyes === null || mouth === null) throw new Error('frame without a face');
-  return { eyes: `${eyes[1]}${eyes[2]}`, mouth: mouth[1] };
+// Independent fixtures in pixel coordinates; the decoder reads terminal colour channels.
+const PATTERNS = {
+  open: ['WW', 'WK'], happy: ['WW', 'BB'], angry: ['BW', 'WK'],
+  sad: ['WW', 'KW'], sleepy: ['BB', 'WW'], wide: ['WW', 'WW'],
+  swirlA: ['KW', 'WK'], swirlB: ['WK', 'KW'], star: ['SW', 'WS'],
+} as const;
+type Fixture = [keyof typeof PATTERNS, 0 | 1, number, boolean, number | null, string[]];
+const FIXTURES: Record<MascotMood, Fixture[]> = {
+  happy: [
+    ['open',0,0,false,null,[]], ['happy',1,0,false,null,[]],
+    ['happy',0,0,true,null,[]], ['happy',1,0,true,null,['♪']],
+  ],
+  angry: [
+    ['angry',0,0,false,null,[]], ['angry',0,1,false,null,[]],
+    ['angry',0,0,false,null,[]], ['angry',0,1,false,null,[]],
+    ['angry',0,0,false,null,['#']],
+  ],
+  celebrating: [
+    ['star',0,0,false,null,['+','*','.','']],
+    ['star',1,0,false,null,['','+','*','.']],
+    ['star',0,0,false,null,['.','','+','*']],
+    ['star',1,0,false,null,['*','.','','+']],
+  ],
+  content: [['open',0,0,false,null,[]], ['sleepy',0,0,false,null,[]], ['open',1,0,false,null,[]]],
+  sleepy: [
+    ['sleepy',0,0,false,null,['','z']], ['sleepy',0,0,false,null,['z']],
+    ['sleepy',0,0,false,null,['zZ']],
+  ],
+  sad: [
+    ['sad',0,0,false,6,[]], ['sad',0,0,false,7,[]],
+    ['sad',1,0,false,null,[]], ['sad',0,0,false,7,[]],
+  ],
+  startled: [
+    ['open',1,0,false,null,[]], ['wide',0,0,false,null,['!']], ['wide',1,0,false,null,['!!']],
+  ],
+  dizzy: [
+    ['swirlA',0,0,false,null,['*']], ['swirlB',0,1,false,null,['','*']],
+    ['swirlA',0,0,false,null,['','','*']], ['swirlB',0,1,false,null,['*']],
+  ],
+};
+const EXTRA_COLOURS: Record<string, number> = { '♪':229, '#':196, '+':229, '*':213, '.':117, z:153, zZ:153, '!':196, '!!':196 };
+function fixturePixels(fixture: Fixture): string[][] {
+  const [eye, legs, , cheeks, tear] = fixture;
+  const rows = [
+    '...B...B...', '....B.B....', '..BBBBBBB..', '.BBBBBBBBB.',
+    'BB00BBB11BB', 'BB00BBB11BB', '..B.BBB.B..',
+    legs === 0 ? '.B.B...B.B.' : 'B.B.....B.B',
+  ].map(row => [...row]);
+  const [top, bottom] = PATTERNS[eye];
+  rows[4].splice(2,2,...top); rows[5].splice(2,2,...bottom);
+  rows[4].splice(7,2,...[...top].reverse()); rows[5].splice(7,2,...[...bottom].reverse());
+  if (cheeks) { rows[5][1] = 'C'; rows[5][9] = 'C'; }
+  if (tear !== null) rows[tear][3] = 'T';
+  return rows;
 }
-
+interface Cell { glyph: string; fg: number | undefined; bg: number | undefined }
+function decode(line: string): Cell[] {
+  let fg: number | undefined;
+  let bg: number | undefined;
+  const cells: Cell[] = [];
+  for (const token of line.matchAll(/\x1b\[([0-9;]*)m|([^\x1b])/gu)) {
+    if (token[1] !== undefined) {
+      const codes = token[1].split(';').map(Number);
+      for (let i = 0; i < codes.length; i++) {
+        if (codes[i] === 0) { fg = undefined; bg = undefined; }
+        else if (codes[i] === 38 || codes[i] === 48) {
+          assert.equal(codes[i+1], 5);
+          if (codes[i] === 38) fg = codes[i+2]; else bg = codes[i+2];
+          i += 2;
+        } else assert.fail('unexpected SGR');
+      }
+    } else cells.push({ glyph: token[2], fg, bg });
+  }
+  return cells;
+}
+const LAST_FRAMES: Record<MascotMood, string[]> = {
+  happy: ['   ▀▄ ▄▀    ♪',' ▄███████▄ ','██▄▄███▄▄██','▄ █ ▀▀▀ █ ▄'],
+  angry: ['   ▀▄ ▄▀    #',' ▄███████▄ ','██▀▄███▄▀██',' ▄▀▄▀▀▀▄▀▄ '],
+  celebrating: ['   ▀▄ ▄▀    *',' ▄███████▄  .','██▀▄███▄▀██','▄ █ ▀▀▀ █ ▄ +'],
+  content: ['   ▀▄ ▄▀   ',' ▄███████▄ ','██ ▄███▄ ██','▄ █ ▀▀▀ █ ▄'],
+  sleepy: ['   ▀▄ ▄▀    zZ',' ▄███████▄ ','██▀▀███▀▀██',' ▄▀▄▀▀▀▄▀▄ '],
+  sad: ['   ▀▄ ▄▀   ',' ▄███████▄ ','██▄ ███ ▄██',' ▄▀ ▀▀▀▄▀▄ '],
+  startled: ['   ▀▄ ▄▀    !!',' ▄███████▄ ','██  ███  ██','▄ █ ▀▀▀ █ ▄'],
+  dizzy: ['    ▀▄ ▄▀    *','  ▄███████▄ ',' ██▄▀███▀▄██','  ▄▀▄▀▀▀▄▀▄ '],
+};
 test('the only runtime export is playMascot', () => {
   assert.deepEqual(Object.keys(mascotModule), ['playMascot']);
-  assert.equal(typeof mascotModule.playMascot, 'function');
 });
-
 for (const mood of MOODS) {
-  test(`${mood}: frame count, size limits, duration and colour`, async () => {
-    const { waits, text } = await play(mood);
+  test(`${mood}: exact pixels, mirrors, palette, packing, frame order and bounds`, async () => {
+    const { text, waits } = await play(mood);
     const { frames, ups } = parse(text);
     assert.equal(frames.length, EXPECTED[mood].frames);
     assert.ok(frames.length >= 3 && frames.length <= 6);
-    assert.equal(waits.length, frames.length - 1);
+    assert.deepEqual(waits, Array<number>(frames.length - 1).fill(EXPECTED[mood].delay));
     assert.ok(waits.reduce((sum, ms) => sum + ms, 0) <= 1500);
-    for (const frame of frames) {
-      assert.ok(frame.length <= 7);
-      assert.equal(frame.length, HEIGHT);
-      for (const line of frame) {
-        assert.ok(width(line) <= 20, `${JSON.stringify(plain(line))} is at most 20 columns`);
-        if (line !== '') assert.ok(line.startsWith(`\x1b[${EXPECTED[mood].colour}m`), `${mood} line is coloured`);
+    assert.deepEqual(ups, Array<number>(frames.length - 1).fill(4));
+    const palette: Record<string, number | undefined> = { B:EXPECTED[mood].colour, W:231, K:16, S:226, C:211, T:117 };
+    for (const [index, frame] of frames.entries()) {
+      const fixture = FIXTURES[mood][index];
+      const pixels = fixturePixels(fixture);
+      assert.equal(frame.length, 4);
+      for (const [lineIndex, line] of frame.entries()) {
+        assert.ok(width(line) <= 14);
+        assert.match(line, /\x1b\[0m *$/u, 'styles reset before the next line or caption');
+        const cells = decode(line);
+        const offset = fixture[2];
+        assert.deepEqual(cells.slice(0, offset), Array.from({length:offset}, () => ({ glyph:' ', fg:undefined, bg:undefined })));
+        for (let x = 0; x < 11; x++) {
+          const top = palette[pixels[lineIndex*2][x]];
+          const bottom = palette[pixels[lineIndex*2+1][x]];
+          assert.deepEqual(cells[x+offset], {
+            glyph: top === undefined ? bottom === undefined ? ' ' : '▄' : '▀',
+            fg: top ?? bottom, bg: top !== undefined ? bottom : undefined,
+          }, `${mood} frame ${index} line ${lineIndex} column ${x}`);
+        }
+        const extra = fixture[5][lineIndex] ?? '';
+        assert.deepEqual(cells.slice(offset+11), extra === '' ? [] : [
+          {glyph:' ',fg:undefined,bg:undefined},
+          ...[...extra].map(glyph => ({glyph,fg:EXTRA_COLOURS[extra],bg:undefined})),
+        ]);
       }
     }
-    assert.deepEqual(ups, frames.slice(1).map(frame => frame.length));
-    assert.match(frames[frames.length - 1].map(plain).join('\n'), /[▀-▟]/u);
   });
-}
-
-test('every mood has its own eyes, mouth and face', async () => {
-  const eyes = new Set<string>();
-  const mouths = new Set<string>();
-  for (const mood of MOODS) {
-    const face = faceOf(parse((await play(mood)).text).frames.at(-1) ?? []);
-    eyes.add(face.eyes);
-    mouths.add(face.mouth);
+  for (const value of ['1', '']) {
+    test(`${mood}: NO_COLOR=${JSON.stringify(value)} occupancy and last-frame fixture`, async () => {
+      const { text } = await play(mood, 'caption', { env:{ NO_COLOR:value } });
+      assert.doesNotMatch(text, SGR);
+      const { frames } = parse(text);
+      for (const [index, frame] of frames.entries()) {
+        const fixture = FIXTURES[mood][index];
+        const pixels = fixturePixels(fixture);
+        const solid = (pixel: string): boolean => !['.', 'W', 'T'].includes(pixel);
+        const expected = [0,2,4,6].map((y, line) => {
+          let result = ' '.repeat(fixture[2]);
+          for (let x = 0; x < 11; x++) {
+            result += solid(pixels[y][x]) ? solid(pixels[y+1][x]) ? '█' : '▀' : solid(pixels[y+1][x]) ? '▄' : ' ';
+          }
+          const extra = fixture[5][line];
+          return result + (extra ? ' ' + extra : '');
+        });
+        assert.deepEqual(frame, expected);
+        assert.equal(frame.length, 4);
+        assert.ok(frame.every(line => width(line) <= 14));
+      }
+      assert.deepEqual(frames.at(-1), LAST_FRAMES[mood]);
+    });
   }
-  assert.equal(eyes.size, MOODS.length);
-  assert.equal(mouths.size, MOODS.length);
-  assert.throws(() => faceOf(['no face']), /without a face/u);
-});
-
-test('celebrating shows sparkles outside the body', async () => {
-  const { frames } = parse((await play('celebrating')).text);
-  for (const frame of frames) assert.match(plain(frame[0]), /^[ *+.]*[*+.][ *+.]*$/u);
-});
+}
 
 test('the caption follows the last frame on its own line', async () => {
   const { text } = await play('happy', 'All checks passed');
@@ -170,29 +269,19 @@ test('OUTCOME_RUNNER_MASCOT=0 disables output', async () => {
   assert.notDeepEqual(enabled.stream.chunks, []);
 });
 
-for (const value of ['1', '']) {
-  test(`NO_COLOR=${JSON.stringify(value)} keeps the shapes without colour`, async () => {
-    for (const mood of MOODS) {
-      const coloured = parse((await play(mood)).text);
-      const { text } = await play(mood, 'caption', { env: { NO_COLOR: value } });
-      assert.doesNotMatch(text, SGR);
-      const uncoloured = parse(text);
-      assert.deepEqual(uncoloured.frames, coloured.frames.map(frame => frame.map(plain)));
-      assert.equal(uncoloured.caption, 'caption');
-    }
-  });
-}
-
-test('TERM=dumb prints only the last frame and the caption', async () => {
+test('TERM=dumb prints only the last frame and sanitized caption in both colour modes', async () => {
   for (const mood of MOODS) {
-    const last = parse((await play(mood)).text).frames.at(-1) ?? [];
-    const { text, waits } = await play(mood, 'Done', { env: { TERM: 'dumb' } });
-    assert.equal(text, `${last.join('\n')}\nDone\n`);
-    assert.doesNotMatch(text, CURSOR);
-    assert.deepEqual(waits, []);
+    for (const env of [{ TERM: 'dumb' }, { TERM: 'dumb', NO_COLOR: '' }]) {
+      const last = env.NO_COLOR === undefined
+        ? parse((await play(mood)).text).frames.at(-1) ?? []
+        : LAST_FRAMES[mood];
+      const { text, waits } = await play(mood, 'Done\r\nnow', { env });
+      assert.equal(text, `${last.join('\n')}\nDone  now\n`);
+      assert.doesNotMatch(text, CURSOR);
+      assert.deepEqual(waits, []);
+      if (env.NO_COLOR !== undefined) assert.ok(!text.includes('\x1b'));
+    }
   }
-  const { text } = await play('dizzy', 'Done', { env: { TERM: 'dumb', NO_COLOR: '1' } });
-  assert.ok(!text.includes('\x1b'));
 });
 
 test('an abort stops the animation and shows the cursor', async () => {
@@ -206,7 +295,7 @@ test('an abort stops the animation and shows the cursor', async () => {
   }));
   assert.equal(waits.length, 2);
   assert.ok(signals.every(signal => signal === controller.signal));
-  assert.equal(stream.text.match(/\x1b\[7A/gu)?.length, 1);
+  assert.equal(stream.text.match(/\x1b\[4A/gu)?.length, 1);
   assert.ok(!stream.text.includes('never'));
   assert.equal(stream.chunks[0], HIDE);
   assert.equal(stream.chunks.at(-1), SHOW);
@@ -217,7 +306,7 @@ test('the default timer stops at once on abort without sleeping', async () => {
   const stream = new MemoryStream();
   stream.onWrite = chunk => { if (chunk.includes('\n')) controller.abort(); };
   await assert.doesNotReject(playMascot('celebrating', 'never', { stream, env: {}, signal: controller.signal }));
-  assert.ok(!stream.text.includes('\x1b[7A'));
+  assert.ok(!stream.text.includes('\x1b[4A'));
   assert.ok(!stream.text.includes('never'));
   assert.equal(stream.chunks.at(-1), SHOW);
 });
@@ -288,4 +377,20 @@ test('a fully injected run never touches stderr', async () => {
   assert.ok(!chunks.join('').includes('injected'));
   assert.ok(!chunks.join('').includes(HIDE));
   assert.equal(parse(stream.text).caption, 'injected');
+});
+
+test('README previews match all independent NO_COLOR last-frame fixtures', () => {
+  const readme = readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+  assert.match(readme, /owner's reference sprite/u);
+  assert.match(readme, /2026-11-11/u);
+  for (const mood of MOODS) {
+    assert.ok(readme.includes(`### \`${mood}\`\n\n\`\`\`text\n${LAST_FRAMES[mood].join('\n')}\n\`\`\``));
+  }
+});
+
+test('a failing caption write resolves and restores the cursor', async () => {
+  const count = (await play('happy')).stream.chunks.length;
+  const { stream } = await play('happy', 'caption', {}, new MemoryStream(count - 1));
+  assert.equal(stream.chunks.at(-1), SHOW);
+  assert.equal(stream.chunks.at(-2), '\n');
 });
