@@ -30,12 +30,12 @@ export interface RunOptions {
   report?: (event: RunEvent) => void;
 }
 
-interface CommandFailure extends Error { stderr?: string | Buffer; stdout?: string | Buffer }
+interface CommandFailure extends Error { stderr?: string | Buffer }
 interface InterruptedFailure extends Error { interrupted?: boolean }
 
 const failureDetail = (error: unknown): string => {
-  const { stdout, stderr, message } = error as CommandFailure;
-  return (String(stdout ?? '') + String(stderr ?? message)).slice(-16000);
+  const { stderr, message } = error as CommandFailure;
+  return String(stderr ?? message).slice(-16000);
 };
 
 const checkRecords = (rows: CheckRecord[]) => rows.map(({ command, args, outcome }) => ({ command, args, outcome }));
