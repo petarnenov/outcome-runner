@@ -1,6 +1,9 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import type { ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
+import { once } from 'node:events';
 import { digest, safePath } from './model.ts';
+import { readPage } from './text-page.ts';
+import type { TextPage } from './text-page.ts';
 import type { CheckRecord, Project, PullRequest, ReviewRecord, Work } from './model.ts';
 
 export interface Receipt {
@@ -22,6 +25,18 @@ const runOptions = (): ExecFileSyncOptionsWithStringEncoding => ({ encoding: 'ut
 export const command = (cwd: string, program: string, args: string[]): string => execFileSync(program, args, {
   ...runOptions(), cwd, stdio: ['ignore', 'pipe', 'pipe'],
 }).trim();
+export async function gitPage(cwd: string, offset: number, ...args: string[]): Promise<TextPage> {
+  const child = spawn('git', args, { cwd, env: runOptions().env, stdio: ['ignore', 'pipe', 'ignore'] });
+  const [page, [code]] = await Promise.all([
+    readPage(child.stdout, offset).then(result => {
+      if (result.nextOffset !== null) child.kill();
+      return result;
+    }),
+    once(child, 'close'),
+  ]);
+  if (page.nextOffset === null && code !== 0) throw new Error(`git ${args[0]} failed`);
+  return page;
+}
 export const gitWithInput = (cwd: string, input: string, ...args: string[]): string => execFileSync('git', args, {
   ...runOptions(), cwd, input, stdio: ['pipe', 'pipe', 'pipe'],
 }).trim();

@@ -1,9 +1,10 @@
-import { closeSync, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync,
+import { closeSync, createReadStream, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync,
   readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BinaryLike } from 'node:crypto';
 import { hash, safePath } from './model.ts';
+import { pageOffset, readPage } from './text-page.ts';
 import type { RunStore } from './run-store.ts';
 import type { ToolDefinition, ToolInput } from './harness-adapter.ts';
 
@@ -18,6 +19,11 @@ interface CodexFilesOptions<Identity> {
 }
 
 const digest = (value: BinaryLike): string => createHash('sha256').update(value).digest('hex');
+async function fileDigest(path: string): Promise<string> {
+  const hasher = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hasher.update(chunk);
+  return hasher.digest('hex');
+}
 const inside = (root: string, path: string): boolean => {
   const part = relative(root, path);
   return part !== '..' && !part.startsWith('../') && !part.startsWith('/');
@@ -72,8 +78,9 @@ export class CodexFiles<Identity = unknown> {
     const { operation } = request; const input = request.input!;
     if (operation === 'read_file') {
       const target = this.path(input.path);
-      return existsSync(target) ? { content: readFileSync(target, 'utf8'),
-        hash: digest(readFileSync(target)) } : { content: null, hash: null };
+      const offset = pageOffset(input.offset);
+      if (!existsSync(target)) return { content: null, hash: null };
+      return { ...await readPage(createReadStream(target), offset), hash: await fileDigest(target) };
     }
     if (operation === 'write_file') {
       if (typeof input.content !== 'string' || input.content.length > 4 * 1024 * 1024 ||

@@ -7,12 +7,13 @@ import { setImmediate as yieldLoop } from 'node:timers/promises';
 import { hash, digest, within, safePath, validateConfig, validateQueue } from './model.ts';
 import type { CheckRecord, CommandSpec, PullRequest, Purpose, Queue, ReviewRecord, RunConfig, Task, Work,
   WorkerReport } from './model.ts';
-import { command, git, fileAt, receiptAt, GitHubHost } from './git.ts';
+import { command, git, gitPage, fileAt, receiptAt, GitHubHost } from './git.ts';
+import { pageOffset, readPage } from './text-page.ts';
 import { RunStore } from './run-store.ts';
 import { ClaimLedger } from './claims.ts';
 import { CodexFiles, brokerTool } from './codex-files.ts';
 import { resolveHarness, createHarness } from './harness.ts';
-import type { HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
+import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
 
 export interface PullRequestHost {
   find(branch: string): PullRequest | null | Promise<PullRequest | null>;
@@ -158,6 +159,21 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
       git(work.path, 'merge', '--no-edit', '-m', commitSubject('chore', `integrate ${project.target} into ${work.id}`), target);
       checks(work, project.setup ?? []);
     };
+    const runProductChecks = (work: Work): CheckRecord[] => {
+      try { return checks(work, project.checks); }
+      catch (error) { throw new Error(failureDetail(error)); }
+    };
+    const readContext = async (work: Work, files: string[], { section = 'paths', offset: requested }: Partial<BrokerInput>) => {
+      const offset = pageOffset(requested);
+      if (section === 'paths') {
+        return { section, files: files.slice(offset, offset + 200),
+          nextOffset: offset + 200 < files.length ? offset + 200 : null,
+          history: git(work.path, 'log', '-5', '--oneline') };
+      }
+      if (section === 'diff') return { section, ...await gitPage(work.path, offset, 'diff', work.base) };
+      if (section !== 'findings' && section !== 'checks') throw new Error('Unknown context section');
+      return { section, ...await readPage([Buffer.from(JSON.stringify(activeWork()[section] ?? []))], offset) };
+    };
     const session = async (work: Work, purpose: Purpose, prompt: string): Promise<ReviewRecord> => {
       let result: WorkerReport | undefined;
       const files = git(work.path, 'ls-files', '-z').split('\0').filter(Boolean);
@@ -180,17 +196,11 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
               throw new Error('Product checks require a bound specification');
             }
             assertWork(activeWork()); commit(work);
-            const evidence = checks(work, project.checks); save({ checks: evidence });
-            return { checks: evidence };
+            const evidence = runProductChecks(work); save({ checks: evidence });
+            return { checks: checkRecords(evidence) };
           }
           if (name === brokerTool.name && input.operation === 'context') {
-            const offset = input.input?.offset ?? 0;
-            if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid file offset');
-            return { files: files.slice(offset, offset + 200),
-              nextOffset: offset + 200 < files.length ? offset + 200 : null,
-              history: git(work.path, 'log', '-5', '--oneline'),
-              diff: git(work.path, 'diff', work.base), findings: activeWork().findings ?? [],
-              checks: activeWork().checks ?? [] };
+            return readContext(work, files, input.input ?? {});
           }
           if (name === brokerTool.name) {
             try { return await broker.call(name, input); }
@@ -207,9 +217,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
         if (adapter.probe().status !== 'interface-ready') throw new Error('Selected harness interface unavailable');
         const reply = await adapter.startAction('OFF. Never ask a person anything. All output is private. ' +
           'Use only backlog_tool operations read_file/write_file/context/run_checks and outcome_report. ' +
-          'Read files with input {path}; write with {path,content,expectedHash} from the read result. ' +
-          'context takes input {offset} for paginated paths, diff, history and findings. ' +
-          'run_checks takes input {} and runs only frozen project checks after specification binding. ' +
+          'Read files with input {path,offset}; write with {path,content,expectedHash} from the read result. ' +
+          'A read returns one page: repeat it with nextOffset until nextOffset is null. hash covers the whole file. ' +
+          'context takes input {section,offset} and pages the same way. section is paths (default, with history), ' +
+          'diff, findings or checks. ' +
+          'run_checks takes input {} and runs only frozen project checks after specification binding; ' +
+          'read their output through the checks section. ' +
           'Read applicable AGENTS.md. Report blockers privately. No shell or approval tools.\n' + prompt);
         save({ sessions: [...(activeWork().sessions ?? []), {
           purpose, threadId: reply.threadId, events: reply.events, privateText: reply.text }] });
