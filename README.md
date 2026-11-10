@@ -138,7 +138,23 @@ cd /path/to/project
 outcome-runner ~/invocations/my-project-1.json
 ```
 
-Add `--harness=codex` to use Codex.
+Without flags the run uses harness `claude`, model `claude-opus-5-5` and effort
+`medium`. Choose them with `--harness=<claude|codex>`, `--model=<id>` and
+`--effort=<level>`, in any order and each at most once:
+
+```sh
+outcome-runner ~/invocations/my-project-1.json --model=claude-sonnet-5-5 --effort=high
+outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-model> --effort=<level>
+```
+
+- Claude models: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` and
+  `claude-fable-5-2`, each with effort `low`, `medium`, `high`, `xhigh` or `max`.
+- Codex models and their efforts are the ones the Codex app-server lists through
+  `model/list`. With `--harness=codex`, an omitted model or effort is taken from
+  the local Codex configuration.
+- Defaults stay `claude` / `claude-opus-5-5` / `medium`.
+- A model or effort the selected harness does not offer stops the run with exit
+  code 4 before any work starts.
 
 **8. Read the result**
 
@@ -284,18 +300,34 @@ security decisions.
 ```sh
 cd /path/to/repository
 outcome-runner hash path/to/queue.json
-outcome-runner /path/to/invocation.json
+outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>]
 ```
 
-Claude is the default: authenticated Claude Code **2.1.321 or newer**, exact model
-`claude-opus-5-5`, effort `medium`. No fallback is permitted. Select Codex with
-`outcome-runner /path/to/invocation.json --harness=codex` or JSON
-`"harness": "codex"`. Codex requires CLI **0.167.0 or newer**; omitted Codex
-`model` and `effort` are resolved from its local configuration before allocation.
-The CLI flag overrides the JSON harness only; explicit model/effort values remain.
-Leave those optional fields unset for a shared template, or use values consistent
-with the selected harness. Claude is selected when both CLI and JSON harness
-are omitted. Explicit `--harness=claude` also selects Claude.
+Claude is used when both the CLI and JSON harness are omitted, or when
+`--harness=claude` or JSON `"harness": "claude"` is given. It requires
+authenticated Claude Code **2.1.321 or newer**. Its model and effort are then
+selectable independently through flags or the JSON `model` and `effort` fields.
+The Claude catalog is a static list of exact model IDs, `claude-opus-5-5`,
+`claude-sonnet-5-5`, `claude-haiku-5-5` and `claude-fable-5-2`, each supporting
+effort `low`, `medium`, `high`, `xhigh` and `max`; it is updated with the runner
+when Claude Code accepts new IDs. Omitted Claude model and effort default to
+`claude-opus-5-5` and `medium`. The selection is passed as
+`claude --model <id> --effort <level>`, and the init, assistant and result
+messages must all report the selected model; no fallback model is permitted.
+
+Select Codex with `--harness=codex` or JSON `"harness": "codex"`. Codex requires
+CLI **0.167.0 or newer**. Its catalog is read from the app-server RPC
+`model/list` (all pages, hidden models excluded), and each model supports the
+efforts it lists in `supportedReasoningEfforts`. Omitted Codex `model` and
+`effort` are resolved from its local configuration. Defaults and catalog are read
+in one short app-server session that is closed before allocation.
+
+`--harness=`, `--model=` and `--effort=` each override the JSON `harness`,
+`model` and `effort` respectively. They may appear in any order, each at most
+once; any other argument is refused with exit code 4. A model not offered by the
+selected harness's catalog, or an effort the selected model does not support, is
+refused before allocation with exit code 4 and a diagnostics message naming the
+rejected value. Omitted fields still fall back to the defaults above.
 
 The resolved harness, model and effort are frozen in invocation identity. A
 restart with changed settings or legacy state without this identity is refused;

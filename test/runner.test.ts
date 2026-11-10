@@ -94,7 +94,8 @@ console.log('Fixture result checks passed');\n`);
       git(integrator, 'merge', '--no-ff', head, '-m', `feat(fixture-tools): accept ${pr.number}`);
       git(integrator, 'push', 'origin', `HEAD:${project.target}`); pr.state = 'MERGED';
     } };
-  const config: RunConfig = { root, harness: 'codex', model: 'gpt-6.1-sol', effort: 'medium', stateDirectory: join(base, 'state'), invocation: 'fixture', project,
+  // Scripted runs use the static Claude catalog so resolution never starts a real harness.
+  const config: RunConfig = { root, harness: 'claude', model: 'claude-opus-5-5', effort: 'medium', stateDirectory: join(base, 'state'), invocation: 'fixture', project,
     authority: { reference: 'fixture-owner-off', instruction: 'OFF implement these exact outcomes and normally merge.',
       target: project.target, tasks: Object.fromEntries(queue.tasks.map(task => [task.id, hash(task)])) } };
   return { base, root, project, queue, config, records, host };
@@ -629,16 +630,18 @@ test('published PR and receipt omit private review and check output', async t =>
   assert.ok(body.includes('scripted-unit-session'));
 });
 
-test('rejected harness change after completion preserves released ownership for a fresh invocation', async t => {
+test('rejected model change after completion preserves released ownership for a fresh invocation', async t => {
   const f = fixture(t);
   const config = { ...f.config, leaves: ['A'] };
   assert.equal((await runQueue(config, { host: f.host, createAdapter: scripted })).status, 'exhausted');
   const ownerPath = join(f.base, '.work-queue-locks', `${hash(realpathSync(f.root))}-owner.json`);
   const before = readFileSync(ownerPath, 'utf8');
+  const stateBefore = readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8');
   assert.equal(JSON.parse(before).released, true);
-  await assert.rejects(runQueue({ ...config, harness: 'claude', model: 'claude-opus-5-5' },
-    { host: f.host, createAdapter: scripted }));
+  await assert.rejects(runQueue({ ...config, model: 'claude-sonnet-5-5' },
+    { host: f.host, createAdapter: scripted }), /incompatible/u);
   assert.equal(readFileSync(ownerPath, 'utf8'), before);
+  assert.equal(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'), stateBefore);
   const result = await runQueue({ ...f.config, leaves: ['B'], invocation: 'fresh',
     stateDirectory: join(f.base, 'fresh-state') }, { host: f.host, createAdapter: scripted });
   assert.equal(result.status, 'exhausted'); assert.deepEqual(result.accepted, ['B']);

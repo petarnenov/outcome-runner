@@ -1,35 +1,41 @@
 import { CodexAdapter } from './codex-adapter.ts';
 import { ClaudeAdapter } from './claude-adapter.ts';
+import { assertSelection, defaultSelection, harnessCatalog, harnesses } from './harness-catalog.ts';
+import type { Catalog } from './harness-catalog.ts';
 import type { AdapterOptions, HarnessAdapter, HarnessOptions } from './harness-adapter.ts';
 import type { Harness, ResolvedRunConfig, RunConfig } from './model.ts';
 
-interface CodexDefaults { model?: string; effort?: string }
+export interface CodexSelection { model?: string; effort?: string; catalog: Catalog }
 interface EffectiveCodexConfig { config?: { model?: string; model_reasoning_effort?: string } }
 
-export async function codexDefaults(cwd: string,
-  create: (options: AdapterOptions) => CodexAdapter = options => new CodexAdapter(options)): Promise<CodexDefaults> {
+/** Reads Codex defaults and its model catalog over one short, read-only app-server session. */
+export async function codexSelection(cwd: string,
+  create: (options: AdapterOptions) => CodexAdapter = options => new CodexAdapter(options)): Promise<CodexSelection> {
   const adapter = create({ cwd, tools: [], handleTool: async () => {} });
   try {
-    if (adapter.probe().status !== 'interface-ready') throw new Error('Codex defaults unavailable');
+    if (adapter.probe().status !== 'interface-ready') throw new Error('Codex selection unavailable');
     await adapter.connect();
     const result = await adapter.rpc<EffectiveCodexConfig>('config/read', { includeLayers: false, cwd });
-    return { model: result.config?.model, effort: result.config?.model_reasoning_effort };
+    const catalog = await adapter.models();
+    return { model: result?.config?.model, effort: result?.config?.model_reasoning_effort, catalog };
   } finally { adapter.close(); }
 }
 export async function resolveHarness(config: RunConfig,
-  readDefaults: (cwd: string) => Promise<CodexDefaults> = codexDefaults): Promise<ResolvedRunConfig> {
-  const harness: Harness = config.harness ?? 'claude';
-  if (!['claude', 'codex'].includes(harness)) throw new Error('Unknown outcome harness');
+  readCodex: (cwd: string) => Promise<CodexSelection> = codexSelection): Promise<ResolvedRunConfig> {
+  const harness: Harness = config.harness ?? defaultSelection.harness;
+  if (!harnesses.includes(harness)) throw new Error(`Unknown outcome harness ${JSON.stringify(harness)}`);
   let { model, effort } = config;
-  if (harness === 'claude') {
-    model ??= 'claude-opus-5-5'; effort ??= 'medium';
-    if (model !== 'claude-opus-5-5' || effort !== 'medium') throw new Error('Claude requires Opus 5.5 medium');
-  } else if (!model || !effort) {
-    const defaults = await readDefaults(config.root); model ??= defaults.model; effort ??= defaults.effort;
+  const codex = harness === 'codex' ? await readCodex(config.root) : undefined;
+  if (codex) {
+    model ??= codex.model; effort ??= codex.effort;
+  } else {
+    model ??= defaultSelection.model; effort ??= defaultSelection.effort;
   }
-  if (typeof model !== 'string' || !model || !effort || !['minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort)) {
+  if (typeof model !== 'string' || !model || typeof effort !== 'string' || !effort) {
     throw new Error('Resolved model and effort are required');
   }
+  const catalog = await harnessCatalog(harness, codex && (async () => codex.catalog));
+  assertSelection(harness, catalog, model, effort);
   return { ...config, harness, model, effort };
 }
 export function createHarness(options: HarnessOptions, config: ResolvedRunConfig): HarnessAdapter {

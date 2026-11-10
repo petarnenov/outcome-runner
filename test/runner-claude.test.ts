@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeAdapter, claudeEnvironment } from '../src/claude-adapter.ts';
+import { claudeCatalog } from '../src/harness-catalog.ts';
 import type { AdapterOptions, SessionHandle, SpawnProcess, ToolDefinition, ToolInput, WorkerProcess, WorkerReply } from '../src/harness-adapter.ts';
 import { RunStore } from '../src/run-store.ts';
 import { CodexFiles, brokerTool } from '../src/codex-files.ts';
@@ -57,15 +58,50 @@ test('Claude environment and arguments isolate ambient capabilities without bypa
   assert.equal(args[args.indexOf('--tools') + 1], '');
   assert.equal(args[args.indexOf('--permission-prompts') + 1], 'none');
   assert.equal(args[args.indexOf('--setting-sources') + 1], '');
+  assert.equal(args[args.indexOf('--model') + 1], 'claude-opus-5-5');
   assert.equal(args[args.indexOf('--effort') + 1], 'medium');
   assert.ok(!args.some(arg => /bypass|fallback|dangerously/u.test(arg)));
   const settings = JSON.parse(args[args.indexOf('--settings') + 1]);
   assert.equal(settings.disableAllHooks, true); assert.deepEqual(settings.enabledPlugins, {});
-  assert.throws(() => make({ model: 'opus' }), /Unsupported/u);
-  assert.throws(() => make({ effort: 'high' }), /Unsupported/u);
+  assert.throws(() => make({ model: 'opus' }), /Model "opus" is not offered/u);
+  assert.throws(() => make({ effort: 'minimal' }), /Effort "minimal" is not supported/u);
+  assert.throws(() => make({ model: 'claude-sonnet-5-5', effort: 'ultra' }), /"ultra"/u);
   assert.throws(() => make({ tools: [] }), /catalog/u);
   assert.throws(() => make({ tools: [tool, tool] }), /catalog/u);
   assert.throws(() => make({ tools: [{ ...tool, name: 'unsafe/name' }] }), /catalog/u);
+});
+
+test('every Claude catalog model and effort is accepted and passed to claude', () => {
+  for (const [model, efforts] of claudeCatalog) {
+    for (const effort of efforts) {
+      const args = make({ model, effort }).arguments('http://127.0.0.1:1/token', null);
+      assert.equal(args[args.indexOf('--model') + 1], model);
+      assert.equal(args[args.indexOf('--effort') + 1], effort);
+    }
+  }
+});
+
+test('a non-Opus Claude model runs and is verified against the selected model', async () => {
+  const sonnet = 'claude-sonnet-5-5'; const handles: SessionHandle[] = [];
+  const adapter = make({ model: sonnet, effort: 'high', onHandle: handle => handles.push(handle),
+    spawnProcess: fakeProcess(async ({ args, emit, child }) => {
+      assert.equal(args[args.indexOf('--model') + 1], sonnet);
+      assert.equal(args[args.indexOf('--effort') + 1], 'high');
+      emit(init({ model: sonnet })); emit({ type: 'assistant', message: { model: sonnet } });
+      emit(result({ modelUsage: { exact: { canonicalModel: sonnet } } })); child.emit('exit', 0);
+    }) });
+  const reply = await adapter.startAction('Sonnet');
+  assert.equal(reply.status, 'worker-returned'); assert.equal(reply.text, 'Private completion text');
+  assert.equal(reply.events[0].model, sonnet); assert.equal(reply.events[0].requestedEffort, 'high');
+  assert.deepEqual([handles[0].model, handles[0].effort, handles[0].harness], [sonnet, 'high', 'claude']);
+  adapter.close();
+  const initDrift = make({ model: sonnet, effort: 'high' }); initDrift.child = { pid: 1 } as WorkerProcess;
+  await assert.rejects(initDrift.observeMessage(init()), /certified scope/u);
+  assert.equal(initDrift.certified, false);
+  const certified = make({ model: sonnet, effort: 'high' }); certified.child = { pid: 1 } as WorkerProcess;
+  await certified.observeMessage(init({ model: sonnet }));
+  await assert.rejects(certified.observeMessage({ type: 'assistant', message: { model: 'claude-opus-5-5' } } as ClaudeMessage), /model changed/u);
+  await assert.rejects(certified.observeMessage(result() as unknown as ClaudeMessage), /pinned model/u);
 });
 
 test('private MCP endpoint authenticates callers and denies unknown or pre-init operations', async t => {
