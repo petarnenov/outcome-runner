@@ -13,7 +13,7 @@
     "prepare": "npm run build",
     "typecheck": "tsc",
     "release:dry-run": "node scripts/release.ts --dry-run",
-    "test": "node --test --experimental-test-coverage --test-coverage-exclude=\"test/**\" --test-coverage-exclude=\"scripts/*.test.ts\" --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=85 \"test/*.test.ts\" \"scripts/*.test.ts\"",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude=\"test/**\" --test-coverage-exclude=\"scripts/*.test.ts\" --test-coverage-exclude=\"mascot/*.test.ts\" --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=85 \"test/*.test.ts\" \"scripts/*.test.ts\" \"mascot/*.test.ts\"",
     "live:one": "LIVE_OUTCOME_ONE=1 node --test --test-name-pattern=\"one real outcome\" test/runner.test.ts",
     "live:three": "LIVE_OUTCOME_THREE=1 node --test --test-name-pattern=\"three real outcomes\" test/runner.test.ts",
     "live:restart": "LIVE_OUTCOME_RESTART=1 node --test --test-name-pattern=\"fresh process resumes real outcome\" test/runner.test.ts",
