@@ -143,9 +143,10 @@ test('coverage passes JSON values and CLI overrides to the runner and stays unse
   }, () => {}, { cwd: root, args: ['--effort=high', '--coverage=93', '--model=claude-sonnet-5-5', '--harness=claude'] }), 0);
   assert.equal(received.coverage, 93); assert.equal(received.effort, 'high');
   for (const value of ['0', '101', '85.5', 'abc']) {
-    let ran = false;
-    assert.equal(await main(invocationFile(base), async () => { ran = true; return { status: 'exhausted' }; }, () => {},
-      { cwd: root, args: [`--coverage=${value}`] }), 4);
+    let ran = false; let output = '';
+    assert.equal(await main(invocationFile(base), async () => { ran = true; return { status: 'exhausted' }; },
+      line => { output += line; }, { cwd: root, args: [`--coverage=${value}`] }), 4);
     assert.equal(ran, false);
+    rmSync(join(JSON.parse(output).diagnostics, '..'), { recursive: true, force: true });
   }
 });
