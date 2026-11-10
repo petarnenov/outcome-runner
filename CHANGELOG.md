@@ -1,3 +1,11 @@
+## 0.4.0 - 2026-11-10
+
+### Features
+
+- implement OR-15 (e818019)
+- implement OR-15 (b978dc4)
+- implement OR-15 (b154b8f)
+
 ## 0.3.0 - 2026-11-10
 
 ### Features
