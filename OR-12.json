@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "OR-12",
+  "taskHash": "dfc89c17d63333a6b6bf59b71ee9da5c874f63f4a88d15ddf585946d848f9e75",
+  "scopes": [
+    ".github",
+    "docs"
+  ],
+  "claimant": "91d2d365-7d23-4845-8d0f-902f733e1a85",
+  "host": "Petars-iMac.local",
+  "branch": "outcome/OR-12-4ded0c3f4b9b",
+  "claimedAt": "2026-11-10T21:19:34.797Z"
+}
