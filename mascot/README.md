@@ -1,112 +1,94 @@
 # Outcome mascot
 
-`mascot/mascot.ts` is a small, original animated "pebble" creature for interactive
-terminals: a rounded block-character body with one antenna bobble, two feet and
-an ASCII face. It is a standalone module (TypeScript with erasable syntax only,
-Node built-ins only) and is not wired into the runner.
+The design comes from the owner's reference sprite, approved on 2026-11-11:
+two antennae, a wide body with mirrored eye slots, and X-shaped legs.
+The standalone TypeScript module uses erasable syntax and Node built-ins only
+and is not wired into the runner.
 
-Every frame is 7 lines high and at most 20 columns wide; each animation has 3 to
-6 frames and waits at most 1.5 seconds in total.
+The sprite is 11 by 8 pixels, packed into 11 columns by 4 text lines.
+Including offsets and decorations, every frame is exactly 4 lines and at most
+14 columns wide. Each mood has 3 to 6 frames and at most 1.5 seconds of waits.
+
+Coloured output uses ANSI 256 foreground and background colours with half blocks.
+Body colours are happy 78, angry 160, celebrating 220, content 44, sleepy 69,
+sad 61, startled 208 and dizzy 170. Eye whites use 231, pupils 16, star eyes 226,
+cheeks 211 and tears 117.
 
 ## Moods
 
-Plain-text previews of the last frame of every mood (the first line is reserved
-for sparkles, `z` or `!` and may be empty).
+These are the exact NO_COLOR last frames, including offsets and decorations.
+Eye whites and tears disappear; all other pixels become solid.
 
-### `happy` (green, 4 frames, bounce)
+### `happy`
 
 ```text
-
-      ▄█▄
-   ▄▄▄▄█▄▄▄▄
-  █  ^   ^  █
-  █    v    █
-   ▀▀▀▀▀▀▀▀▀
-    ▀▀   ▀▀
+   ▀▄ ▄▀    ♪
+ ▄███████▄ 
+██▄▄███▄▄██
+▄ █ ▀▀▀ █ ▄
 ```
 
-### `angry` (red, 4 frames, shake)
+### `angry`
 
 ```text
-
-      ▄█▄
-   ▄▄▄▄█▄▄▄▄
-  █  >   <  █
-  █    m    █
-   ▀▀▀▀▀▀▀▀▀
-    ▀▀   ▀▀
+   ▀▄ ▄▀    #
+ ▄███████▄ 
+██▀▄███▄▀██
+ ▄▀▄▀▀▀▄▀▄ 
 ```
 
-### `celebrating` (yellow, 6 frames, sparkles)
+### `celebrating`
 
 ```text
-  *   +  .  +   *
-      ▄█▄
-   ▄▄▄▄█▄▄▄▄
-  █  *   *  █
-  █    D    █
-   ▀▀▀▀▀▀▀▀▀
-    ▀▀   ▀▀
+   ▀▄ ▄▀    *
+ ▄███████▄  .
+██▀▄███▄▀██
+▄ █ ▀▀▀ █ ▄ +
 ```
 
-### `content` (cyan, 3 frames, slow blink)
+### `content`
 
 ```text
-
-      ▄█▄
-   ▄▄▄▄█▄▄▄▄
-  █  -   -  █
-  █    u    █
-   ▀▀▀▀▀▀▀▀▀
-    ▀▀   ▀▀
+   ▀▄ ▄▀   
+ ▄███████▄ 
+██ ▄███▄ ██
+▄ █ ▀▀▀ █ ▄
 ```
 
-### `sleepy` (blue, 5 frames, drifting `z`)
+### `sleepy`
 
 ```text
-            z  Z
-      ▄█▄
-   ▄▄▄▄█▄▄▄▄
-  █  _   _  █
-  █    .    █
-   ▀▀▀▀▀▀▀▀▀
-    ▀▀   ▀▀
+   ▀▄ ▄▀    zZ
+ ▄███████▄ 
+██▀▀███▀▀██
+ ▄▀▄▀▀▀▄▀▄ 
 ```
 
-### `sad` (blue, 4 frames, droop)
+### `sad`
 
 ```text
-
-      ▄█▄
-   ▄▄▄▄█▄▄▄▄
-  █  T   T  █
-  █    n    █
-   ▀▀▀▀▀▀▀▀▀
-    ▀▀   ▀▀
+   ▀▄ ▄▀   
+ ▄███████▄ 
+██▄ ███ ▄██
+ ▄▀ ▀▀▀▄▀▄ 
 ```
 
-### `startled` (yellow, 3 frames, jump)
+### `startled`
 
 ```text
-       !
-      ▄█▄
-   ▄▄▄▄█▄▄▄▄
-  █  O   O  █
-  █    o    █
-   ▀▀▀▀▀▀▀▀▀
-    ▀▀   ▀▀
+   ▀▄ ▄▀    !!
+ ▄███████▄ 
+██  ███  ██
+▄ █ ▀▀▀ █ ▄
 ```
 
-### `dizzy` (magenta, 6 frames, sway)
+### `dizzy`
 
 ```text
-
-      ▄█▄
-   ▄▄▄▄█▄▄▄▄
-  █  @   @  █
-  █    ~    █
-   ▀▀▀▀▀▀▀▀▀
-    ▀▀   ▀▀
+    ▀▄ ▄▀    *
+  ▄███████▄ 
+ ██▄▀███▀▄██
+  ▄▀▄▀▀▀▄▀▄ 
 ```
 
 ## API
@@ -143,8 +125,9 @@ failing write. After an abort or failure no caption is written.
 ### Environment rules
 
 - Nothing is written when the stream is not a TTY or `OUTCOME_RUNNER_MASCOT=0`.
-- `NO_COLOR` set to any value, including the empty string, keeps the same
-  shapes without ANSI colour codes.
+- `NO_COLOR` set to any value, including the empty string, removes eye whites and tears before packing; every other pixel is solid.
+  Both pixels print as `█`, top only as `▀`, bottom only as `▄`, neither as a
+  space. Decorations remain, without ANSI colour codes.
 - `TERM=dumb` prints only the last frame and the caption, with no cursor
   movement, no cursor hide/show and no waiting.
 

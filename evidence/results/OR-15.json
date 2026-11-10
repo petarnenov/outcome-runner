@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "id": "OR-15",
+  "taskHash": "1eb75ee8b9b59d5b4b2c13deefb85158c9b071be2bcb8fb09ca07385c124d05d",
+  "authority": "owner-2026-11-10-parallel-OR-15",
+  "specification": {
+    "openspec/changes/redesign-mascot-pixel-sprite/design.md": "5272f5d640e2c11f733aba2909bfa84f1a57d8d4a7c4d1bf95ec4bbcc0d4b160",
+    "openspec/changes/redesign-mascot-pixel-sprite/proposal.md": "ca58e7a902e4d81e457503600833018c1b0ccbbdee34d817c9230e00ccb63eda",
+    "openspec/changes/redesign-mascot-pixel-sprite/specs/terminal-mascot/spec.md": "7b54349390c722c20107633fdd68c280abb0b0dc8550ed5c4c69f52b9dbf2594"
+  },
+  "review": {
+    "reviewer": "codex:01a1c793-c4d2-74b0-a76c-7003460cc0e9",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "mascot/README.md",
+      "hash": "4694dd10dbbc680b21d0424cf4b9ad28aa57b6c1a80f403f2d07ea14a90f763f"
+    },
+    {
+      "path": "mascot/mascot.test.ts",
+      "hash": "ced4b38d115e599bb061a8941b22cc3bc901516c51b3713899a11009bdfc159c"
+    },
+    {
+      "path": "mascot/mascot.ts",
+      "hash": "11cab0fc7b2f9e3eeed7cecc8c2a4e60a398110664e897297835f0848b04c27b"
+    },
+    {
+      "path": "openspec/changes/redesign-mascot-pixel-sprite/design.md",
+      "hash": "5272f5d640e2c11f733aba2909bfa84f1a57d8d4a7c4d1bf95ec4bbcc0d4b160"
+    },
+    {
+      "path": "openspec/changes/redesign-mascot-pixel-sprite/proposal.md",
+      "hash": "ca58e7a902e4d81e457503600833018c1b0ccbbdee34d817c9230e00ccb63eda"
+    },
+    {
+      "path": "openspec/changes/redesign-mascot-pixel-sprite/specs/terminal-mascot/spec.md",
+      "hash": "7b54349390c722c20107633fdd68c280abb0b0dc8550ed5c4c69f52b9dbf2594"
+    },
+    {
+      "path": "openspec/changes/redesign-mascot-pixel-sprite/tasks.md",
+      "hash": "28025b0ae186f4ddfbf303a3718d55623a08450b2942b4333d7734ff6c661067"
+    }
+  ],
+  "head": "e818019c33a0eef7d0df3f03d2a3053a6e08fe34",
+  "base": "468023e6a9aed0e94bcd4f13fd5d7cf26270156c"
+}
