@@ -14,6 +14,7 @@ export interface BrokerInput {
   content?: string;
   expectedHash?: string | null;
   offset?: number;
+  section?: string;
 }
 
 export interface ToolInput {

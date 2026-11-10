@@ -1,11 +1,13 @@
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunStore } from '../src/run-store.ts';
 import { CodexFiles } from '../src/codex-files.ts';
+import { PAGE_BYTES } from '../src/text-page.ts';
 import type { BrokerInput } from '../src/harness-adapter.ts';
 
 function fixture(t: TestContext) {
@@ -55,4 +57,27 @@ test('fixed files reject malformed requests and support missing-file inspection'
     { path: 'src/a', content: 'one', expectedHash: 'invalid' }]) {
     await assert.rejects(f.broker.call('backlog_tool', { operation: 'write_file', input: input as BrokerInput }), /bounded/u);
   }
+});
+
+test('a large file reads in bounded pages whose hash allows a following write', async t => {
+  const f = fixture(t);
+  const text = 'жълт ред\n'.repeat(12_000);
+  mkdirSync(join(f.root, 'src')); writeFileSync(join(f.root, 'src/large.txt'), text);
+  const whole = createHash('sha256').update(text).digest('hex');
+  const read = (offset?: number) => f.broker.call('backlog_tool', { operation: 'read_file',
+    input: { path: 'src/large.txt', offset } as BrokerInput }) as Promise<{ content: string; hash: string; nextOffset: number | null }>;
+  let page = await read(); let rebuilt = ''; let pages = 0;
+  for (;;) {
+    assert.equal(page.hash, whole);
+    assert.ok(Buffer.byteLength(page.content) <= PAGE_BYTES);
+    rebuilt += page.content; pages += 1;
+    if (page.nextOffset === null) break;
+    page = await read(page.nextOffset);
+  }
+  assert.ok(pages > 1);
+  assert.equal(rebuilt, text);
+  await assert.rejects(read(-1), /offset/u);
+  const written = await f.broker.call('backlog_tool', { operation: 'write_file',
+    input: { path: 'src/large.txt', content: 'replaced', expectedHash: whole } });
+  assert.equal((written as { status: string }).status, 'completed');
 });

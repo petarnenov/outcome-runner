@@ -10,6 +10,7 @@ import { git, command } from '../src/git.ts';
 import { hash, validateConfig, validateQueue } from '../src/model.ts';
 import type { CheckRecord, Harness, Project, PullRequest, Queue, ReviewRecord, RunConfig, Work, WorkerSession } from '../src/model.ts';
 import { runQueue } from '../src/runner.ts';
+import { PAGE_BYTES } from '../src/text-page.ts';
 import type { RunEvent } from '../src/runner.ts';
 import { ClaimLedger } from '../src/claims.ts';
 import { RunStore } from '../src/run-store.ts';
@@ -288,11 +289,43 @@ test('GitHub host uses explicit target and never bypasses protected merges', asy
   assert.equal(host.find('branch'), null);
   rows = [{ number: 1 }]; assert.equal(host.create({ id: 'A', branch: 'branch' } as Work, '/body')!.number, 1);
   rows.push({ number: 2 }); assert.throws(() => host.find('branch'), /Multiple/u);
-  assert.throws(() => host.merge({ number: 1 } as PullRequest, 'head'), /protection/u);
+  await assert.rejects(host.merge({ number: 1 } as PullRequest, 'head'), /protection/u);
   view = { state: 'OPEN', headRefOid: 'head', baseRefName: 'staging', mergeStateStatus: 'CLEAN', isDraft: false };
-  host.merge({ number: 1 } as PullRequest, 'head');
+  await host.merge({ number: 1 } as PullRequest, 'head');
   assert.ok(calls.some(args => args[1] === 'merge' && args.includes('--match-head-commit')));
   assert.ok(calls.every(args => !args.includes('--admin')));
+});
+
+function mergeHost(GitHubHost: typeof import('../src/git.ts').GitHubHost, statuses: string[]) {
+  const host = new GitHubHost('.', { target: 'staging', repository: 'fixture' } as Project, 0);
+  const calls = { views: 0, merges: 0 };
+  host.gh = (...args) => {
+    if (args[1] === 'merge') { calls.merges += 1; return ''; }
+    const mergeStateStatus = statuses[Math.min(calls.views, statuses.length - 1)]; calls.views += 1;
+    return JSON.stringify({ state: 'OPEN', headRefOid: 'head', baseRefName: 'staging', mergeStateStatus, isDraft: false });
+  };
+  return { host, calls };
+}
+
+test('merge waits while GitHub is still computing mergeability', async () => {
+  const { GitHubHost } = await import('../src/git.ts');
+  const { host, calls } = mergeHost(GitHubHost, ['UNKNOWN', 'UNKNOWN', 'CLEAN']);
+  await host.merge({ number: 1 } as PullRequest, 'head');
+  assert.deepEqual(calls, { views: 3, merges: 1 });
+});
+
+test('merge gives up when mergeability never settles', async () => {
+  const { GitHubHost } = await import('../src/git.ts');
+  const { host, calls } = mergeHost(GitHubHost, ['UNKNOWN']);
+  await assert.rejects(host.merge({ number: 1 } as PullRequest, 'head'), /UNKNOWN/u);
+  assert.deepEqual(calls, { views: 20, merges: 0 });
+});
+
+test('merge does not wait out a settled blocked status', async () => {
+  const { GitHubHost } = await import('../src/git.ts');
+  const { host, calls } = mergeHost(GitHubHost, ['BLOCKED', 'CLEAN']);
+  await assert.rejects(host.merge({ number: 1 } as PullRequest, 'head'), /BLOCKED/u);
+  assert.deepEqual(calls, { views: 1, merges: 0 });
 });
 
 test('previously accepted dependency is usable outside selected tasks and counts zero', async t => {
@@ -388,6 +421,74 @@ test('failed implementation checks are automatically repaired and too-large boun
     } });
   assert.equal(result.status, 'incomplete'); assert.deepEqual(result.accepted, ['A']);
   assert.deepEqual(result.remaining, []); assert.equal(f.records.length, 1);
+});
+
+test('review reads a large diff in pages and check output through its section', async t => {
+  const f = fixture(t); let reviewed = false;
+  const result = await runQueue({ ...f.config, leaves: ['A'], maxAccepted: 1 }, { host: f.host,
+    afterEffect: async (kind, work) => {
+      if (kind === 'implementation') writeFileSync(join((work as Work).path, 'src/a/large.txt'), 'line\n'.repeat(30_000) + 'last-marker\n');
+    },
+    createAdapter: options => {
+      const inner = scripted(options as ScriptedOptions);
+      const call = (input: object) => options.handleTool('backlog_tool', { operation: 'context', input: input as BrokerInput }, { threadId: 'test' }) as Promise<any>;
+      return { ...inner, async startAction(prompt: string) {
+        if (prompt.includes('Review actual implementation')) {
+          let page = await call({ section: 'diff' }); let diff = ''; let pages = 0;
+          for (;;) {
+            assert.ok(Buffer.byteLength(page.content) <= PAGE_BYTES);
+            diff += page.content; pages += 1;
+            if (page.nextOffset === null) break;
+            page = await call({ section: 'diff', offset: page.nextOffset });
+          }
+          assert.ok(pages > 1); assert.ok(diff.includes('last-marker'));
+          const checks = await call({ section: 'checks' });
+          assert.match(JSON.parse(checks.content)[0].output, /Fixture result checks passed/u);
+          assert.deepEqual(JSON.parse((await call({ section: 'findings' })).content), []);
+          await assert.rejects(call({ section: 'other' }), /section/u);
+          reviewed = true;
+        }
+        return inner.startAction(prompt);
+      } };
+    } });
+  assert.equal(result.status, 'limit-reached'); assert.ok(reviewed);
+});
+
+test('run_checks answers compactly and bounds a failing check', async t => {
+  const f = fixture(t); let observed = false;
+  const failing = { command: 'node', args: ['-e', "process.stderr.write('x'.repeat(40000)); process.exit(1)"] };
+  const result = await runQueue({ ...f.config, leaves: ['A'], project: { ...f.config.project, checks: [failing] } }, { host: f.host,
+    createAdapter: options => {
+      const inner = scripted(options as ScriptedOptions);
+      return { ...inner, async startAction(prompt: string) {
+        if (prompt.includes('Implement all approved')) {
+          await assert.rejects(options.handleTool('backlog_tool', { operation: 'run_checks', input: {} as BrokerInput }, { threadId: 'test' }),
+            (error: Error) => error.message.length <= 16000 && error.message.endsWith('x'));
+          observed = true;
+        }
+        return inner.startAction(prompt);
+      } };
+    } });
+  assert.equal(result.status, 'incomplete'); assert.ok(observed);
+});
+
+test('run_checks reports passing checks without their output', async t => {
+  const f = fixture(t); let observed = false;
+  await runQueue({ ...f.config, leaves: ['A'], maxAccepted: 1 }, { host: f.host,
+    createAdapter: options => {
+      const inner = scripted(options as ScriptedOptions);
+      return { ...inner, async startAction(prompt: string) {
+        if (prompt.includes('Implement all approved')) {
+          const reply = await inner.startAction(prompt);
+          const answer = await options.handleTool('backlog_tool', { operation: 'run_checks', input: {} as BrokerInput }, { threadId: 'test' }) as { checks: object[] };
+          assert.ok(answer.checks.length); assert.ok(answer.checks.every(row => !('output' in row)));
+          observed = true;
+          return reply;
+        }
+        return inner.startAction(prompt);
+      } };
+    } });
+  assert.ok(observed);
 });
 
 test('state inside primary checkout is rejected before effects', async t => {
