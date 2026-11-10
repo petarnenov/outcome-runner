@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { setTimeout as delay } from 'node:timers/promises';
 
 export type MascotMood =
@@ -82,25 +81,29 @@ function defaultIsTTY(stream: MascotStream): boolean {
 }
 
 async function defaultWait(ms: number, signal?: AbortSignal): Promise<void> {
-  await delay(ms, undefined, { signal });
+  await delay(ms, undefined, signal === undefined ? {} : { signal });
 }
 
 function attempt(stream: MascotStream, chunk: string): void {
   try { stream.write(chunk); } catch { /* restoring the terminal is best effort */ }
 }
 
+function moodArt(mood: string): MoodArt | undefined {
+  return Object.prototype.hasOwnProperty.call(MOODS, mood) ? MOODS[mood as MascotMood] : undefined;
+}
+
 async function run(mood: MascotMood, caption: string, options: MascotOptions, state: PlayState): Promise<void> {
-  const stream: MascotStream = options.stream ?? process.stderr;
+  const stream: MascotStream = options.stream ?? (process.stderr as unknown as MascotStream);
   state.stream = stream;
   const isTTY = options.isTTY ?? defaultIsTTY;
-  const env: Record<string, string | undefined> = options.env ?? process.env;
+  const env: Record<string, string | undefined> = options.env ?? (process.env as Record<string, string | undefined>);
   const wait = options.wait ?? defaultWait;
   const signal = options.signal;
-  if (!Object.hasOwn(MOODS, mood) || !isTTY(stream) || env.OUTCOME_RUNNER_MASCOT === '0' || signal?.aborted === true) {
+  const art = moodArt(mood);
+  if (art === undefined || !isTTY(stream) || env.OUTCOME_RUNNER_MASCOT === '0' || signal?.aborted === true) {
     state.finished = true;
     return;
   }
-  const art = MOODS[mood];
   const colour = env.NO_COLOR === undefined ? art.colour : undefined;
   const frames = art.poses.map(pose => drawFrame(art, pose).map(line => paint(line, colour)));
   const captionLine = `${String(caption).replace(/[\r\n]/gu, ' ')}\n`;
