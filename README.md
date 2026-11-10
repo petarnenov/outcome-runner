@@ -5,8 +5,10 @@ Git repository, implements each through its own OpenSpec change and Pull Request
 and records accepted results in the repository.
 
 ```sh
-npm i -g github:petarnenov/outcome-runner
+npm i -g --allow-git=root github:petarnenov/outcome-runner
 ```
+
+npm 12 refuses Git installs unless `--allow-git=root` is given.
 
 Run it from any directory inside the repository to work on. The project needs
 Git, Node 24 or newer, the selected harness CLI, OpenSpec CLI, the configured
