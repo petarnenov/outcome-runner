@@ -15,6 +15,132 @@ Git, Node 24 or newer, the selected harness CLI, OpenSpec CLI, the configured
 build tools and (for GitHub hosting) authenticated `gh`. The package has no
 dependencies beyond Node built-ins.
 
+## Quick start
+
+**Before the first run:** the runner works unattended and **merges each accepted
+Pull Request into the target branch itself**. If the target requires human
+approval, the run ends incomplete and the Pull Request waits.
+
+**1. Install once per machine**
+
+```sh
+npm i -g --allow-git=root github:petarnenov/outcome-runner
+```
+
+You also need Git with a commit identity, OpenSpec CLI, authenticated `gh`, and
+authenticated Claude Code 2.1.321 or newer (or Codex 0.167.0 or newer).
+
+**2. Prepare the project**
+
+The project needs a GitHub `origin` and a target branch, `main` in this example.
+
+```sh
+cd /path/to/project
+mkdir -p openspec/changes planning evidence/results
+touch openspec/changes/.gitkeep evidence/results/.gitkeep
+echo 'schema: spec-driven' > openspec/config.yaml
+```
+
+**3. Describe the tasks in `planning/outcomes.json`**
+
+```json
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "TASK-1",
+      "title": "Implement finite counter",
+      "change": "implement-finite-counter",
+      "priority": 1,
+      "scopes": ["src/counter"],
+      "dependencies": [],
+      "criteria": [
+        "Create src/counter/result.mjs exporting next(n).",
+        "Include tests within your scope."
+      ]
+    }
+  ]
+}
+```
+
+`scopes` are the only product paths a task may change. They cannot overlap the
+queue, receipts or OpenSpec changes. Smaller `priority` values run first.
+
+**4. Commit and push to the target branch**
+
+The runner reads the queue from `origin/<target>`, not from your working tree.
+
+```sh
+git add -A
+git commit -m "chore: define outcomes"
+git push origin main
+```
+
+**5. Print the task hashes**
+
+```sh
+outcome-runner hash planning/outcomes.json
+```
+
+If you change a task later, its hash changes and step 6 must be updated.
+
+**6. Create an invocation file outside the repository**
+
+Save it as, for example, `~/invocations/my-project-1.json`:
+
+```json
+{
+  "invocation": "my-project-1",
+  "leaves": ["TASK-1"],
+  "maxAccepted": 1,
+  "authority": {
+    "reference": "owner-2026-01-31",
+    "instruction": "The actual instruction authorizing this work",
+    "target": "main",
+    "tasks": { "TASK-1": "HASH_FROM_STEP_5" }
+  },
+  "project": {
+    "queue": "planning/outcomes.json",
+    "changes": "openspec/changes",
+    "receipts": "evidence/results",
+    "target": "main",
+    "repository": "OWNER/REPOSITORY",
+    "planningCheck": { "command": "openspec", "args": ["validate", "{change}", "--strict"] },
+    "checks": [{ "command": "node", "args": ["--test", "{scope}/*.test.mjs"] }]
+  }
+}
+```
+
+- Do not set `root` or `stateDirectory`; the run is refused if you do.
+- Replace `checks` with the project's real checks, for example `make verify`.
+- If a fresh worktree needs dependencies, add
+  `"setup": [{ "command": "npm", "args": ["ci"] }]` to `project`.
+- Without `leaves`, every task in `authority.tasks` runs.
+
+**7. Run it from the repository**
+
+```sh
+cd /path/to/project
+outcome-runner ~/invocations/my-project-1.json
+```
+
+Add `--harness=codex` to use Codex.
+
+**8. Read the result**
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Success: `exhausted` or `limit-reached` |
+| 3 | Incomplete, for example blocked dependencies or a protected merge |
+| 4 | Did not run; the reason is in the `diagnostics` file it prints |
+
+After an interruption, run the **same command with the same file** to resume. Do
+not delete the state under `~/.local/state/outcome-runner/`. The runner also
+creates a `work-queue-claims-<target>` branch. It is never merged; keep it while
+work is unfinished.
+
+## How it works
+
 Run it on one or more machines over the tasks of one repository. A local SQLite
 lock prevents simultaneous invocations in one clone. Across machines the
 repository is the allocator: before taking a task the runner pulls the target and
