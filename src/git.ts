@@ -99,10 +99,12 @@ export class GitHubHost {
   root: string;
   project: Project;
   mergeStatePollMs: number;
+  readonly polling: MergePolling;
 
-  constructor(root: string, project: Project, mergeStatePollMs = MERGE_STATE_POLL_MS, readonly polling: MergePolling = {}) {
+  constructor(root: string, project: Project, mergeStatePollMs = MERGE_STATE_POLL_MS, polling: MergePolling = {}) {
     if (!project.repository) throw new Error('Explicit PR repository is required');
     this.root = root; this.project = project; this.mergeStatePollMs = mergeStatePollMs;
+    this.polling = polling;
   }
   gh(...args: string[]): string { return command(this.root, 'gh', [...args, '--repo', this.project.repository!]); }
   find(branch: string): PullRequest | null {
@@ -142,7 +144,7 @@ export class GitHubHost {
         assertOriginHead(this.root, branch, head);
         if (view >= limit) throw new Error('Checked head or target changed');
       }
-      if (!stale && row.mergeStateStatus !== 'UNKNOWN' || view >= limit) return row;
+      if ((!stale && row.mergeStateStatus !== 'UNKNOWN') || view >= limit) return row;
       await (this.polling.delay ?? delay)(this.polling.pollMs ?? this.mergeStatePollMs);
     }
   }

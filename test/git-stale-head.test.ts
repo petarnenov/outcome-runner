@@ -19,11 +19,11 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     git(root, 'commit', '--allow-empty', '-m', 'tested');
     const head = git(root, 'rev-parse', 'HEAD');
     git(root, 'remote', 'add', 'origin', origin); git(root, 'push', 'origin', 'HEAD:refs/heads/topic');
+    const initialRefs = git(origin, 'show-ref');
     if (scenario === 'foreign' || scenario === 'unknown-foreign') git(origin, 'update-ref', 'refs/heads/topic', old);
     if (scenario === 'missing') git(origin, 'update-ref', '-d', 'refs/heads/topic');
     if (scenario === 'read-failure') git(root, 'remote', 'set-url', 'origin', join(base, 'absent.git'));
     const calls: string[][] = []; const delays: number[] = []; let views = 0;
-    const initialRefs = git(origin, 'show-ref');
     const host = new GitHubHost(root, { repository: 'fixture', target: 'main' } as Project, undefined,
       { views: 5, delay: async ms => {
         delays.push(ms);
