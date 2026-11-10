@@ -78,7 +78,8 @@ export function receiptAt(root: string, revision: string, path: string, taskHash
 }
 interface MergeView { headRefOid: string; baseRefName: string; mergeStateStatus: string; state: string; isDraft: boolean }
 
-const MERGE_STATE_VIEWS = 20;
+// GitHub has taken more than a minute; at the default poll this waits 5 minutes.
+const MERGE_STATE_VIEWS = 100;
 
 export class GitHubHost {
   root: string;

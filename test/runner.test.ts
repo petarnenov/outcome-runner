@@ -318,7 +318,7 @@ test('merge gives up when mergeability never settles', async () => {
   const { GitHubHost } = await import('../src/git.ts');
   const { host, calls } = mergeHost(GitHubHost, ['UNKNOWN']);
   await assert.rejects(host.merge({ number: 1 } as PullRequest, 'head'), /UNKNOWN/u);
-  assert.deepEqual(calls, { views: 20, merges: 0 });
+  assert.deepEqual(calls, { views: 100, merges: 0 });
 });
 
 test('merge does not wait out a settled blocked status', async () => {
