@@ -76,26 +76,43 @@ export function receiptAt(root: string, revision: string, path: string, taskHash
   }
   return receipt;
 }
-interface MergeView { headRefOid: string; baseRefName: string; mergeStateStatus: string; state: string; isDraft: boolean }
+interface MergeView { headRefName?: string; headRefOid: string; baseRefName: string; mergeStateStatus: string; state: string; isDraft: boolean }
 
 // GitHub has taken more than a minute; at the default poll this waits 5 minutes.
-const MERGE_STATE_VIEWS = 100;
+export const MERGE_STATE_VIEWS = 100;
+export const MERGE_STATE_POLL_MS = 3000;
+export interface MergePolling {
+  views?: number;
+  pollMs?: number;
+  delay?: (ms: number) => Promise<unknown>;
+}
+export function assertOriginHead(root: string, branch: string, head: string): void {
+  const ref = `refs/heads/${branch}`;
+  const rows = git(root, 'ls-remote', 'origin', ref).split('\n');
+  if (!rows.some(row => {
+    const [oid, name] = row.split(/\s+/u);
+    return name === ref && oid === head;
+  })) throw new Error('Checked head or target changed');
+}
 
 export class GitHubHost {
   root: string;
   project: Project;
   mergeStatePollMs: number;
+  readonly polling: MergePolling;
 
-  constructor(root: string, project: Project, mergeStatePollMs = 3000) {
+  constructor(root: string, project: Project, mergeStatePollMs = MERGE_STATE_POLL_MS, polling: MergePolling = {}) {
     if (!project.repository) throw new Error('Explicit PR repository is required');
     this.root = root; this.project = project; this.mergeStatePollMs = mergeStatePollMs;
+    this.polling = polling;
   }
   gh(...args: string[]): string { return command(this.root, 'gh', [...args, '--repo', this.project.repository!]); }
   find(branch: string): PullRequest | null {
     const rows: PullRequest[] = JSON.parse(this.gh('pr', 'list', '--state', 'all', '--head', branch,
-      '--base', this.project.target, '--json', 'number,state,headRefOid,baseRefName'));
+      '--base', this.project.target, '--json', 'number,state,headRefOid,baseRefName,headRefName'));
     if (rows.length > 1) throw new Error('Multiple PRs match the outcome branch');
-    return rows[0] ?? null;
+    const row = rows[0] as (PullRequest & { headRefName?: string }) | undefined;
+    return row ? { ...row, branch: row.headRefName ?? branch } : null;
   }
   create(work: Work, body: string): PullRequest | null {
     this.gh('pr', 'create', '--base', this.project.target, '--head', work.branch,
@@ -103,7 +120,7 @@ export class GitHubHost {
     return this.find(work.branch);
   }
   async merge(pr: PullRequest, head: string): Promise<void> {
-    const row = await this.settledMergeView(pr);
+    const row = await this.settledMergeView(pr, head);
     if (row.state !== 'OPEN' || row.headRefOid !== head || row.baseRefName !== this.project.target ||
         row.mergeStateStatus !== 'CLEAN' || row.isDraft) {
       throw new Error(`PR protection or identity blocks merge (${row.mergeStateStatus})`);
@@ -112,15 +129,23 @@ export class GitHubHost {
   }
   mergeView(pr: PullRequest): MergeView {
     return JSON.parse(this.gh('pr', 'view', String(pr.number), '--json',
-      'headRefOid,baseRefName,mergeStateStatus,state,isDraft'));
+      'headRefOid,headRefName,baseRefName,mergeStateStatus,state,isDraft'));
   }
   // GitHub computes mergeability in the background after a PR is created.
-  async settledMergeView(pr: PullRequest): Promise<MergeView> {
-    let row = this.mergeView(pr);
-    for (let view = 1; row.mergeStateStatus === 'UNKNOWN' && view < MERGE_STATE_VIEWS; view += 1) {
-      await delay(this.mergeStatePollMs);
-      row = this.mergeView(pr);
+  async settledMergeView(pr: PullRequest, head?: string): Promise<MergeView> {
+    const limit = this.polling.views ?? MERGE_STATE_VIEWS;
+    for (let view = 1; ; view += 1) {
+      const row = this.mergeView(pr);
+      if (row.state !== 'OPEN') return row;
+      const stale = head !== undefined && row.headRefOid !== head;
+      if (stale) {
+        const branch = pr.branch ?? row.headRefName;
+        if (!branch) throw new Error('Checked head or target changed');
+        assertOriginHead(this.root, branch, head);
+        if (view >= limit) throw new Error('Checked head or target changed');
+      }
+      if ((!stale && row.mergeStateStatus !== 'UNKNOWN') || view >= limit) return row;
+      await (this.polling.delay ?? delay)(this.polling.pollMs ?? this.mergeStatePollMs);
     }
-    return row;
   }
 }

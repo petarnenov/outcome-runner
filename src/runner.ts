@@ -3,11 +3,11 @@ import { dirname, join, resolve } from 'node:path';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { setImmediate as yieldLoop } from 'node:timers/promises';
+import { setTimeout as delay, setImmediate as yieldLoop } from 'node:timers/promises';
 import { hash, digest, within, safePath, validateConfig, validateQueue } from './model.ts';
 import type { CheckRecord, CommandSpec, PullRequest, Purpose, Queue, ReviewRecord, RunConfig, Task, Work,
   WorkerReport } from './model.ts';
-import { command, git, gitPage, fileAt, receiptAt, GitHubHost } from './git.ts';
+import { command, git, gitPage, fileAt, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS, MERGE_STATE_POLL_MS } from './git.ts';
 import { pageOffset, readPage } from './text-page.ts';
 import { RunStore } from './run-store.ts';
 import { ClaimLedger } from './claims.ts';
@@ -26,6 +26,7 @@ export interface PullRequestHost {
 export interface RunEvent { status: string; id: string }
 
 export interface RunOptions {
+  mergePolling?: import('./git.ts').MergePolling;
   host?: PullRequestHost;
   createAdapter?: (options: HarnessOptions) => HarnessAdapter;
   afterEffect?: (operation: string, subject: Work | PullRequest | null) => Promise<void>;
@@ -405,16 +406,28 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
           save({ pr, stage: 'merge' });
         }
         if (activeWork().stage === 'merge') {
-          const now = activeWork(); const pr = await host.find(work.branch);
-          if (!pr) throw new Error('Recorded PR missing');
-          if (pr.state !== 'MERGED') {
+          const now = activeWork();
+          const polling = options.mergePolling ?? {};
+          const limit = polling.views ?? MERGE_STATE_VIEWS;
+          for (let view = 1; ; view += 1) {
+            const pr = await host.find(work.branch);
+            if (!pr) throw new Error('Recorded PR missing');
+            if (pr.state === 'MERGED') break;
+            if (pr.state !== 'OPEN') throw new Error('PR unavailable or closed');
             assertWork(now);
-            if (refresh().target !== now.testedTarget) { save({ stage: 'publish' }); continue; }
-            if (git(work.path, 'rev-parse', 'HEAD') !== now.head || pr.headRefOid !== now.head) {
+            if (git(work.path, 'rev-parse', 'HEAD') !== now.head) {
               throw new Error('Checked head or target changed');
             }
-            await host.merge(pr, now.head!); await afterEffect('merge', pr);
+            if (refresh().target !== now.testedTarget) { save({ stage: 'publish' }); break; }
+            if (pr.headRefOid === now.head) {
+              await host.merge(pr, now.head!); await afterEffect('merge', pr);
+              break;
+            }
+            assertOriginHead(work.path, work.branch, now.head!);
+            if (view >= limit) throw new Error('Checked head or target changed');
+            await (polling.delay ?? delay)(polling.pollMs ?? MERGE_STATE_POLL_MS);
           }
+          if (activeWork().stage === 'publish') continue;
           const targetNow = refresh().target;
           if (!accepted(targetNow, authorized(refresh().queue, work.id))) throw new Error('Merged result lacks valid receipt');
         }

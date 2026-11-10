@@ -21,7 +21,7 @@ import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolContext, ToolInpu
 // test/openspec-preflight.test.ts covers the real checks.
 const passingOpenspec: RunOptions['openspec'] = { probe: () => ({ status: 0 }), configPresent: () => true };
 const runQueue: typeof runQueueWithPreflight = (config, options = {}) =>
-  runQueueWithPreflight(config, { openspec: passingOpenspec, ...options });
+  runQueueWithPreflight(config, { openspec: passingOpenspec, mergePolling: { delay: async () => {} }, ...options });
 const withPassingOpenspec = (portable: typeof runQueueWithPreflight): typeof runQueueWithPreflight =>
   (config, options = {}) => portable(config, { openspec: passingOpenspec, ...options });
 
@@ -313,7 +313,7 @@ test('GitHub host uses explicit target and never bypasses protected merges', asy
 });
 
 function mergeHost(GitHubHost: typeof import('../src/git.ts').GitHubHost, statuses: string[]) {
-  const host = new GitHubHost('.', { target: 'staging', repository: 'fixture' } as Project, 0);
+  const host = new GitHubHost('.', { target: 'staging', repository: 'fixture' } as Project, 0, { delay: async () => {} });
   const calls = { views: 0, merges: 0 };
   host.gh = (...args) => {
     if (args[1] === 'merge') { calls.merges += 1; return ''; }
@@ -887,3 +887,90 @@ test('coverage restart preserves frozen state and ownership and accepts equivale
   assert.ok(prompts.length);
   for (const prompt of prompts) assert.match(prompt, /Resolved coverage threshold: 85%\./u);
 });
+
+for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'missing-ref', 'read-failure',
+  'target-race', 'local-mutation', 'target-during-wait', 'closed', 'missing-pr'] as const) {
+  test(`runner stale head: ${scenario}`, async t => {
+    const f = fixture(t);
+    const previousHead = git(f.root, 'rev-parse', 'HEAD');
+    const find = f.host.find; const merge = f.host.merge;
+    let published = false; let views = 0; let merges = 0; let delays = 0;
+    let oldHead = ''; let waitSnapshot = ''; let reset = false;
+    const snapshot = () => {
+      const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+      return JSON.stringify({ refs: git(join(f.base, 'origin.git'), 'show-ref'),
+        head: git(state.current.path, 'rev-parse', 'HEAD'), checks: state.current.finalChecks,
+        prs: f.records.length });
+    };
+    f.host.find = branch => {
+      const pr = find(branch);
+      if (!pr || !published) return pr;
+      const stage = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8')).current.stage;
+      if (stage !== 'merge') return pr;
+      const actual = scenario === 'missing-ref' ? oldHead : git(join(f.base, 'origin.git'), 'rev-parse', `refs/heads/${branch}`);
+      // The first merge view observes the advanced target before the new publish.
+      if (scenario === 'target-race' && actual === oldHead) return { ...pr };
+      views += 1;
+      if (scenario === 'missing-pr' && views === 2) return null;
+      const convergeAt = scenario === 'final' ? 100 : 4;
+      const headRefOid = scenario === 'exhausts' || views < convergeAt ? (scenario === 'target-race' ? oldHead : previousHead) : actual;
+      pr.headRefOid = actual;
+      return { ...pr, headRefOid, state: scenario === 'closed' && views === 2 ? 'CLOSED' : pr.state };
+    };
+    f.host.merge = (pr, head) => {
+      merges += 1;
+      assert.equal(head, git(join(f.base, 'origin.git'), 'rev-parse', `refs/heads/${pr.branch}`));
+      merge(pr, head);
+    };
+    const pending = runQueue({ ...f.config, leaves: ['A'] }, {
+      host: f.host, createAdapter: scripted,
+      afterEffect: async kind => {
+        if (kind !== 'pr') return;
+        published = true; oldHead = f.records[0].headRefOid;
+        if (scenario === 'target-race') advanceTarget(f, 'unrelated/stale.txt', 'race');
+        if (scenario === 'foreign') git(join(f.base, 'origin.git'), 'update-ref',
+          `refs/heads/${f.records[0].branch}`, git(f.root, 'rev-parse', 'HEAD'));
+        if (scenario === 'missing-ref') git(join(f.base, 'origin.git'), 'update-ref', '-d',
+          `refs/heads/${f.records[0].branch}`);
+      },
+      mergePolling: { views: scenario === 'final' ? undefined : 5, delay: async ms => {
+        assert.equal(ms, 3000); delays += 1;
+        if (waitSnapshot && !reset) assert.equal(snapshot(), waitSnapshot);
+        waitSnapshot = snapshot(); reset = false;
+        const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+        if (scenario === 'moves') {
+          git(join(f.base, 'origin.git'), 'update-ref', `refs/heads/${f.records[0].branch}`,
+            git(f.root, 'rev-parse', 'HEAD')); reset = true;
+        }
+        if (scenario === 'local-mutation') {
+          git(state.current.path, 'commit', '--allow-empty', '-m', 'foreign local change'); reset = true;
+        }
+        if (scenario === 'read-failure') {
+          git(state.current.path, 'remote', 'set-url', 'origin', join(f.base, 'absent.git')); reset = true;
+        }
+        if (scenario === 'target-during-wait' && delays === 1) {
+          advanceTarget(f, 'unrelated/during.txt', 'during'); reset = true;
+        }
+      } },
+    });
+    if (scenario === 'read-failure') {
+      // The unavailable remote also stops the controller's next target refresh.
+      await assert.rejects(pending, /git fetch/u);
+      const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+      assert.match(state.blocked.A.reason, /git fetch/u);
+      assert.equal(merges, 0);
+      return;
+    }
+    const result = await pending;
+    const success = ['converges', 'final', 'target-race', 'target-during-wait'].includes(scenario);
+    assert.equal(result.status, success ? 'exhausted' : 'incomplete', JSON.stringify(result));
+    assert.equal(merges, success ? 1 : 0);
+    assert.equal(f.records.length, 1);
+    if (scenario === 'final') { assert.equal(views, 100); assert.equal(delays, 99); }
+    if (scenario === 'exhausts') { assert.equal(views, 5); assert.equal(delays, 4); }
+    if (scenario === 'converges' || scenario === 'target-race') { assert.equal(views, 4); assert.equal(delays, 3); }
+    if (!success && !['closed', 'missing-pr', 'read-failure'].includes(scenario)) {
+      assert.equal(blockedReason(result), 'Checked head or target changed');
+    }
+  });
+}

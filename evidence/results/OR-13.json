@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "id": "OR-13",
+  "taskHash": "6da7850b59c17114f9beaba640ef46350453e91f933be834581bb1e8be5bf44b",
+  "authority": "owner-2026-11-10-pr4-alternate",
+  "specification": {
+    "openspec/changes/tolerate-stale-pull-request-head/design.md": "adecf04fb8c9340cc22cf2554c49511e7ba5317af425e7687148a8b6730aa8f3",
+    "openspec/changes/tolerate-stale-pull-request-head/proposal.md": "03c6ce1fb317d761787479130ed0943dc96d63da3057663a83d4a8f76884cfe5",
+    "openspec/changes/tolerate-stale-pull-request-head/specs/pull-request-merge/spec.md": "8f5f94b7132b984deaf052ce06770c2ccdb48708df33471df783cc45d592da5b"
+  },
+  "review": {
+    "reviewer": "codex:01a1c7b2-cf2d-73d2-90c2-f4c097f38856",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "openspec/changes/tolerate-stale-pull-request-head/design.md",
+      "hash": "adecf04fb8c9340cc22cf2554c49511e7ba5317af425e7687148a8b6730aa8f3"
+    },
+    {
+      "path": "openspec/changes/tolerate-stale-pull-request-head/proposal.md",
+      "hash": "03c6ce1fb317d761787479130ed0943dc96d63da3057663a83d4a8f76884cfe5"
+    },
+    {
+      "path": "openspec/changes/tolerate-stale-pull-request-head/specs/pull-request-merge/spec.md",
+      "hash": "8f5f94b7132b984deaf052ce06770c2ccdb48708df33471df783cc45d592da5b"
+    },
+    {
+      "path": "openspec/changes/tolerate-stale-pull-request-head/tasks.md",
+      "hash": "98e83faaab51936b7738b1dfb7bcf654508b6f8a75d9360de773daf5ebba562b"
+    },
+    {
+      "path": "src/git.ts",
+      "hash": "43c3f17383c7d7450ec900b5b322a76cb0853b1ef355ee00bd6445b312403a80"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "955be379b000b1e0096ec4d5aff36e3d6bb5132eaf7ff04d51631dff39e487cd"
+    },
+    {
+      "path": "test/git-stale-head.test.ts",
+      "hash": "51d7cbe88cb321090d50b97e690c9544721313e0a36963c521f343b1e15e290d"
+    },
+    {
+      "path": "test/runner.test.ts",
+      "hash": "ba7f5931b9eef1dea7e576e510bc9ce8096083c40c4f1dd3d72e21f5a3010d19"
+    }
+  ],
+  "head": "89828b26fe62d531f70fc5686128af969cfb43d8",
+  "base": "8e36157a2100b8f20f4ec3dd237eebfe04f5530b"
+}
