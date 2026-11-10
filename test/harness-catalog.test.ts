@@ -179,13 +179,19 @@ test('CLI flags parse in any order, at most once each, and override the invocati
   }
 });
 
+// The OpenSpec preflight runs before harness resolution; it is scripted to pass so the refusal comes from the catalog.
+const project = { queue: 'planning/outcomes.json', changes: 'openspec/changes', receipts: 'evidence/results', target: 'main',
+  checks: [{ command: 'node', args: ['{coverage}'] }], planningCheck: { command: 'openspec', args: ['validate'] } };
+const withPassingOpenspec: typeof runQueue = (config, options = {}) =>
+  runQueue(config, { ...options, openspec: { probe: () => ({ status: 0 }), configPresent: () => true } });
+
 async function refused(t: TestContext, args: string[], rejected: string) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'catalog-refusal-')));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const root = join(base, 'project'); mkdirSync(root); git(root, 'init', '-b', 'main');
-  const path = join(base, 'invocation.json'); writeFileSync(path, JSON.stringify({ invocation: 'fixture' }));
+  const path = join(base, 'invocation.json'); writeFileSync(path, JSON.stringify({ invocation: 'fixture', project }));
   const lines: string[] = [];
-  assert.equal(await main(path, runQueue, line => lines.push(line), { args, cwd: root, env: { XDG_STATE_HOME: join(base, 'state') } }), 4);
+  assert.equal(await main(path, withPassingOpenspec, line => lines.push(line), { args, cwd: root, env: { XDG_STATE_HOME: join(base, 'state') } }), 4);
   assert.equal(lines.length, 1);
   const report = JSON.parse(lines[0]);
   t.after(() => rmSync(join(report.diagnostics, '..'), { recursive: true, force: true }));

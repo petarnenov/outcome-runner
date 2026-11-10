@@ -449,9 +449,9 @@ tests directly, without a build. `npm run typecheck` checks types and
 
 `npm test` runs the suite with scripted adapters and fails when line, branch or
 function coverage of the sources falls below 85%. Tests script the OpenSpec
-preflight's prompts, processes and files; they never run npm, openspec or a real
-TTY. The `live:*` scripts exercise a real harness; set `OUTCOME_TEST_HARNESS` to
-`claude` or `codex` (default `codex`).
+preflight's prompts, processes and files, so the preflight never runs npm,
+`openspec` or a real TTY under test. The `live:*` scripts exercise a real
+harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
 
 ## License
 
