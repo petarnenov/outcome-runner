@@ -1,18 +1,4 @@
-import nodeTest from 'node:test';
-import { appendFileSync } from 'node:fs';
-import { inspect } from 'node:util';
-const test: typeof nodeTest = ((...args: unknown[]) => {
-  const body = args.pop() as (...input: unknown[]) => unknown;
-  args.push(async (...input: unknown[]) => {
-    try { return await body(...input); }
-    catch (error) {
-      appendFileSync(new URL('./support/types.ts', import.meta.url),
-        '\n/* DIAGNOSTIC ' + String(args[0]) + ' ' + inspect(error, { depth: 6 }).replaceAll('*/', '* /') + ' */\n');
-      throw error;
-    }
-  });
-  return (nodeTest as (...args: unknown[]) => unknown)(...args);
-}) as typeof nodeTest;
+import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -130,7 +116,7 @@ test('selection names the rejected model or effort', async () => {
   for (const model of ['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2']) {
     for (const effort of ['low', 'xhigh', 'max']) {
       assert.deepEqual(await resolveHarness({ model, effort } as RunConfig),
-        { harness: 'claude', model, effort });
+        { harness: 'claude', model, effort, coverage: 85 });
     }
   }
 });
@@ -169,7 +155,7 @@ test('CLI flags parse in any order, at most once each, and override the invocati
   assert.deepEqual(parseFlags([]), {});
   for (const args of [['--model=a', '--model=b'], ['--model='], ['--verbose'], ['--effort'], ['--harness=other'],
     ['--effort=low', '--effort=low'], ['model=a']]) {
-    assert.throws(() => parseFlags(args), /Expected --harness=<claude\|codex>, --model=<id> and --effort=<level>/u);
+    assert.throws(() => parseFlags(args), /Expected --harness=<claude\|codex>, --model=<id>, --effort=<level> and --coverage=<n>/u);
   }
   const directory = mkdtempSync(join(tmpdir(), 'catalog-cli-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'config.json');

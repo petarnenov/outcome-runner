@@ -27,14 +27,14 @@ function reportFailure(error: unknown, output: Output): number {
   return 4;
 }
 
-/** Parses `--harness=`, `--model=` `--effort=` and `--coverage=`, in any order, each at most once and nonempty. */
+/** Parses `--harness=`, `--model=`, `--effort=` and `--coverage=`, in any order, each at most once and nonempty. */
 export function parseFlags(args: string[]): Partial<Record<Flag, string>> {
   const flags: Partial<Record<Flag, string>> = {};
   for (const arg of args) {
     const match = flagPattern.exec(arg);
     const name = match?.[1] as Flag | undefined;
     if (!match || !name || name in flags || (name === 'harness' && !harnesses.includes(match[2] as Harness))) {
-      throw new Error('Expected --harness=<claude|codex>, --model=<id> --effort=<level> and --coverage=<n>, each at most once; ' +
+      throw new Error('Expected --harness=<claude|codex>, --model=<id>, --effort=<level> and --coverage=<n>, each at most once; ' +
         `rejected ${JSON.stringify(arg)}`);
     }
     flags[name] = match[2];

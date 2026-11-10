@@ -1,18 +1,4 @@
-import nodeTest from 'node:test';
-import { appendFileSync } from 'node:fs';
-import { inspect } from 'node:util';
-const test: typeof nodeTest = ((...args: unknown[]) => {
-  const body = args.pop() as (...input: unknown[]) => unknown;
-  args.push(async (...input: unknown[]) => {
-    try { return await body(...input); }
-    catch (error) {
-      appendFileSync(new URL('./support/types.ts', import.meta.url),
-        '\n/* DIAGNOSTIC ' + String(args[0]) + ' ' + inspect(error, { depth: 6 }).replaceAll('*/', '* /') + ' */\n');
-      throw error;
-    }
-  });
-  return (nodeTest as (...args: unknown[]) => unknown)(...args);
-}) as typeof nodeTest;
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -72,7 +58,7 @@ test('resolved harness model and effort changes and legacy identity cannot rewri
   const first = new RunStore(directory, identity); first.close();
   const before = readFileSync(join(directory, 'state.json'), 'utf8');
   const sonnet = await resolveHarness({ model: 'claude-sonnet-5-5' } as RunConfig);
-  for (const patch of [{ harness: 'codex' }, { model: sonnet.model }, { effort: 'high' }]) {
+  for (const patch of [{ harness: 'codex' }, { model: sonnet.model }, { effort: 'high' }, { coverage: 90 }]) {
     assert.throws(() => new RunStore(directory, { ...identity, ...patch }), /incompatible/u);
     assert.equal(readFileSync(join(directory, 'state.json'), 'utf8'), before);
   }

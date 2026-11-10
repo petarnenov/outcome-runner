@@ -73,8 +73,8 @@ export function packet(root: string, directory: string): Record<string, string> 
 }
 
 export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
-  validateConfig(requested);
   const config = await resolveHarness(requested);
+  validateConfig(config);
   const { afterEffect = async () => {}, report = () => {} } = options;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
   const root = realpathSync(config.root); const project = config.project;

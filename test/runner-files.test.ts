@@ -1,18 +1,4 @@
-import nodeTest from 'node:test';
-import { appendFileSync } from 'node:fs';
-import { inspect } from 'node:util';
-const test: typeof nodeTest = ((...args: unknown[]) => {
-  const body = args.pop() as (...input: unknown[]) => unknown;
-  args.push(async (...input: unknown[]) => {
-    try { return await body(...input); }
-    catch (error) {
-      appendFileSync(new URL('./support/types.ts', import.meta.url),
-        '\n/* DIAGNOSTIC ' + String(args[0]) + ' ' + inspect(error, { depth: 6 }).replaceAll('*/', '* /') + ' */\n');
-      throw error;
-    }
-  });
-  return (nodeTest as (...args: unknown[]) => unknown)(...args);
-}) as typeof nodeTest;
+import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
