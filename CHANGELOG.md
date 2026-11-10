@@ -1,3 +1,14 @@
+## 0.5.0 - 2026-11-10
+
+### Features
+
+- implement OR-13 (89828b2)
+- implement OR-13 (b72b64d)
+- implement OR-13 (790e3a2)
+- implement OR-13 (dfb6100)
+- implement OR-13 (d84f32e)
+- implement OR-13 (d688878)
+
 ## 0.4.0 - 2026-11-10
 
 ### Features
