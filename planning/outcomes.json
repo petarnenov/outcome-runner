@@ -242,6 +242,23 @@
         "docs/releasing.md lists the OpenSpec CLI and its pinned version as a prerequisite of the workflow's test step and explains that the version is updated in the workflow file.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-13",
+      "title": "Tolerate a stale pull request head after a push",
+      "change": "tolerate-stale-pull-request-head",
+      "priority": 3,
+      "scopes": ["src", "test"],
+      "dependencies": [],
+      "criteria": [
+        "Defect: when the target advanced while a task waited in the merge stage, the runner integrated the target, pushed a new head and then read the pull request at once; GitHub still reported the previous head, so the task was blocked with 'Checked head or target changed' although nothing foreign had changed (OR-2, PR #14, 2026-11-10). A restart with the same invocation then merged it.",
+        "In the merge stage, when the pull request reports a headRefOid different from the recorded tested head but origin's branch ref (read with git ls-remote origin refs/heads/<branch>) equals the recorded head, the runner reads the pull request again with the same poll interval and view limit as the existing mergeability wait (3 seconds, 100 views by default) until the reported head equals the recorded head, and then merges.",
+        "GitHubHost.merge applies the same rule: its settled merge view also keeps polling while the reported headRefOid lags behind the expected head and origin's branch ref equals the expected head, instead of failing at once.",
+        "When origin's branch ref differs from the recorded head, or the pull request still reports another head after the view limit, the task is blocked with 'Checked head or target changed' as today and nothing is merged. The local HEAD check and the merge with --match-head-commit <recorded head> stay as they are.",
+        "The wait re-runs no checks and creates no commit, push or pull request.",
+        "Tests use scripted hosts and Git fixtures and cover: a pull request reporting the previous head for several views and then the recorded head is merged without blocking; the full race of a target advance during the merge stage followed by a stale head; origin's branch moved by someone else blocks without merging; a head still stale after the view limit blocks without merging; and the same cases inside GitHubHost.merge. No test waits in real time.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
