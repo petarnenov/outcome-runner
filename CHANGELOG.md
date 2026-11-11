@@ -1,3 +1,18 @@
+## 0.15.0 - 2026-11-11
+
+### Features
+
+- implement OR-17 (8cca764)
+- implement OR-17 (dc02364)
+- implement OR-17 (f4eddd9)
+- implement OR-17 (8a08f8b)
+- implement OR-17 (d5a26e4)
+- implement OR-17 (9433ed3)
+
+### Fixes
+
+- tell workers that the read-only sandbox writes through backlog_tool and binding is done (#39) (3723f6d)
+
 ## 0.14.0 - 2026-11-11
 
 ### Features
