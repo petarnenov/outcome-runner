@@ -375,3 +375,42 @@ test('B: a changed task hash or a removed task of an unfinished invocation is st
     /Run state is incompatible/u);
   unchanged();
 });
+
+// 5.13 (A) (required)
+test('A: an added task is worked after the resumed task, keeping the earlier work and operation ids', async t => {
+  const f = runnerFixture(t, { ids: ['A', 'B'] });
+  // The invocation starts with A (priority 2) only; B (priority 1, scope src/b) is added later.
+  const taskA = { ...f.queue.tasks[0], priority: 2 }; const taskB = f.queue.tasks[1];
+  assert.equal(taskB.priority, 1);
+  publishQueue(f, { version: 1, tasks: [taskA] }, 'test(fixture): queue only A');
+  const initial = f.config();
+  const config = { ...initial, authority: { ...initial.authority, tasks: { A: hash(taskA) } } };
+  const before = await interrupted(f, config);
+  assert.equal(claimCommits(f), '1');
+  const operations = Object.keys(before.operations);
+  assert.ok(operations.length);
+  publishQueue(f, { version: 1, tasks: [taskA, taskB] }, 'test(fixture): add B');
+  const added = { ...config, authority: { ...config.authority, tasks: { A: hash(taskA), B: hash(taskB) } } };
+  const lines: string[] = [];
+  const result = await f.run(added, { steps: line => lines.push(line) });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.deepEqual(result.accepted, ['A', 'B']);
+  assert.match(lines.find(line => line.includes(' A '))!, /A implementation: resuming/u);
+  const acceptedA = lines.findIndex(line => line.includes(' A acceptance: '));
+  const claimB = lines.findIndex(line => line.includes(' B claim: '));
+  assert.ok(acceptedA >= 0 && claimB > acceptedA, lines.join(''));
+  assert.ok(!lines.some(line => line.includes(' A claim: ')));
+  assert.equal(claimCommits(f), '2');
+  const state = JSON.parse(readFileSync(statePath(config), 'utf8'));
+  assert.equal(state.completed.A.operation, before.current.operation);
+  assert.equal(state.completed.A.branch, before.current.branch);
+  assert.equal(sessionsOf(state.completed.A, 'investigate'), 1);
+  assert.equal(state.changes.length, 1);
+  assert.equal(state.changes[0].kind, 'tasks-added'); assert.deepEqual(state.changes[0].tasks, ['B']);
+  assert.deepEqual(state.frozen, ['A', 'B']);
+  assert.equal(state.operationKey, before.operationKey);
+  for (const id of operations) assert.deepEqual(Object.keys(state.operations[id] ?? {}).length > 0, true, id);
+  assert.deepEqual(receiptOf(f, 1).invocationChanges, state.changes);
+});
+
+// 5.14 (A) (coverage-only): not needed, coverage reached.
