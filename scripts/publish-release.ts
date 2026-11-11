@@ -62,6 +62,7 @@ export function publish(cwd: string, hooks: Hooks = {}): string {
             return [ref, oid];
           }));
           if (!refs.has('refs/heads/main')) throw new Error('Missing main');
+          git('fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main');
         } catch {
           throw new Error('Publication uncertain; inspect remote main and tag before recovery. ' + String(error));
         }
@@ -69,7 +70,6 @@ export function publish(cwd: string, hooks: Hooks = {}): string {
         const publishedTag = refs.get('refs/tags/' + tag);
         // A transport error may follow an accepted push. Confirm both refs, including
         // a later descendant of the generated release, before creating notes.
-        git('fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main');
         const contains = (ancestor: string, descendant: string): boolean => {
           try { git('merge-base', '--is-ancestor', ancestor, descendant); return true; }
           catch { return false; }

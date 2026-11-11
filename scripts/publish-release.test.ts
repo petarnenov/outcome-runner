@@ -237,3 +237,36 @@ test('B T8 real atomic rejections exhaust exactly three attempts', t => {
   assert.equal(attempts, 3);
   assert.equal(git(f.origin, 'log', '--format=%s').includes('chore(release):'), false);
 });
+
+for (const combined of [false, true]) {
+  test('A T' + (combined ? '10 combined' : '9 consecutive') + ' close PR merges from stale events', t => {
+    const f = fixture(t);
+    const stale = git(f.queued, 'rev-parse', 'HEAD');
+    f.merge('first-pr');
+    if (combined) f.merge('second-pr');
+    const tags: string[] = [];
+    let pushes = 0;
+    const push = (cwd: string, tag: string) => { pushes++; atomicPush(cwd, tag); };
+    const notes = (_cwd: string, tag: string) => { tags.push(tag); };
+    assert.ok(publish(f.queued, { validate: valid, notes, push }).startsWith('1.2.4\n'));
+    if (!combined) f.merge('second-pr');
+    const second = publish(f.queued, { validate: valid, notes, push });
+    assert.equal(git(f.queued, 'rev-parse', 'HEAD'), stale);
+    assert.ok(combined ? second === 'no release\n' : second.startsWith('1.2.5\n'));
+    assert.equal(pushes, combined ? 1 : 2);
+    assert.deepEqual(tags, combined ? ['v1.2.4'] : ['v1.2.4', 'v1.2.5']);
+    const history = git(f.origin, 'show', 'main:CHANGELOG.md');
+    for (const name of ['first-pr', 'second-pr']) {
+      assert.equal(history.split('- ' + name + ' (').length, 2);
+      assert.equal(git(f.origin, 'show', 'main:' + name), name);
+    }
+    for (const tag of tags) {
+      const version = tag.slice(1);
+      assert.equal(history.split('## ' + version + ' -').length, 2);
+      assert.equal(JSON.parse(git(f.origin, 'show', tag + ':package.json')).version, version);
+      assert.equal(JSON.parse(git(f.origin, 'show', tag + ':package-lock.json')).version, version);
+      assert.equal(git(f.origin, 'cat-file', '-t', tag), 'tag');
+    }
+    assert.equal(git(f.origin, 'rev-parse', tags.at(-1)! + '^{}'), git(f.origin, 'rev-parse', 'main'));
+  });
+}
