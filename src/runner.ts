@@ -368,7 +368,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       const newlyAccepted = Object.keys(completed).filter(id => done.has(id) && !store.state.baselineDone!.includes(id));
       const remaining = ids.filter(id => !done.has(id));
       for (const task of queue.tasks.filter(task => remaining.includes(task.id))) {
-        if (task.id === store.state.current?.id) statistics?.decision(task, 'blocked', store.state.current);
+        if (task.id === store.state.current?.id) statistics?.decision(task, 'blocked', store.state.current!);
         else if (store.state.blocked?.[task.id]) statistics?.decision(task, 'blocked', store.state.blocked[task.id].work);
         else statistics?.decision(task);
       }
@@ -393,5 +393,4 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         }
         const task = queue.tasks.filter(task => remaining.includes(task.id) && !store.state.blocked![task.id] &&
           task.dependencies.every(id => done.has(id)) &&
-          !foreignClaims.some(claim => claim.id === task.id || scopesOverlap(claim.scopes, task.scopes)) &&
-          !O
+          !foreignClaims.
