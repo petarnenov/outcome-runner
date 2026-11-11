@@ -1,3 +1,10 @@
+## 0.8.0 - 2026-11-11
+
+### Features
+
+- implement OR-6 (5e15f71)
+- implement OR-6 (0de31c3)
+
 ## 0.7.0 - 2026-11-11
 
 ### Features
