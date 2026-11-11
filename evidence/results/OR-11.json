@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "id": "OR-11",
+  "taskHash": "a9c77ebe700b91641f70b8aafe246dc3821e8fd98105604003aa24133469fcd4",
+  "authority": "owner-2026-11-11-outcome-runner-or-11-14-16",
+  "specification": {
+    "openspec/changes/show-outcome-mascot/design.md": "1e5c5b61ce41b9af339c5fc673bdf17aeba8742e236c9422a8930006595522d1",
+    "openspec/changes/show-outcome-mascot/proposal.md": "19871aff782a9cd5aa85c4f6c83c09e858dd7be24f4bd1819591f977a02c4328",
+    "openspec/changes/show-outcome-mascot/specs/runner-mascot/spec.md": "8c496a29bc5d6bee510ba8e041e2d8208a1d4f1fec8bb4edbaef1cde70939749"
+  },
+  "review": {
+    "reviewer": "claude:2cb0ed96-b0bc-4b1d-842b-2239d3d6c216",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "7b8db926301fea017f3923e7707ff1e9aba55f1e253943c52ae2828d2a59ebef"
+    },
+    {
+      "path": "openspec/changes/show-outcome-mascot/design.md",
+      "hash": "1e5c5b61ce41b9af339c5fc673bdf17aeba8742e236c9422a8930006595522d1"
+    },
+    {
+      "path": "openspec/changes/show-outcome-mascot/proposal.md",
+      "hash": "19871aff782a9cd5aa85c4f6c83c09e858dd7be24f4bd1819591f977a02c4328"
+    },
+    {
+      "path": "openspec/changes/show-outcome-mascot/specs/runner-mascot/spec.md",
+      "hash": "8c496a29bc5d6bee510ba8e041e2d8208a1d4f1fec8bb4edbaef1cde70939749"
+    },
+    {
+      "path": "openspec/changes/show-outcome-mascot/tasks.md",
+      "hash": "075b4512af459f40313a496a52fb718d58c4f9507fe71b367f00ddc518bfbc9a"
+    },
+    {
+      "path": "src/cli.ts",
+      "hash": "ff766347ddb04dadf72c994767ff13d3844c8403291e1c306237c206b2c5f978"
+    },
+    {
+      "path": "src/mascot-events.ts",
+      "hash": "1858e7959d678269056c1aabbd75c6cb4d769bd88c95c426d61c057dc5b583f5"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "b5c1de5bc64cbb6adb3e0b2f7039d900b1f2bb001f91bd2126facd68df9cad61"
+    },
+    {
+      "path": "test/cli-mascot.test.ts",
+      "hash": "f9fd072817733d06c1bc9d53334d255135900dd88a497e51d31a91c40c013f70"
+    },
+    {
+      "path": "test/mascot-events.test.ts",
+      "hash": "cf8e9b19132b70dbf16b2821147a44fbefe2195e1e83f08e76829180fbe215ae"
+    },
+    {
+      "path": "test/support/mascot-player.ts",
+      "hash": "c6006d3205ebaa79fc7e3067de3c120a6aa0c08da718366e6523fcda27866ad3"
+    }
+  ],
+  "head": "a17cb737458e74024226ebbb7991a13f217a0b18",
+  "base": "bb88d6988f4c8f1e34a00a1de225dcb83916a1df"
+}
