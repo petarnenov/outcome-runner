@@ -19,7 +19,8 @@ export interface Operation {
   result?: OperationResult;
 }
 
-export interface BlockedEntry { reason: string; work: Work }
+/** A blocked task: the private reason, the paths it concerns (for example unresolved conflicts) and its work. */
+export interface BlockedEntry { reason: string; paths?: string[]; work: Work }
 
 /** The record `outcome-runner dispose` leaves: when it last disposed and the unaccepted work it disposed. */
 export interface DisposedRecord { at: string; tasks: Record<string, Work> }

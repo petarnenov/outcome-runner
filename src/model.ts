@@ -68,8 +68,23 @@ export interface ResolvedRunConfig extends RunConfig {
 }
 
 export type Stage = 'claim' | 'investigate' | 'plan' | 'work' | 'document' | 'document-review' | 'final-checks' |
-  'archive' | 'receipt' | 'publish' | 'pr' | 'merge';
+  'archive' | 'integrate' | 'receipt' | 'publish' | 'pr' | 'merge';
 export type Purpose = 'investigate' | 'plan' | 'work' | 'review' | 'document' | 'document-review';
+
+/** The durable steps of merging an in-scope target advance into the task branch, in order. */
+export type IntegrationStep = 'merge' | 'resolve' | 'checks' | 'review' | 'document-review';
+
+/** One merge of an advanced target that changed the task's guarded paths. */
+export interface IntegrationRecord {
+  /** The `origin/<target>` commit being merged. */
+  target: string;
+  /** The task's base before this integration. */
+  previousBase: string;
+  /** The sorted conflicting paths; empty for a clean merge. */
+  conflicts: string[];
+  outcome: 'clean' | 'conflict';
+  step: IntegrationStep;
+}
 
 export interface CheckRecord extends CommandSpec { outcome: string; output?: string }
 
@@ -132,6 +147,10 @@ export interface Work extends Task {
   documentationReviews?: ReviewRecord[];
   documentationChecks?: CheckRecord[];
   archive?: ArchiveRecord;
+  /** The integration in progress; unset outside the `integrate` stage. */
+  integration?: IntegrationRecord;
+  /** Every finished integration, oldest first. */
+  integrations?: IntegrationRecord[];
   session?: SessionHandle & { purpose: Purpose };
   sessions?: WorkerSession[];
   sessionStarts?: Partial<Record<Purpose, number>>;

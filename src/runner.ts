@@ -52,12 +52,14 @@ export type BlockerKind = 'blocked' | 'waiting-for-dependency' | 'waiting-for-cl
  * One unfinished task of the invocation: `blocked` carries `stage` and `diagnostics` (the state.json path),
  * `waiting-for-dependency` the `dependencies` not yet accepted, `waiting-for-claim` the foreign `claim`,
  * `waiting-for-blocked-scope` the blocked `task` whose scopes overlap and `max-accepted` the `limit`.
+ * A task blocked by an unresolved target conflict also carries the conflicting `paths`.
  */
 export interface Blocker {
   kind: BlockerKind;
   reason: string;
   stage?: Work['stage'];
   diagnostics?: string;
+  paths?: string[];
   dependencies?: string[];
   claim?: { id: string; host?: string };
   task?: string;
@@ -101,6 +103,26 @@ export interface RunOptions {
 interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
 interface InterruptedFailure extends Error { interrupted?: boolean }
 
+/** The blocked reasons of a failed integration of an in-scope target advance. */
+export type IntegrationCode = 'target-conflict-unresolved' | 'target-integration-rejected';
+
+/** A failed integration: the message is the code, and `paths` lists the unresolved conflicting paths. */
+export class IntegrationFailure extends Error {
+  code: IntegrationCode;
+  paths: string[];
+  constructor(code: IntegrationCode, paths: string[]) {
+    super(code);
+    this.name = 'IntegrationFailure';
+    this.code = code;
+    this.paths = [...paths];
+  }
+}
+
+/** Whether `text` has a line starting with a Git conflict marker (`<<<<<<< ` or `>>>>>>> `). */
+export const conflictMarkers = (text: string): boolean => /^(?:<<<<<<<|>>>>>>>) /mu.test(text);
+
+const INTEGRATION_REASONS: readonly string[] = ['target-conflict-unresolved', 'target-integration-rejected'];
+
 // Test reporters write failures to stdout while package managers write notices to stderr, so both are kept.
 const failureDetail = (error: unknown): string => {
   const { stdout, stderr, message } = error as CommandFailure;
@@ -113,6 +135,18 @@ const reviewRecord = ({ reviewer, outcome }: ReviewRecord) => ({ reviewer, outco
 const scopesOverlap = (first: string[], second: string[]): boolean => first.some(path =>
   second.some(other => within(path, other) || within(other, path)));
 const DOCUMENTATION_ROUNDS = 4;
+const DOCUMENTATION_REVIEW = 'Review the documentation changes independently against the implementation, every ' +
+  'criterion and the task scope. Documentation may change only README files, Markdown files and docs or doc ' +
+  'directories inside the task scopes. Read files and context; the diff section shows all task changes. ' +
+  'Report accepted only with zero findings; otherwise changes-required with concrete findings.';
+/** The implementation review prompt of the work stage and of an integration. */
+const implementationReview = (coverage: number | undefined): string =>
+  'Review actual implementation independently against every criterion, scope, security and test evidence. ' +
+  'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required. ' +
+  'When reporting accepted, provide completion.summary with two or three English sentences describing what ' +
+  'the whole task changed, and completion.grade for whole-task complexity: A (most complex), B, C, D, ' +
+  'E (easiest). Grade complexity, not correctness, quality or execution speed. ' +
+  implementationReviewTestInstructions(coverage!);
 /** The number of sessions of `purpose` already started for `work`, as the session start counter records it. */
 const sessionsStarted = (work: Work, purpose: Purpose): number => work.sessionStarts ?
   work.sessionStarts[purpose] ?? 0 : (work.sessions ?? []).filter(item => item.purpose === purpose).length;
@@ -160,7 +194,7 @@ export function foreignClaimsOf(snapshot: Pick<LedgerSnapshot, 'claims'>, done: 
 export interface UnfinishedInput extends AcceptedInput {
   remaining: string[];
   tasks: Pick<Task, 'id' | 'dependencies' | 'scopes'>[];
-  blocked: Record<string, { work?: Pick<Work, 'stage' | 'scopes'> }>;
+  blocked: Record<string, { reason?: string; paths?: string[]; work?: Pick<Work, 'stage' | 'scopes'> }>;
   maxAccepted?: number;
   foreignClaims: Pick<Claim, 'id' | 'host' | 'scopes'>[];
   statePath: string;
@@ -169,7 +203,9 @@ export interface UnfinishedInput extends AcceptedInput {
 /**
  * A blocker for every blocked task of the invocation and every remaining task, using the first matching rule:
  * blocked, max-accepted, waiting-for-dependency, waiting-for-claim, waiting-for-blocked-scope. Throws
- * `Unexplained unfinished task` when no rule matches.
+ * `Unexplained unfinished task` when no rule matches. A blocked task keeps the reason `target-conflict-unresolved`
+ * (with its conflicting `paths`) or `target-integration-rejected`; every other blocked task has the reason
+ * `operation-incomplete`.
  */
 export function explainUnfinished(input: UnfinishedInput): Record<string, Blocker> {
   const { remaining, ids, tasks, blocked, done, maxAccepted, foreignClaims, statePath } = input;
@@ -180,8 +216,10 @@ export function explainUnfinished(input: UnfinishedInput): Record<string, Blocke
   const blockers: Record<string, Blocker> = {};
   for (const id of [...new Set([...blockedIds, ...remaining])]) {
     if (Object.hasOwn(blocked, id)) {
-      blockers[id] = { kind: 'blocked', stage: blocked[id].work?.stage, reason: 'operation-incomplete',
-        diagnostics: statePath };
+      const { reason, paths, work } = blocked[id];
+      const integration = typeof reason === 'string' && INTEGRATION_REASONS.includes(reason);
+      blockers[id] = { kind: 'blocked', stage: work?.stage, reason: integration ? reason! : 'operation-incomplete',
+        diagnostics: statePath, ...(integration && paths?.length ? { paths: [...paths] } : {}) };
       continue;
     }
     if (limited) {
@@ -503,8 +541,16 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       }
       return rows;
     };
+    // Whether a Git command succeeds in `cwd`.
+    const succeeds = (cwd: string, ...args: string[]): boolean => {
+      try { git(cwd, ...args); return true; } catch { return false; }
+    };
+    // Paths of `paths` that exist in the worktree or are tracked; the archive removes the change directory.
+    const present = (work: Work, paths: string[]): string[] => paths.filter(path =>
+      existsSync(join(work.path, path)) || git(work.path, 'ls-files', '--', path));
     const commit = (work: Work): void => {
-      git(work.path, 'add', '--', ...work.scopes, work.directory);
+      const paths = present(work, [...work.scopes, work.directory]);
+      if (paths.length) git(work.path, 'add', '--', ...paths);
       if (git(work.path, 'diff', '--cached', '--name-only')) {
         git(work.path, 'commit', '-m', `feat(${project.commitScope ?? 'work-queue'}): implement ${work.id}${project.commitSuffix ?? ''}`);
       }
@@ -519,16 +565,31 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         git(work.path, 'commit', '-m', commitSubject('docs', `document ${work.id}`));
       }
     };
-    const integrateTarget = (work: Work, target: string, attempt?: number): void => {
-      if (git(work.path, 'merge-base', target, 'HEAD') === target) return;
-      const changed = git(work.path, 'diff', '--name-only', work.base, target).split('\n').filter(Boolean);
-      const archive = activeWork().archive;
+    // The sorted unmerged paths of the task worktree.
+    const unmergedPaths = (work: Work): string[] => [...new Set(git(work.path, 'diff', '--name-only', '--diff-filter=U')
+      .split('\n').filter(Boolean))].sort();
+    /**
+     * `contained`: HEAD already contains the target. `merged`: an advance outside the guarded paths was merged and
+     * set up as before; the base is unchanged. `integrate`: an advance inside the guarded paths started the durable
+     * `integrate` stage, which clears every earlier acceptance so it is never reused for the new base.
+     */
+    const integrateTarget = (work: Work, target: string, attempt?: number): 'contained' | 'merged' | 'integrate' => {
+      if (git(work.path, 'merge-base', target, 'HEAD') === target) return 'contained';
+      const recorded = activeWork();
+      const changed = git(work.path, 'diff', '--name-only', recorded.base, target).split('\n').filter(Boolean);
+      const archive = recorded.archive;
       // The archived change and the specification files written by the archive belong to the task like its scopes.
       const guarded = [...work.scopes, work.directory, ...(archive ? [archive.directory, ...archive.specs] : [])];
-      if (scopesOverlap(changed, guarded)) throw new Error('Target changed outcome scope');
+      if (scopesOverlap(changed, guarded)) {
+        save({ stage: 'integrate', integration: { target, previousBase: recorded.base, conflicts: [], step: 'merge',
+          outcome: 'clean' }, review: undefined, checks: undefined, finalChecks: undefined, documentationChecks: undefined,
+          head: undefined, testedTarget: undefined, findings: [] });
+        return 'integrate';
+      }
       taskStep(work.id, 'integrate', `integrating the advanced ${project.target}`, attempt);
       git(work.path, 'merge', '--no-edit', '-m', commitSubject('chore', `integrate ${project.target} into ${work.id}`), target);
       checks(work, project.setup ?? [], 'setup', attempt);
+      return 'merged';
     };
     const runProductChecks = (work: Work, attempt?: number): CheckRecord[] => {
       try { return checks(work, project.checks, 'check', attempt); }
@@ -864,13 +925,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             try { save({ checks: checks(work, project.checks, 'check', number) }); }
             catch (error) { save({ findings: [failureDetail(error)] }); continue; }
             taskStep(work.id, 'review', 'starting the implementation review session', number);
-            const review = await session(activeWork(), 'review', prompt +
-              'Review actual implementation independently against every criterion, scope, security and test evidence. ' +
-              'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required. ' +
-              'When reporting accepted, provide completion.summary with two or three English sentences describing what ' +
-              'the whole task changed, and completion.grade for whole-task complexity: A (most complex), B, C, D, ' +
-              'E (easiest). Grade complexity, not correctness, quality or execution speed. ' +
-              implementationReviewTestInstructions(config.coverage), true, number);
+            const review = await session(activeWork(), 'review', prompt + implementationReview(config.coverage),
+              true, number);
             save({ reviews: [...(activeWork().reviews ?? []), review] });
             if (review.outcome === 'accepted' && !review.findings.length) {
               // The documentation stage starts from the reviewed head; its record lists what it later updates.
@@ -911,11 +967,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           }
           if (activeWork().stage === 'document-review') {
             taskStep(work.id, 'documentation review', 'starting the documentation review session', round);
-            const review = await session(activeWork(), 'document-review', prompt +
-              'Review the documentation changes independently against the implementation, every criterion and the ' +
-              'task scope. Documentation may change only README files, Markdown files and docs or doc directories ' +
-              'inside the task scopes. Read files and context; the diff section shows all task changes. ' +
-              'Report accepted only with zero findings; otherwise changes-required with concrete findings.');
+            const review = await session(activeWork(), 'document-review', prompt + DOCUMENTATION_REVIEW);
             const reviews = [...(activeWork().documentationReviews ?? []), review];
             if (review.outcome === 'accepted' && !review.findings.length) {
               save({ documentationReviews: reviews, stage: 'final-checks', findings: [] });
@@ -974,10 +1026,102 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             stage: 'receipt' });
           await cancellable(afterEffect('archive', activeWork()), signal);
         }
+        // An in-scope target advance is merged, checked and reviewed again. Every step saves its successor before the
+        // next effect, so a restart resumes at the recorded step without merging twice or reusing an acceptance.
+        while (activeWork().stage === 'integrate') {
+          const integration = activeWork().integration!;
+          const subject = commitSubject('chore', `integrate ${project.target} into ${work.id}`);
+          const merging = () => succeeds(work.path, 'rev-parse', '-q', '--verify', 'MERGE_HEAD');
+          const contains = () => succeeds(work.path, 'merge-base', '--is-ancestor', integration.target, 'HEAD');
+          const merged = `The task branch was merged with the advanced ${project.target} ${integration.target} ` +
+            `(previous base ${integration.previousBase}, new base ${activeWork().base}, conflicts ` +
+            `${JSON.stringify(integration.conflicts)}); review the merged result.`;
+          // A failure after the merge blocks with the integration reason; a cancellation keeps the recorded step.
+          const rejected = (error: unknown): never => {
+            if (stopped || signal?.aborted || (error as InterruptedFailure).interrupted ||
+                error instanceof IntegrationFailure) throw error;
+            throw integration.outcome === 'conflict' ?
+              new IntegrationFailure('target-conflict-unresolved', integration.conflicts) :
+              new IntegrationFailure('target-integration-rejected', []);
+          };
+          if (integration.step === 'merge') {
+            taskStep(work.id, 'integrate', `merging the advanced ${project.target} into the task scope`);
+            assertWork(activeWork());
+            let conflicts: string[] = [];
+            if (merging()) {
+              // The merge started before a restart.
+              conflicts = unmergedPaths(work);
+              if (!conflicts.length) git(work.path, 'commit', '--no-edit', '-m', subject);
+            } else if (!contains()) {
+              try { git(work.path, 'merge', '--no-edit', '-m', subject, integration.target); }
+              catch (error) {
+                conflicts = unmergedPaths(work);
+                if (!conflicts.length) throw error;
+              }
+            }
+            save({ base: integration.target, integration: { ...integration, conflicts,
+              outcome: conflicts.length ? 'conflict' : 'clean', step: conflicts.length ? 'resolve' : 'checks' } });
+            await cancellable(afterEffect('integrate', activeWork()), signal);
+          } else if (integration.step === 'resolve') {
+            try {
+              const paths = integration.conflicts;
+              const outside = paths.filter(path => !work.scopes.some(scope => within(path, scope)));
+              if (outside.length) throw new Error(`Conflicts outside the task scopes: ${outside.join(', ')}`);
+              taskStep(work.id, 'implementation', 'starting the conflict resolution session');
+              await session(activeWork(), 'work', prompt + `Resolve the merge conflicts of the advanced ${project.target} ` +
+                `${integration.target} in these paths: ${JSON.stringify(paths)}. Keep the intent of both sides, remove ` +
+                'every conflict marker and keep all approved OpenSpec scenarios and tests passing. Write only inside ' +
+                'the task scopes. ' + workTestInstructions(config.coverage));
+              for (const path of paths) {
+                const file = join(work.path, path);
+                if (existsSync(file) && conflictMarkers(readFileSync(file, 'utf8'))) throw new Error('Conflict markers remain');
+              }
+              const staged = present(work, [...new Set([...paths, ...work.scopes])]);
+              if (staged.length) git(work.path, 'add', '-A', '--', ...staged);
+              if (merging()) git(work.path, 'commit', '--no-edit', '-m', subject);
+              if (unmergedPaths(work).length || !contains()) throw new Error('The merge was not concluded');
+            } catch (error) { rejected(error); }
+            save({ integration: { ...integration, step: 'checks' } });
+          } else if (integration.step === 'checks') {
+            try {
+              assertWork(activeWork());
+              checks(work, project.setup ?? [], 'setup');
+              const rows = runProductChecks(work);
+              save({ checks: rows, documentationChecks: rows, integration: { ...integration, step: 'review' } });
+            } catch (error) { rejected(error); }
+          } else if (integration.step === 'review') {
+            try {
+              taskStep(work.id, 'review', 'starting the implementation review session of the merged result');
+              const review = await session(activeWork(), 'review', prompt + implementationReview(config.coverage) + ' ' +
+                merged, true);
+              save({ reviews: [...(activeWork().reviews ?? []), review] });
+              if (review.outcome !== 'accepted' || review.findings.length) {
+                save({ findings: review.findings });
+                throw new Error('The implementation review did not accept the integration');
+              }
+              save({ review: { ...review, accepted: true }, findings: [],
+                integration: { ...integration, step: 'document-review' } });
+            } catch (error) { rejected(error); }
+          } else {
+            try {
+              taskStep(work.id, 'documentation review', 'starting the documentation review session of the merged result');
+              const review = await session(activeWork(), 'document-review', prompt + DOCUMENTATION_REVIEW + ' ' + merged);
+              const documentationReviews = [...(activeWork().documentationReviews ?? []), review];
+              if (review.outcome !== 'accepted' || review.findings.length) {
+                save({ documentationReviews, findings: review.findings });
+                throw new Error('The documentation review did not accept the integration');
+              }
+              save({ documentationReviews, findings: [], integration: undefined, stage: 'receipt',
+                integrations: [...(activeWork().integrations ?? []), integration] });
+            } catch (error) { rejected(error); }
+          }
+        }
         if (activeWork().stage === 'receipt') {
           taskStep(work.id, 'receipt', 'recording the receipt');
           const now = activeWork(); assertWork(now);
-          const paths = git(work.path, 'diff', '--name-only', work.base, 'HEAD').split('\n').filter(Boolean);
+          // After an integration the base is the merged target, and the earlier receipt commit follows it.
+          const paths = git(work.path, 'diff', '--name-only', now.base, 'HEAD').split('\n')
+            .filter(path => path && path !== receiptPath(work.id));
           if (!paths.length || outsideManifest(paths, now).length) {
             throw new Error('Empty or out-of-scope result manifest');
           }
@@ -986,19 +1130,22 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             authority: config.authority.reference, target: project.target, specification: now.specification,
             review: { ...reviewRecord(now.review!), accepted: true },
             checks: checkRecords(now.documentationChecks ?? now.checks!), manifest,
-            head: git(work.path, 'rev-parse', 'HEAD'), base: work.base };
+            head: git(work.path, 'rev-parse', 'HEAD'), base: now.base };
           const path = join(work.path, receiptPath(work.id)); mkdirSync(dirname(path), { recursive: true });
           writeFileSync(path, JSON.stringify(receipt, null, 2) + '\n');
           taskStep(work.id, 'commit', 'committing the receipt');
           git(work.path, 'add', '--', receiptPath(work.id));
-          git(work.path, 'commit', '-m', `docs(${project.commitScope ?? 'work-queue'}): record ${work.id} acceptance evidence${project.commitSuffix ?? ''}`);
+          if (git(work.path, 'diff', '--cached', '--name-only')) {
+            git(work.path, 'commit', '-m', `docs(${project.commitScope ?? 'work-queue'}): record ${work.id} acceptance evidence${project.commitSuffix ?? ''}`);
+          }
           save({ stage: 'publish' });
         }
         if (activeWork().stage === 'publish') {
           const pass = (publishPasses.get(work.id) ?? 0) + 1; publishPasses.set(work.id, pass);
           assertWork(activeWork());
           const targetNow = refresh(work.id).target;
-          integrateTarget(work, targetNow, pass);
+          // An advance inside the guarded paths continues in the integrate stage of the next loop iteration.
+          if (integrateTarget(work, targetNow, pass) === 'integrate') continue;
           save({ finalChecks: checks(work, project.checks, 'check', pass) });
           if (git(work.path, 'status', '--porcelain')) throw new Error('Final checks changed tracked inputs');
           const head = git(work.path, 'rev-parse', 'HEAD');
@@ -1064,8 +1211,10 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         }
         if ((error as InterruptedFailure).interrupted) throw error;
         const stage = activeWork().stage;
+        // An unresolved target conflict keeps its conflicting paths beside the reason.
+        const paths = error instanceof IntegrationFailure && error.paths.length ? { paths: [...error.paths] } : {};
         store.update({ blocked: { ...store.state.blocked, [work.id]: {
-          reason: (error as Error).message, work: activeWork() } }, current: null });
+          reason: (error as Error).message, ...paths, work: activeWork() } }, current: null });
         blockedStep(work.id, stage);
         // The reason reaches only the stderr mascot caption; the serialized event stays unchanged.
         report({ status: 'blocked', id: work.id }, { reason: (error as Error).message });
