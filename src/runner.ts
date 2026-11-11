@@ -1,7 +1,7 @@
 import { cancellable, tokenUsage } from './statistics.ts';
 import type { Sources, Statistics } from './statistics.ts';
 import { existsSync, mkdirSync, readFileSync, readdirSync, lstatSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
@@ -27,6 +27,8 @@ import { testFrameworkPreflight } from './test-framework-preflight.ts';
 import type { TestFrameworkDeps } from './test-framework-preflight.ts';
 import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions } from './test-grading.ts';
+import { createStepLog, runStartMessage } from './step-log.ts';
+import type { StepLog, StepOutput } from './step-log.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
 
 export interface PullRequestHost {
@@ -71,6 +73,8 @@ export interface RunOptions {
   testFramework?: Partial<TestFrameworkDeps>;
   /** Injectable runner of the archive command; the default executes the program without a shell. */
   runCommand?: CommandRunner;
+  /** Receives each step line (with its newline) before the step starts; the default writes to stderr. */
+  steps?: StepOutput;
 }
 
 interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
@@ -88,6 +92,9 @@ const reviewRecord = ({ reviewer, outcome }: ReviewRecord) => ({ reviewer, outco
 const scopesOverlap = (first: string[], second: string[]): boolean => first.some(path =>
   second.some(other => within(path, other) || within(other, path)));
 const DOCUMENTATION_ROUNDS = 4;
+/** The number of sessions of `purpose` already started for `work`, as the session start counter records it. */
+const sessionsStarted = (work: Work, purpose: Purpose): number => work.sessionStarts ?
+  work.sessionStarts[purpose] ?? 0 : (work.sessions ?? []).filter(item => item.purpose === purpose).length;
 
 /**
  * The per-invocation lock and ownership files of one clone: `<hash(primary)>-<hash(stateDirectory)>.sqlite` and
@@ -162,15 +169,34 @@ export function packet(root: string, directory: string): Record<string, string> 
   }));
 }
 
+/**
+ * Runs the queue. One step line goes to `options.steps` (default stderr) before each logical step; the first line
+ * names the requested invocation, harness, model and effort and the last line names the run outcome, or
+ * `unavailable` when the run throws.
+ */
 export async function runQueue(requested: RunConfig, options: RunOptions = {}): Promise<RunResult> {
+  const step = createStepLog({ write: options.steps, now: options.now });
+  const { invocation, harness, model, effort } = (requested ?? {}) as Partial<RunConfig>;
+  step('run', 'start', runStartMessage({ invocation, harness, model, effort }));
+  let status = 'unavailable';
+  try {
+    const result = await runSteps(requested, options, step);
+    status = result.status;
+    return result;
+  } finally { step('run', 'end', `outcome ${status}`); }
+}
+
+async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog): Promise<RunResult> {
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
   // the test framework analysis, the lock, claims and worktrees.
   const statistics = options.statistics;
   const signal = options.signal;
+  step('run', 'preflight', 'checking OpenSpec');
   await cancellable(openspecPreflight(requested, { ...options.openspec, signal }), signal);
   // Selected values enter the configuration before it is hashed, so they are frozen exactly like flags.
   // A Codex selection reads Codex once; resolution reuses that read instead of opening another session.
   let sources: Sources = {}; let harnessVersion: string | undefined;
+  step('run', 'preflight', 'checking the harness version');
   const { config: selected, codex } = await cancellable(selectHarness(requested, {
     ...options.selection, signal, sources: statistics?.sources,
     onSetting: (key, value, source) => statistics?.setting(key, value, source),
@@ -188,6 +214,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
   // One read-only analysis of origin/<target> with the resolved harness, model and effort precedes the lock and claims.
   // Its Git groups have released the Git lock before the invocation lock is requested below.
+  step('run', 'preflight', 'checking the test framework');
   await cancellable(testFrameworkPreflight(config, { createAdapter, signal, ...options.testFramework }), signal);
   const root = realpathSync(config.root); const project = config.project;
   const primary = dirname(resolve(root, git(root, 'rev-parse', '--git-common-dir')));
@@ -196,7 +223,21 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   const statePath = join(realpathSync(stateAncestor), ...missing);
   if (within(statePath, primary)) throw new Error('State must be outside the primary checkout');
   lockRootOf(primary);
-  // The lock and ownership belong to this invocation only; other invocations of the clone run concurrently.
+  // Every Git group of the runner announces a contended Git lock once, before it waits.
+  const lockGit = <T>(subject: string, fn: () => T): T =>
+    withGitLock(primary, fn, { onWait: () => step(subject, 'git lock', 'waiting for the Git lock') });
+  // Task ids whose work was found in durable state at start; only their first line carries `resuming`.
+  const resumable = new Set<string>();
+  const lastStep = new Map<string, string>();
+  // Publish passes per task within this call; a pass after a target advance logs its attempt.
+  const publishPasses = new Map<string, number>();
+  const taskStep = (id: string, name: string, message: string, attempt?: number): void => {
+    const resuming = resumable.delete(id); lastStep.set(id, name);
+    step(id, name, message, { attempt, resuming });
+  };
+  // The blocked line names only the step; the reason stays in the private state.
+  const blockedStep = (id: string, stage: string): void => step(id, 'blocked', `stopped at ${lastStep.get(id) ?? stage}`);
+  // The invocation lock and ownership belong to this invocation only; other invocations of the clone run concurrently.
   const files = invocationLockFiles(primary, config.stateDirectory);
   const lock = new DatabaseSync(files.lock);
   const outcomes = join(dirname(primary), `${primary.split('/').at(-1)}-outcomes`);
@@ -223,8 +264,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     }
     const ownership = { identity: hash(config), stateDirectory: resolve(config.stateDirectory), released: false };
     const release = () => writeFileSync(ownershipFile, JSON.stringify({ ...ownership, released: true }));
-    const refresh = () => {
-      const target = withGitLock(primary, () => {
+    const refresh = (subject = 'run') => {
+      const target = lockGit(subject, () => {
         git(root, 'fetch', 'origin', project.target);
         return git(root, 'rev-parse', `origin/${project.target}`);
       });
@@ -247,7 +288,9 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     statistics?.setting('leaves', [...ids], sources.leaves ?? 'default');
     writeFileSync(ownershipFile, JSON.stringify(ownership), { mode: 0o600 });
     const host: PullRequestHost = options.host ?? new GitHubHost(root, project);
-    const ledger = new ClaimLedger(root, project.target, fn => withGitLock(primary, fn));
+    // Claims announce a contended Git lock for the task being claimed, other ledger reads for the run.
+    let ledgerSubject = 'run';
+    const ledger = new ClaimLedger(root, project.target, fn => lockGit(ledgerSubject, fn));
     if (!store.state.claimant) store.update({ claimant: randomUUID() });
     const claimant = store.state.claimant!;
     const commitSubject = (type: string, text: string) => `${type}(${project.commitScope ?? 'work-queue'}): ${text}${project.commitSuffix ?? ''}`;
@@ -263,7 +306,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     };
     // Removes the worktree, the local branch and (after acceptance) the remote branch of an accepted task under the
     // Git lock. Each step is attempted independently; the failed steps are returned and never change the result.
-    const cleanupTask = (work: Pick<Work, 'path' | 'branch'>, remote: boolean): CleanupStep[] => {
+    const cleanupTask = (subject: string, work: Pick<Work, 'path' | 'branch'>, remote: boolean): CleanupStep[] => {
       const failed: CleanupStep[] = [];
       const steps: [CleanupStep, () => void][] = [
         ['worktree', () => {
@@ -279,7 +322,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         }] as [CleanupStep, () => void]] : []),
       ];
       try {
-        withGitLock(primary, () => {
+        lockGit(subject, () => {
           for (const [step, run] of steps) { try { run(); } catch { failed.push(step); } }
         });
       } catch {
@@ -296,7 +339,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     const accepted = (target: string, task: Task) => receiptAt(root, target, receiptPath(task.id),
       hash(task), null);
     const assertWork = (work: Work): boolean => {
-      const { queue } = refresh(); authorized(queue, work.id);
+      const { queue } = refresh(work.id); authorized(queue, work.id);
       if (git(work.path, 'branch', '--show-current') !== work.branch) throw new Error('Work branch changed');
       // After the archive the binding follows the files, so integrity checks read the archived change.
       const directory = work.archive?.directory ?? work.directory;
@@ -305,13 +348,15 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       }
       return true;
     };
-    const checks = (work: Work, definitions: CommandSpec[]): CheckRecord[] => {
+    // `kind` names the step line written before each command; only the program name and its index are shown.
+    const checks = (work: Work, definitions: CommandSpec[], kind?: 'setup' | 'check', attempt?: number): CheckRecord[] => {
       const rows: CheckRecord[] = [];
       const finalGate = definitions === project.checks && activeWork()?.stage === 'publish';
-      for (const check of definitions) {
+      for (const [index, check] of definitions.entries()) {
         const args = check.args.map(arg => arg.replaceAll('{change}', work.change)
           .replaceAll('{target}', project.target).replaceAll('{scope}', work.scopes[0])
           .replaceAll('{coverage}', String(config.coverage)));
+        if (kind) taskStep(work.id, kind, `running ${index + 1}/${definitions.length}: ${basename(check.command)}`, attempt);
         try {
           const output = command(work.path, check.command, args);
           rows.push({ command: check.command, args, outcome: 'passed', output: output.slice(-16000) });
@@ -340,18 +385,19 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         git(work.path, 'commit', '-m', commitSubject('docs', `document ${work.id}`));
       }
     };
-    const integrateTarget = (work: Work, target: string): void => {
+    const integrateTarget = (work: Work, target: string, attempt?: number): void => {
       if (git(work.path, 'merge-base', target, 'HEAD') === target) return;
       const changed = git(work.path, 'diff', '--name-only', work.base, target).split('\n').filter(Boolean);
       const archive = activeWork().archive;
       // The archived change and the specification files written by the archive belong to the task like its scopes.
       const guarded = [...work.scopes, work.directory, ...(archive ? [archive.directory, ...archive.specs] : [])];
       if (scopesOverlap(changed, guarded)) throw new Error('Target changed outcome scope');
+      taskStep(work.id, 'integrate', `integrating the advanced ${project.target}`, attempt);
       git(work.path, 'merge', '--no-edit', '-m', commitSubject('chore', `integrate ${project.target} into ${work.id}`), target);
-      checks(work, project.setup ?? []);
+      checks(work, project.setup ?? [], 'setup', attempt);
     };
-    const runProductChecks = (work: Work): CheckRecord[] => {
-      try { return checks(work, project.checks); }
+    const runProductChecks = (work: Work, attempt?: number): CheckRecord[] => {
+      try { return checks(work, project.checks, 'check', attempt); }
       catch (error) { throw new Error(failureDetail(error)); }
     };
     const readContext = async (work: Work, files: string[], { section = 'paths', offset: requested }: Partial<BrokerInput>) => {
@@ -365,7 +411,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       if (section !== 'findings' && section !== 'checks') throw new Error('Unknown context section');
       return { section, ...await readPage([Buffer.from(JSON.stringify(activeWork()[section] ?? []))], offset) };
     };
-    const session = async (work: Work, purpose: Purpose, prompt: string, implementationReview = false): Promise<ReviewRecord> => {
+    const session = async (work: Work, purpose: Purpose, prompt: string, implementationReview = false,
+      attempt?: number): Promise<ReviewRecord> => {
       let result: WorkerReport | undefined;
       const files = git(work.path, 'ls-files', '-z').split('\0').filter(Boolean);
       const instructionPaths = [...new Set(['AGENTS.md', ...[...work.scopes, work.directory].flatMap(path =>
@@ -390,8 +437,9 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             if (!['work', 'review'].includes(purpose) || !activeWork().specification) {
               throw new Error('Product checks require a bound specification');
             }
+            taskStep(work.id, 'commit', 'committing the implementation', attempt);
             assertWork(activeWork()); commit(work);
-            const evidence = runProductChecks(work); save({ checks: evidence });
+            const evidence = runProductChecks(work, attempt); save({ checks: evidence });
             return { checks: checkRecords(evidence) };
           }
           if (name === brokerTool.name && input.operation === 'context') {
@@ -450,12 +498,14 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     const recovery = Object.values(store.state.blocked ?? {}).map(entry => entry.work).filter(Boolean);
     for (const work of recovery.filter(work => ids.includes(work.id))) statistics?.decision(work, 'blocked', work);
     if (store.state.current) statistics?.decision(store.state.current, 'blocked', store.state.current);
+    for (const work of [...recovery, ...(store.state.current ? [store.state.current] : [])]) resumable.add(work.id);
     store.update({ blocked: {} });
     // Leftover worktrees and local branches of tasks this invocation already accepted are removed before any task
     // is selected. Only this invocation's own state is considered; failures are recorded and never stop the run.
     for (const [id, entry] of Object.entries(store.state.completed ?? {})) {
       if (!entry?.path || !entry.branch || !existsSync(entry.path) && !hasRef(root, `refs/heads/${entry.branch}`)) continue;
-      const failed = cleanupTask(entry, false);
+      step('run', 'cleanup', `removing the leftover worktree of ${id}`);
+      const failed = cleanupTask('run', entry, false);
       store.update({ completed: { ...store.state.completed, [id]: { ...entry, cleanup: { failed } } } });
       await cancellable(afterEffect('sweep', entry), signal);
     }
@@ -489,6 +539,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       });
       if (current && done.has(current.id)) {
         try {
+          taskStep(current.id, 'acceptance', 'recording the acceptance');
           const claimedAt = recoverClaimTime(current);
           const acceptedAt = new Date(now()).toISOString();
           const completion = buildCompletion(current.review?.completion, claimedAt, acceptedAt);
@@ -504,12 +555,14 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         } catch (error) {
           store.update({ blocked: { ...store.state.blocked, [current.id]: {
             reason: failureDetail(error), work: current } }, current: null });
+          blockedStep(current.id, current.stage);
           const acceptedIds = Object.keys(completed).filter(id => done.has(id) && !store.state.baselineDone!.includes(id));
           return { status: 'incomplete', ...resultData(acceptedIds), remaining: ids.filter(id => !done.has(id)),
             blockers: { [current.id]: { stage: current.stage, reason: 'operation-incomplete', diagnostics: join(store.directory, 'state.json') } } };
         }
         // The merge is confirmed, so the task worktree, local branch and remote branch are no longer needed.
-        const cleanupFailed = cleanupTask(completed[current.id], true);
+        taskStep(current.id, 'cleanup', 'removing the worktree and branches');
+        const cleanupFailed = cleanupTask(current.id, completed[current.id], true);
         if (cleanupFailed.length) {
           completed[current.id] = { ...completed[current.id], cleanup: { failed: cleanupFailed } };
           store.update({ completed: { ...store.state.completed, [current.id]: completed[current.id] } });
@@ -555,10 +608,16 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           claimedElsewhere: Object.fromEntries(foreignClaims.map(claim => [claim.id, { host: claim.host }])) };
         const operation = hash({ invocation: config.invocation, id: task.id, authority: config.authority.reference });
         const branch = `outcome/${task.id}-${operation.slice(0, 12)}`;
-        if (!ledgerSnapshot.claims.has(task.id) && !ledger.acquire(ledgerSnapshot, {
-          version: 1, id: task.id, taskHash: hash(task), scopes: task.scopes, claimant,
-          host: hostname(), branch, claimedAt: new Date(now()).toISOString(),
-        }, commitSubject('chore', `claim ${task.id}`))) continue;
+        taskStep(task.id, 'claim', 'claiming the task');
+        let claimed: boolean;
+        ledgerSubject = task.id;
+        try {
+          claimed = ledgerSnapshot.claims.has(task.id) || ledger.acquire(ledgerSnapshot, {
+            version: 1, id: task.id, taskHash: hash(task), scopes: task.scopes, claimant,
+            host: hostname(), branch, claimedAt: new Date(now()).toISOString(),
+          }, commitSubject('chore', `claim ${task.id}`));
+        } finally { ledgerSubject = 'run'; }
+        if (!claimed) continue;
         save({ ...task, taskHash: hash(task), operation, stage: 'claim', base: target, branch,
           path: join(outcomes, operation), directory: `${project.changes}/${task.change}` });
         work = activeWork();
@@ -572,7 +631,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         if (work.stage === 'claim') {
           if (!existsSync(work.path)) {
             const claimed = work;
-            withGitLock(primary, () => git(root, 'worktree', 'add', '-b', claimed.branch, claimed.path, claimed.base));
+            taskStep(claimed.id, 'worktree', 'preparing the worktree');
+            lockGit(claimed.id, () => git(root, 'worktree', 'add', '-b', claimed.branch, claimed.path, claimed.base));
             await cancellable(afterEffect('claim', work), signal);
           }
           if (git(work.path, 'rev-parse', 'HEAD') !== work.base || git(work.path, 'status', '--porcelain')) {
@@ -581,7 +641,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           save({ stage: 'investigate' });
         }
         if (activeWork().stage === 'investigate') {
-          checks(work, project.setup ?? []);
+          checks(work, project.setup ?? [], 'setup');
+          taskStep(work.id, 'investigation', 'starting the investigation session');
           const investigation = await session(work, 'investigate', prompt +
             'Inspect current files and history before edits. Call outcome_report with outcome ready, summary, ' +
             'inspected containing actual inspected repository paths, and findings array. Do not edit files. ' +
@@ -591,6 +652,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         if (activeWork().stage === 'plan') {
           let bound = false;
           for (let attempt = 0; attempt < 4; attempt += 1) {
+            const number = sessionsStarted(activeWork(), 'plan') + 1;
+            taskStep(work.id, 'planning', 'starting the planning session', number);
             // Graded test fragments come from the frozen threshold on every attempt, so replanning repeats them.
             await session(work, 'plan', prompt + 'Create proposal.md, design.md, tasks.md and specs/<capability>/spec.md. ' +
               'Use OpenSpec delta headings and WHEN/THEN scenarios. Stay within task scope; do not edit product files. ' +
@@ -601,11 +664,13 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
               'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
             let specification;
             try {
+              taskStep(work.id, 'planning check', 'validating the planning artifacts', number);
               specification = packet(work.path, work.directory);
               checks(work, [project.planningCheck]);
             } catch (error) {
               save({ findings: [failureDetail(error)] }); continue;
             }
+            taskStep(work.id, 'planning review', 'starting the planning review session', number);
             const review = await session(work, 'review', prompt +
               'Review planning artifacts independently against exact source criteria, scope and decisions. ' +
               'Report accepted only with zero findings; otherwise changes-required with concrete findings. ' +
@@ -621,22 +686,26 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         if (activeWork().stage === 'work') {
           let passed = false;
           for (let attempt = 0; attempt < 4; attempt += 1) {
+            const number = sessionsStarted(activeWork(), 'work') + 1;
+            taskStep(work.id, 'implementation', 'starting the implementation session', number);
             await session(activeWork(), 'work', prompt +
               'Implement all approved OpenSpec scenarios and every test marked (required) within product scope; ' +
               'write (coverage-only) tests only as the graded test rules below allow. ' +
               workTestInstructions(config.coverage) + ' Preserve bound specs. ' +
-              'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
+              'Address private findings: ' + JSON.stringify(activeWork().findings ?? []), false, number);
             await cancellable(afterEffect('implementation', activeWork()), signal);
+            taskStep(work.id, 'commit', 'committing the implementation', number);
             assertWork(activeWork()); commit(work);
-            try { save({ checks: checks(work, project.checks) }); }
+            try { save({ checks: checks(work, project.checks, 'check', number) }); }
             catch (error) { save({ findings: [failureDetail(error)] }); continue; }
+            taskStep(work.id, 'review', 'starting the implementation review session', number);
             const review = await session(activeWork(), 'review', prompt +
               'Review actual implementation independently against every criterion, scope, security and test evidence. ' +
               'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required. ' +
               'When reporting accepted, provide completion.summary with two or three English sentences describing what ' +
               'the whole task changed, and completion.grade for whole-task complexity: A (most complex), B, C, D, ' +
               'E (easiest). Grade complexity, not correctness, quality or execution speed. ' +
-              implementationReviewTestInstructions(config.coverage), true);
+              implementationReviewTestInstructions(config.coverage), true, number);
             save({ reviews: [...(activeWork().reviews ?? []), review] });
             if (review.outcome === 'accepted' && !review.findings.length) {
               // The documentation stage starts from the reviewed head; its record lists what it later updates.
@@ -651,10 +720,13 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         // Each documentation round persists its stage before the next session, so a restart in document-review
         // reviews the recorded documentation instead of writing it again.
         while (['document', 'document-review'].includes(activeWork().stage)) {
+          // Round N of the documentation follows N - 1 recorded documentation reviews.
+          const round = (activeWork().documentationReviews ?? []).length + 1;
           if (activeWork().stage === 'document') {
             if ((activeWork().documentationReviews ?? []).length >= DOCUMENTATION_ROUNDS) {
               throw new Error('Documentation review remains unresolved');
             }
+            taskStep(work.id, 'documentation', 'starting the documentation session', round);
             const documented = await session(activeWork(), 'document', prompt +
               'Update the documentation inside the task scopes so that it matches the implemented behaviour and every ' +
               'criterion. Documentation files are README files, Markdown files (.md, .mdx) and files under docs or doc ' +
@@ -664,6 +736,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
               'per finding, and call outcome_report with outcome ready. ' +
               'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
             await cancellable(afterEffect('documentation', activeWork()), signal);
+            taskStep(work.id, 'commit', 'committing the documentation', round);
             assertWork(activeWork()); commitDocumentation(work);
             const record = activeWork().documentation ?? { base: work.base, files: [], outsideScope: [] };
             const files = git(work.path, 'diff', '--name-only', record.base, 'HEAD').split('\n').filter(path =>
@@ -672,6 +745,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
               stage: 'document-review' });
           }
           if (activeWork().stage === 'document-review') {
+            taskStep(work.id, 'documentation review', 'starting the documentation review session', round);
             const review = await session(activeWork(), 'document-review', prompt +
               'Review the documentation changes independently against the implementation, every criterion and the ' +
               'task scope. Documentation may change only README files, Markdown files and docs or doc directories ' +
@@ -686,10 +760,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           }
         }
         if (activeWork().stage === 'final-checks') {
+          taskStep(work.id, 'final checks', 'running the final checks');
           assertWork(activeWork());
           save({ documentationChecks: runProductChecks(work), stage: 'archive' });
         }
         if (activeWork().stage === 'archive') {
+          taskStep(work.id, 'archive', 'archiving the change');
           const now = activeWork();
           const original = join(work.path, work.directory);
           const archiveParent = `${project.changes}/archive`;
@@ -723,6 +799,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           const specs = specsDirectory(project.changes);
           const paths = [work.directory, directory, specs].filter(path =>
             existsSync(join(work.path, path)) || git(work.path, 'ls-files', '--', path));
+          taskStep(work.id, 'commit', 'committing the archive');
           if (paths.length) git(work.path, 'add', '-A', '--', ...paths);
           if (git(work.path, 'diff', '--cached', '--name-only')) {
             git(work.path, 'commit', '-m', commitSubject('docs', `archive ${work.change} for ${work.id}`));
@@ -733,6 +810,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           await cancellable(afterEffect('archive', activeWork()), signal);
         }
         if (activeWork().stage === 'receipt') {
+          taskStep(work.id, 'receipt', 'recording the receipt');
           const now = activeWork(); assertWork(now);
           const paths = git(work.path, 'diff', '--name-only', work.base, 'HEAD').split('\n').filter(Boolean);
           if (!paths.length || outsideManifest(paths, now).length) {
@@ -746,28 +824,34 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             head: git(work.path, 'rev-parse', 'HEAD'), base: work.base };
           const path = join(work.path, receiptPath(work.id)); mkdirSync(dirname(path), { recursive: true });
           writeFileSync(path, JSON.stringify(receipt, null, 2) + '\n');
+          taskStep(work.id, 'commit', 'committing the receipt');
           git(work.path, 'add', '--', receiptPath(work.id));
           git(work.path, 'commit', '-m', `docs(${project.commitScope ?? 'work-queue'}): record ${work.id} acceptance evidence${project.commitSuffix ?? ''}`);
           save({ stage: 'publish' });
         }
         if (activeWork().stage === 'publish') {
+          const pass = (publishPasses.get(work.id) ?? 0) + 1; publishPasses.set(work.id, pass);
           assertWork(activeWork());
-          const targetNow = refresh().target;
-          integrateTarget(work, targetNow);
-          save({ finalChecks: checks(work, project.checks) });
+          const targetNow = refresh(work.id).target;
+          integrateTarget(work, targetNow, pass);
+          save({ finalChecks: checks(work, project.checks, 'check', pass) });
           if (git(work.path, 'status', '--porcelain')) throw new Error('Final checks changed tracked inputs');
           const head = git(work.path, 'rev-parse', 'HEAD');
           const published = work;
-          withGitLock(primary, () => git(published.path, 'push', 'origin', `HEAD:refs/heads/${published.branch}`));
+          taskStep(work.id, 'push', 'pushing the tested head', pass);
+          lockGit(published.id, () => git(published.path, 'push', 'origin', `HEAD:refs/heads/${published.branch}`));
           save({ head, testedTarget: targetNow, stage: 'pr' });
         }
         if (activeWork().stage === 'pr') {
+          const pass = publishPasses.get(work.id);
+          taskStep(work.id, 'pull request', 'finding the pull request', pass);
           const now = activeWork();
           const body = join(store.directory, `${work.id}-pr.md`);
           writeFileSync(body, pullRequestBody(now, config.authority.reference));
           let pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
-          if (pr) rememberPr(pr);
+          if (pr) { taskStep(work.id, 'pull request', `reusing #${pr.number}`, pass); rememberPr(pr); }
           if (!pr) {
+            taskStep(work.id, 'pull request', 'creating the pull request', pass);
             pr = await cancellable(Promise.resolve(host.create(now, body)), signal);
             if (pr) rememberPr(pr);
             await cancellable(afterEffect('pr', pr), signal);
@@ -777,8 +861,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         }
         if (activeWork().stage === 'merge') {
           const now = activeWork();
+          const pass = publishPasses.get(work.id);
           const polling = options.mergePolling ?? {};
           const limit = polling.views ?? MERGE_STATE_VIEWS;
+          // The wait is announced once on entry and a stale head once per merge stage, never on every view.
+          taskStep(work.id, 'wait', `waiting for mergeability and checks of ${now.pr ? `#${now.pr.number}` : 'the pull request'}`, pass);
+          let headWait = false;
           for (let view = 1; ; view += 1) {
             const pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
             if (!pr) throw new Error('Recorded PR missing');
@@ -789,18 +877,20 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             if (git(work.path, 'rev-parse', 'HEAD') !== now.head) {
               throw new Error('Checked head or target changed');
             }
-            if (refresh().target !== now.testedTarget) { save({ stage: 'publish' }); break; }
+            if (refresh(work.id).target !== now.testedTarget) { save({ stage: 'publish' }); break; }
             if (pr.headRefOid === now.head) {
+              taskStep(work.id, 'merge', `merging #${pr.number}`, pass);
               await cancellable(Promise.resolve(host.merge(pr, now.head!)), signal); await cancellable(afterEffect('merge', pr), signal);
               break;
             }
+            if (!headWait) { headWait = true; taskStep(work.id, 'wait', 'waiting for pull request head to match', pass); }
             assertOriginHead(work.path, work.branch, now.head!);
             if (view >= limit) throw new Error('Checked head or target changed');
             await cancellable((polling.delay ?? delay)(polling.pollMs ?? MERGE_STATE_POLL_MS), signal);
           }
           if (activeWork().stage === 'publish') continue;
-          const targetNow = refresh().target;
-          if (!accepted(targetNow, authorized(refresh().queue, work.id))) throw new Error('Merged result lacks valid receipt');
+          const targetNow = refresh(work.id).target;
+          if (!accepted(targetNow, authorized(refresh(work.id).queue, work.id))) throw new Error('Merged result lacks valid receipt');
         }
       } catch (error) {
         if (stopped || signal?.aborted) {
@@ -808,8 +898,10 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           return { status: 'cancelled', ...resultData(newlyAccepted), remaining };
         }
         if ((error as InterruptedFailure).interrupted) throw error;
+        const stage = activeWork().stage;
         store.update({ blocked: { ...store.state.blocked, [work.id]: {
           reason: (error as Error).message, work: activeWork() } }, current: null });
+        blockedStep(work.id, stage);
         // The reason reaches only the stderr mascot caption; the serialized event stays unchanged.
         report({ status: 'blocked', id: work.id }, { reason: (error as Error).message });
       }

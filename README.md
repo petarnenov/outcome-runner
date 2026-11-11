@@ -186,6 +186,9 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 - From a terminal, a small mascot on stderr shows how each task and the run
   ended. Add `--no-mascot` (or set `OUTCOME_RUNNER_MASCOT=0`) to turn it off;
   see [Mascot](#mascot).
+- While it works, the runner writes one short line to stderr before each step,
+  for example `[outcome-runner] 09:05:03 TASK-1 claim: claiming the task`; see
+  [Step lines](#step-lines).
 
 **8. Read the result**
 
@@ -957,6 +960,69 @@ file contents, environment variables and raw errors are excluded. Origin URL
 userinfo credentials are removed. The approved completion summary is the
 intentional public summary, not a private worker report.
 
+## Step lines
+
+While it works, the runner writes one short line to **stderr** immediately
+before each logical step, before the step has any effect, so a person watching
+the console always sees what the runner is about to do:
+
+```text
+[outcome-runner] HH:MM:SS <task id or run> <step>: <message>
+```
+
+For example:
+
+```text
+[outcome-runner] 09:05:01 run start: invocation=my-project-1 harness=claude model=claude-opus-5-5 effort=medium
+[outcome-runner] 09:05:01 run preflight: checking OpenSpec
+[outcome-runner] 09:05:03 TASK-1 claim: claiming the task
+[outcome-runner] 09:05:04 TASK-1 worktree: preparing the worktree
+[outcome-runner] 09:12:40 TASK-1 check: running 1/1: node (attempt 2)
+[outcome-runner] 09:31:12 TASK-1 wait: waiting for mergeability and checks of #12
+[outcome-runner] 09:33:02 run end: outcome exhausted
+```
+
+- `HH:MM:SS` is the local 24-hour time. The subject is `run` for run-level
+  steps and the task id for task steps.
+- Every line is a single English line of at most 120 characters. Control
+  characters become spaces, and a longer line has its message cut so the line
+  ends with `...` at exactly 120 characters. In the run start line the
+  invocation and model are shortened to 16 characters and the harness and
+  effort to 8 (ending with `...` when cut), so all four always appear; a value
+  not chosen yet is shown as `auto`.
+- Lines contain only fixed text and safe values: task ids, the invocation,
+  harness, model and effort, a check or setup program name with its index, the
+  Pull Request number, attempt numbers and the run outcome. They never contain
+  secrets, worker output, file contents, check output, error messages, block
+  reasons or other private diagnostics.
+
+The run steps are `start`, one `preflight` line for each preflight (OpenSpec,
+harness version, test framework), `cleanup` for each leftover worktree swept on
+start, and `end` with the run outcome (`unavailable` when the run fails). The
+task steps are `claim`, `worktree`, `setup` (each setup command),
+`investigation`, `planning`, `planning check`, `planning review`,
+`implementation`, `commit`, `check` (each product check), `review`,
+`documentation`, `documentation review`, `final checks`, `archive`, `receipt`,
+`integrate` (only when the target advanced), `push`, `pull request`, `wait`,
+`merge`, `acceptance`, `cleanup`, and `blocked` (`stopped at <step>`, naming the
+last step and never the reason).
+
+- **Waits** log once when the wait starts, never on every poll: one `wait` line
+  for mergeability and checks, one more when the pull request head is stale,
+  and one `git lock: waiting for the Git lock` line when another runner holds
+  the per-clone Git lock (nothing is written when the lock is free).
+- **Retries** log again with ` (attempt N)`: planning and implementation
+  attempts, documentation rounds, and the integrate, check, push, pull request,
+  wait and merge steps repeated after the target advanced during the merge.
+- **Resume**: steps already completed in the run state are not logged again.
+  The first step line of work continued from the run state starts its message
+  with `resuming`; later lines do not.
+
+The JSON lines on stdout, the exit codes, the diagnostics file, receipts, the
+run state and the statistics ledger are the same with and without step lines;
+a failing stderr never changes the run. Tests inject the output through
+`RunOptions.steps`.
+
 ## Mascot
 
 When a task or a run ends, the runner plays a short animation of the terminal
@@ -1040,6 +1106,7 @@ need no real terminal or timers. Concurrent runners, the per-clone Git lock and
 worktree cleanup are tested with Git fixtures (a bare origin and clones),
 scripted pull request hosts and child processes. The `live:*` scripts exercise a real
 harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
+Step lines are captured through `RunOptions.steps`.
 
 ## License
 
