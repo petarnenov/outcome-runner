@@ -88,9 +88,18 @@ export function runnerFixture(t: TestContext, { target = 'main', ids = ['A', 'B'
   const integrator = join(base, 'integrator'); git(base, 'clone', '-q', remote, integrator);
   git(integrator, 'config', 'user.name', 'Fixture Integrator'); git(integrator, 'config', 'user.email', 'integrator@example.invalid');
   const records: RecordedPullRequest[] = [];
-  /** A scripted pull request host that opens and merges pull requests against `into`. */
+  /**
+   * A scripted pull request host that opens and merges pull requests against `into`. Like GitHub, an open pull
+   * request follows its branch, so a republished task branch updates the pull request head.
+   */
   const hostFor = (into = target): PullRequestHost => ({
-    find: branch => records.find(pr => pr.branch === branch) ?? null,
+    find: branch => {
+      const pr = records.find(record => record.branch === branch);
+      if (!pr) return null;
+      const head = git(remote, 'for-each-ref', '--format=%(objectname)', `refs/heads/${branch}`);
+      if (pr.state === 'OPEN' && head) pr.headRefOid = head;
+      return pr;
+    },
     create(work: Work) {
       const pr: RecordedPullRequest = { number: records.length + 1, branch: work.branch, state: 'OPEN',
         headRefOid: git(work.path, 'rev-parse', 'HEAD'), baseRefName: into, base: into };

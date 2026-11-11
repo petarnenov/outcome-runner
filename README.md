@@ -46,6 +46,8 @@ from a terminal, the runner offers to install a missing OpenSpec CLI; see
 **2. Prepare the project**
 
 The project needs a GitHub `origin` and a target branch, `main` in this example.
+The target is the branch you start the runner from; see
+[Target branch](#target-branch).
 
 ```sh
 cd /path/to/project
@@ -55,7 +57,8 @@ echo 'schema: spec-driven' > openspec/config.yaml
 ```
 
 Started from a terminal, the runner offers to create the missing OpenSpec files
-for you; you still commit and push them yourself.
+for you in a setup worktree outside your checkout; you still commit, push and
+merge them yourself.
 
 Every technology in the project also needs a test framework that enforces line,
 branch and function coverage at the resolved threshold. The runner checks this
@@ -137,6 +140,9 @@ Save it as, for example, `~/invocations/my-project-1.json`:
 ```
 
 - Do not set `root` or `stateDirectory`; the run is refused if you do.
+- `authority.target` and `project.target` may be left out: the target is the
+  branch checked out where you start the runner. When given, each must equal
+  that branch; see [Target branch](#target-branch).
 - Replace `checks` with the project's real checks, including a coverage gate
   with `{coverage}` in an argument.
 - If a fresh worktree needs dependencies, add
@@ -148,10 +154,11 @@ Save it as, for example, `~/invocations/my-project-1.json`:
 - Leave out `coverage` (and `harness`, `model`, `effort`) to be asked for it
   when the run starts from a terminal; see [Harness selection](#harness-selection).
 
-**7. Run it from the repository**
+**7. Run it from the repository, on the target branch**
 
 ```sh
 cd /path/to/project
+git switch main
 outcome-runner ~/invocations/my-project-1.json
 ```
 
@@ -186,17 +193,54 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
 | 3 | Incomplete, for example blocked dependencies or a protected merge |
-| 4 | Did not run; the printed `reason` (for example `openspec-missing`, `harness-unavailable` or `test-framework-missing`) and the `diagnostics` file explain why |
+| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
 
-After an interruption, run the **same command with the same file** to resume. Do
-not delete the state under `~/.local/state/outcome-runner/`. The runner also
-creates a `work-queue-claims-<target>` branch. It is never merged; keep it while
-work is unfinished.
+After an interruption, run the **same command with the same file** from the same
+branch to resume. Do not delete the state under `~/.local/state/outcome-runner/`.
+The runner also creates a `work-queue-claims-<target>` branch. It is never
+merged; keep it while work is unfinished.
+
+## Target branch
+
+The run target is the branch checked out where the runner starts. Resolving it
+is the first startup step, before the [OpenSpec preflight](#openspec-preflight):
+
+1. `git symbolic-ref --quiet --short HEAD` names the current branch. A detached
+   HEAD is refused.
+2. `git check-ref-format --branch` and the runner's branch name rule check the
+   name. Every valid Git branch name works, for example `main`, `feature/x` or
+   `release/1.2`.
+3. `project.target` and `authority.target` may be omitted; both then resolve to
+   the current branch. When either is given and differs from it, the run is
+   refused.
+4. `git ls-remote origin refs/heads/<branch>` checks that the branch exists on
+   origin; push a new branch before starting the runner on it.
+
+| Reason | Meaning |
+|---|---|
+| `detached-head` | HEAD is detached; check out the branch to work on |
+| `target-differs-from-current-branch` | A given `project.target` or `authority.target` names another branch |
+| `target-missing-on-origin` | The current branch does not exist on origin |
+| `unsupported-target-name` | `git check-ref-format --branch` or the runner's branch name rule rejects the name |
+
+Each refusal exits with code 4 before anything is allocated: no lock, claim or
+worktree is created. The reason is printed in the stdout line and repeated in
+the private diagnostics file.
+
+The resolved target is part of the frozen invocation identity, and every
+receipt records it as `target` (receipts written before this field stay valid).
+Pull Requests are opened and merged against it, and its claims branch is
+`work-queue-claims-<target>` with `/` replaced by `-`. A run started from a
+feature branch therefore opens its Pull Requests against that feature branch. A
+resumed invocation must start from the branch it started from before; starting
+it from another branch changes its identity and is refused as an incompatible
+state.
 
 ## OpenSpec preflight
 
-Before anything else (harness checks, any selection prompt, the lock, claims and
-worktrees) the runner checks two things:
+Right after [target resolution](#target-branch), and before the harness checks,
+any selection prompt, the lock, claims and worktrees, the runner checks two
+things:
 
 1. The OpenSpec CLI is available: `openspec --version` exits 0. Its output is
    discarded, so a passing check prints nothing.
@@ -216,22 +260,27 @@ Interactive, missing CLI: the runner asks whether to install it with
 npm install -g @fission-ai/openspec@latest
 ```
 
-On yes it runs exactly that command (as an argument array, without a shell, with
-npm's output on stderr) and checks again. On no, a failing install, or a check
-that still fails afterwards, it exits with code 4 and reason `openspec-missing`.
+On yes it runs exactly that command (as an argument array, without a shell, in
+the operating system's temporary directory rather than your checkout, with npm's
+output on stderr) and checks again. On no, a failing install, or a check that
+still fails afterwards, it exits with code 4 and reason `openspec-missing`.
 
 Interactive, missing `openspec/config.yaml` at `origin/<target>`: the runner asks
-whether to create the project layout in the working tree:
+whether to create the project layout in a setup worktree outside your checkout:
 
 - `openspec/config.yaml` containing `schema: spec-driven`;
 - `<changes>/.gitkeep` and `<receipts>/.gitkeep`, using the invocation's
   `project.changes` and `project.receipts` directories.
 
-On yes it creates only the files that are missing (existing files are never
-overwritten) and **never commits or pushes**. It then exits with code 4 and
-reason `openspec-layout-created`, telling you to commit and push the created
-files to `origin/<target>` and run again. On no it exits with code 4 and reason
-`openspec-not-initialized`.
+On yes it creates the setup worktree `<primary>-outcomes/setup-<operation>` on
+branch `outcome/setup-<operation[0..12]>` from `origin/<target>` (or reuses it
+when it already exists), writes only the files that are missing there (existing
+files are never overwritten) and **never commits or pushes**. The runner never
+changes the checkout you started it from. It then exits with code 4 and reason
+`openspec-layout-created`; the message names the setup worktree path and branch
+and tells you to commit the files there, push the branch and merge it into
+`<target>`, then run again. On no it creates nothing and exits with code 4 and
+reason `openspec-not-initialized`.
 
 Non-interactive (for example CI, a pipe, or stderr redirected to a file): nothing
 is asked, installed or created. A missing CLI exits with code 4 and reason
@@ -252,30 +301,31 @@ the private diagnostics file.
 Every start goes through these steps in this order, before the lock, claims and
 worktrees:
 
-1. **OpenSpec preflight**: see [OpenSpec preflight](#openspec-preflight).
-2. **Harness availability**: both harnesses are checked with their version
+1. **Target resolution**: see [Target branch](#target-branch).
+2. **OpenSpec preflight**: see [OpenSpec preflight](#openspec-preflight).
+3. **Harness availability**: both harnesses are checked with their version
    probes, Claude Code (`claude --version`, 2.1.321 or newer) and Codex CLI
    (`codex --version`, 0.167.0 or newer). A harness is unavailable with reason
    `not-installed` when its executable is missing,
    `uncertified-claude-version` or `uncertified-codex-version` when it is older
    (the found version is shown), or `probe-failed` when the version check fails
    in another way. An unavailable harness never fails the run by itself.
-3. **Harness**: only the available harnesses can be chosen; `claude` is
+4. **Harness**: only the available harnesses can be chosen; `claude` is
    preselected when available, otherwise the only available one.
-4. **Model**: the models the chosen harness offers. `claude-opus-5-5` is
+5. **Model**: the models the chosen harness offers. `claude-opus-5-5` is
    preselected for Claude. For Codex the Codex default model is preselected: the
    model from the local Codex configuration when Codex lists it, otherwise the
    model that Codex `model/list` marks with `isDefault`, otherwise the first
    listed model.
-5. **Effort**: only the efforts the chosen model supports. `medium` is
+6. **Effort**: only the efforts the chosen model supports. `medium` is
    preselected when supported, otherwise the model's default effort (for Codex
    its `defaultReasoningEffort` from `model/list`).
-6. **Coverage**: the coverage threshold, with 85 preselected. Only an integer
+7. **Coverage**: the coverage threshold, with 85 preselected. Only an integer
    from 1 to 100 is accepted; anything else is asked again.
-7. **Test framework analysis**: see
+8. **Test framework analysis**: see
    [Test framework preflight](#test-framework-preflight).
 
-Steps 3 to 6 are questions only when the start is interactive (both stdin and
+Steps 4 to 7 are questions only when the start is interactive (both stdin and
 stderr are terminals, as in the OpenSpec preflight). The harness statuses, the
 options and the questions are written to stderr; stdout keeps only the JSON
 lines. Pressing Enter accepts the preselected answer shown in brackets, for
@@ -350,21 +400,26 @@ number selects that recommendation and anything else skips the technology.
 Before running anything it shows the exact install commands (as JSON argument
 arrays) and file changes of the chosen recommendation and asks
 `Run these commands and apply these changes? [y/N] `; only `y` or `yes`
-confirms. After a yes it runs the install commands in order in the working tree,
-as argument arrays and never through a shell (their output goes to stderr), and
-then writes the file changes. A failing install command stops that
-recommendation: later commands and its file changes are not applied. A file
-change outside the repository, under `.git`, or inside the queue, the receipts
-or the OpenSpec changes directory refuses the whole recommendation without
-asking for confirmation.
+confirms. The setup happens in the setup worktree
+`<primary>-outcomes/setup-<operation>` on branch
+`outcome/setup-<operation[0..12]>`, created from `origin/<target>` when the first
+recommendation is chosen and reused by later setups; the checkout you started
+the runner from is never changed. After a yes it runs the install commands in
+order in the setup worktree, as argument arrays and never through a shell (their
+output goes to stderr), and then writes the file changes there. A failing install
+command stops that recommendation: later commands and its file changes are not
+applied. A file change outside the repository, under `.git`, or inside the queue,
+the receipts or the OpenSpec changes directory refuses the whole recommendation
+without asking for confirmation.
 
 The runner **never commits or pushes** these changes. After a successful setup
-it prints on stderr the files the setup changed (compared with a working-tree
-snapshot taken before it, so changes you already had are not listed), asks you
-to commit and push them to `origin/<target>` and run again, and exits with code
-4 and reason `test-framework-prepared`. When you skip or decline a technology,
-or an install command fails, it prints the unprepared technologies on stderr and
-exits with code 4 and reason `test-framework-missing`.
+it prints on stderr the files the setup changed (compared with a snapshot of the
+setup worktree taken before it, so changes already there are not listed), names
+the setup worktree path and branch, asks you to commit the files there, push the
+branch and merge it into `<target>`, then run again, and exits with code 4 and
+reason `test-framework-prepared`. When you skip or decline a technology, or an
+install command fails, it prints the unprepared technologies on stderr and exits
+with code 4 and reason `test-framework-missing`.
 
 **Non-interactive** starts still run the analysis, but nothing is asked,
 installed or changed. When any technology is not prepared, the run exits with
@@ -456,24 +511,71 @@ your actual instruction in `authority.instruction`.
 
 ## How it works
 
-Run it on one or more machines over the tasks of one repository. A local SQLite
-lock prevents simultaneous invocations in one clone. Across machines the
-repository is the allocator: before taking a task the runner pulls the target and
-the `work-queue-claims-<target>` branch, selects a task, records it there as
-`<id>.json`, commits and pushes without force. A rejected push means another
-machine won, so the runner pulls and selects again. Any other push failure stops
-the run before work starts.
+Run it on one or more machines, and with several runners in one clone, over the
+tasks of one repository. Each invocation has its own local SQLite lock, held for
+the whole run: a second process of the same invocation is refused at once with
+exit code 4 and reason `invocation-running`, while different invocations of one
+clone run concurrently. Each invocation also has its own ownership record, so a
+different invocation never inherits or overrides another invocation's unfinished
+work. Git operations on the shared repository (fetch, worktree add and remove,
+branch creation and deletion, task branch pushes, claims ledger commits and
+pushes) are serialized between the runners of one clone by a per-clone Git lock.
+It is held only for one group of Git operations, never while a worker session, a
+check, a prompt or an install command runs; a runner waits for it up to 60
+seconds (then the task is blocked, or startup fails, with
+`Git lock wait exceeded 60 seconds`), and the operating system releases it when
+its holder exits or crashes. Runner Git commands run with `-c gc.auto=0`:
+automatic garbage collection is turned off for them, so it cannot take ref lock
+files while another runner works. Run `git gc` or `git maintenance run`
+yourself, for example while no runner is active.
 
-Give each machine its own clone. The repository is the Git top level of the
-current directory. State is kept per clone and invocation under
-`$XDG_STATE_HOME/outcome-runner` (default `~/.local/state/outcome-runner`). The
-invocation file must not set `root` or `stateDirectory`, so one file serves every
-machine and every repository. Tasks claimed by
-another run, or overlapping its scopes, are skipped until accepted. A run with
-only claimed work left returns incomplete; restart it later with the same
-configuration. Claims are never taken over automatically. After confirming that
-a machine stopped and will not resume, delete its claim file on the claims branch
-in a normal commit and push.
+Across runners and machines the repository is the allocator: before taking a
+task the runner pulls the target and the `work-queue-claims-<target>` branch,
+selects a task, records it there as `<id>.json`, commits and pushes without
+force. A rejected push means another runner won, so the runner pulls and selects
+again. Any other push failure stops the run before work starts.
+
+### Many runners on one branch
+
+To run several runners on one branch, start each one from the same checkout on
+that branch with its own invocation file and invocation name, for example
+`my-project-1.json` and `my-project-2.json`. Every invocation has its own state,
+its own claimant in the claims ledger and its own task worktrees and branches, so
+two runners never work on the same task or on tasks with overlapping scopes at
+the same time, and each merges its results into the branch they started from.
+Runners on other machines can join with their own clones in the same way.
+
+The repository is the Git top level of the current directory. State is kept per
+clone and invocation under `$XDG_STATE_HOME/outcome-runner` (default
+`~/.local/state/outcome-runner`). The invocation file must not set `root` or
+`stateDirectory`, so one file serves every machine and every repository. Tasks
+claimed by another run, or overlapping its scopes, are skipped until accepted. A
+run with only claimed work left returns incomplete; restart it later with the
+same configuration. Claims are never taken over automatically. After confirming
+that a runner stopped and will not resume, delete its claim file on the claims
+branch in a normal commit and push.
+
+### Worktrees and cleanup
+
+Every task is worked in its own worktree `<primary>-outcomes/<operation>` next
+to the checkout, on branch `outcome/<id>-<operation[0..12]>`, and reaches the
+target only through a Pull Request into the target branch, merged by the runner.
+The runner never changes the working tree, index or local branch of the checkout
+it was started from.
+
+After a task's Pull Request is merged and its receipt is confirmed on the target,
+the runner removes the task worktree (`git worktree remove` and
+`git worktree prune`), deletes the local task branch and deletes the remote task
+branch on origin. Each step is tried on its own. A failed step is listed in the
+`accepted` event as `cleanupFailed` (`worktree`, `local-branch` or
+`remote-branch`) and recorded in the run state; the result status, the accepted
+and remaining lists and the exit code stay the same.
+
+On start, before selecting a task, the runner removes leftover worktrees and
+local branches of tasks its invocation has already accepted. Worktrees and
+branches of blocked or unfinished tasks are kept, so a later run of the same
+invocation resumes them there. Worktrees of other invocations and the setup
+worktree of the interactive preflights are never touched.
 
 Each task goes through these stages, and every stage is saved in the run state
 before its next step starts: claim, investigation, planning and planning review,
@@ -492,13 +594,15 @@ change and one PR. Scopes cannot overlap queue, receipt or OpenSpec roots.
 Keep the invocation JSON outside the checkout. Supply a stable `invocation` name
 (letters, digits, `.`, `_`, `-`), optional selected `leaves` and optional
 positive `maxAccepted`. Omitted mode is OFF. `authority` contains the actual
-instruction `reference`, `instruction`, selected `target` and a `tasks` object
+instruction `reference`, `instruction`, the optional `target` (the branch the
+runner starts from) and a `tasks` object
 mapping IDs to canonical SHA256 hashes printed by `outcome-runner hash <queue>`.
 Hashing a task is not permission: the configuration must reference an actual
 covering owner instruction. Do not transfer grants between projects.
 
 The `project` object supplies repository-relative `queue`, `changes`, `receipts`,
-Git `target`, explicit PR `repository`, mandatory `planningCheck`, nonempty
+the optional Git `target` (see [Target branch](#target-branch)), explicit PR
+`repository`, mandatory `planningCheck`, nonempty
 `checks` and optional `setup`, `archive`, `commitScope` and `commitSuffix`. Commands have fixed `command` and `args` fields.
 Arguments may contain `{coverage}`, `{change}`, `{target}` and `{scope}` (the first authorized product scope). They run as argument arrays,
 not worker-supplied shell strings. The owner must review these commands and
@@ -519,7 +623,8 @@ outcome-runner hash path/to/queue.json
 outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>] [--no-mascot]
 ```
 
-Every start first runs the [OpenSpec preflight](#openspec-preflight), then the
+Every start first resolves the [target branch](#target-branch), then runs the
+[OpenSpec preflight](#openspec-preflight), then the
 [harness availability check and selection](#harness-selection), then the
 [test framework preflight](#test-framework-preflight).
 
@@ -568,7 +673,7 @@ to the resolved decimal threshold, for example `--test-coverage-lines=90` for
 coverage 90. Choose a command that enforces that gate, such as the Node coverage
 check in the invocation example. Every worker prompt states the percentage.
 
-The resolved harness, model, effort and coverage are frozen in invocation identity.
+The resolved target, harness, model, effort and coverage are frozen in invocation identity.
 Omitted coverage and explicit 85 are equivalent; a changed threshold is refused
 on restart without changing saved state or ownership. A
 restart with changed settings or legacy state without this identity is refused;
@@ -611,7 +716,8 @@ restarts. It is rounded down to whole seconds, clamped at zero, and displayed as
 the accepted event is emitted and reused on a same-invocation restart.
 
 The stdout accepted JSON event contains `status`, `id`, `summary`,
-`durationSeconds` and `grade`, for example:
+`durationSeconds` and `grade`, and `cleanupFailed` only when a cleanup step
+failed (see [Worktrees and cleanup](#worktrees-and-cleanup)), for example:
 
 ```json
 {"status":"accepted","id":"OR-5","summary":"The runner now reports completion details. Claim timing survives restarts. The task took 1h 12m 5s from claim to acceptance and has complexity grade B.","durationSeconds":4325,"grade":"B"}
@@ -716,8 +822,8 @@ publish and merge) use the archived paths.
 **Receipt and Pull Request.** The result manifest accepts paths inside the task
 scopes, the archived change directory and the `openspec/specs` files written by
 the archive; any other path blocks the task. The receipt records the archived
-specification paths. Receipts written before this stage, with unarchived
-specification paths, stay valid. The Pull Request body lists the updated
+specification paths and the resolved `target`. Receipts written before this
+stage, with unarchived specification paths, stay valid. The Pull Request body lists the updated
 documentation files under `Documentation updated`, the archived change directory
 under `Archived change`, and, when there are any, the findings under
 `Documentation outside scope`.
@@ -833,7 +939,8 @@ Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
 `failureReason`: `openspec-missing`, `openspec-not-initialized`,
 `openspec-layout-created`, `harness-unavailable`, `test-framework-missing`,
 `test-framework-analysis-failed`, `test-framework-prepared` or
-`startup-or-run-failed`. Blocked tasks use safe `blockingReason` codes
+`startup-or-run-failed` (target refusals and `invocation-running` are recorded
+as `startup-or-run-failed`). Blocked tasks use safe `blockingReason` codes
 `operation-incomplete` or `cancelled`. SIGINT and SIGTERM are handled
 during startup and work through one guarded finalizer; SIGKILL, power loss and
 crashes preventing cleanup cannot produce a termination record.
@@ -923,7 +1030,9 @@ file writes, so no test starts a real harness, runs a package manager or uses a
 real TTY. The archive command runs through an injectable command runner, so
 tests archive with a scripted command and never run `openspec archive`. The
 mascot tests inject a recording player through `main`, so they
-need no real terminal or timers. The `live:*` scripts exercise a real
+need no real terminal or timers. Concurrent runners, the per-clone Git lock and
+worktree cleanup are tested with Git fixtures (a bare origin and clones),
+scripted pull request hosts and child processes. The `live:*` scripts exercise a real
 harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
 
 ## License
