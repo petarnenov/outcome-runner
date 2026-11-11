@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { main } from '../../src/cli.ts';
 import { runQueue } from '../../src/runner.ts';
 import type { RunOptions } from '../../src/runner.ts';

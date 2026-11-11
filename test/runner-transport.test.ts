@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
@@ -189,7 +188,7 @@ test('B: Codex forwards only owned documented cumulative usage counters', async 
   adapter.threadId = 'owned';
   for (const [threadId, total] of [['foreign', { inputTokens: 99 }], ['owned', { inputTokens: 2, outputTokens: 3, totalTokens: 5 }],
     ['owned', { inputTokens: 4, outputTokens: 5, totalTokens: 9, private: 'SECRET' }]] as const) {
-    await adapter.receive({ method: 'thread/tokenUsage/updated', params: { threadId, tokenUsage: { total } } } as CodexMessage);
+    await adapter.receive({ method: 'thread/tokenUsage/updated', params: { threadId, tokenUsage: { total } } } as unknown as CodexMessage);
   }
   assert.equal(reports.length, 2);
   assert.deepEqual(reports.at(-1), { inputTokens: 4, outputTokens: 5, totalTokens: 9 });

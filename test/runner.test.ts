@@ -1,4 +1,3 @@
-// @ts-nocheck
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawnSync } from 'node:child_process';
@@ -1356,7 +1355,8 @@ for (const phase of ['preflight', 'selection', 'work'] as const) {
       const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve =>
         child.once('exit', (code, signal) => resolve({ code, signal })));
       assert.deepEqual(exit, { code: 3, signal: null }, stderr);
-      assert.ok(done?.handlersClean); if (phase === 'work') assert.ok(done!.closes > 0);
+      assert.ok((done as { handlersClean: boolean } | undefined)?.handlersClean);
+      if (phase === 'work') assert.ok((done as { closes: number } | undefined)!.closes > 0);
       const bytes = readFileSync(ledgerPath({ XDG_STATE_HOME: xdg }), 'utf8');
       const lines = bytes.trim().split('\n'); assert.equal(lines.length, 1);
       const record = JSON.parse(lines[0]) as RunStatistics;

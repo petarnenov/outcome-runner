@@ -1,4 +1,3 @@
-// @ts-nocheck
 import test, { afterEach } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
