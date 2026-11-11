@@ -43,7 +43,9 @@ const builtins = ['cc-plugin-agents-md', 'cc-plugin-telemetry', 'cc-plugin-priva
 export function claudeEnvironment(environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return { ...Object.fromEntries(Object.entries(environment).filter(([name]) =>
     !name.startsWith('CLAUDE') || ['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'].includes(name))),
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', MCP_TOOL_TIMEOUT: '3600000' };
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', MCP_TOOL_TIMEOUT: '3600000',
+  // Product checks run as long as they need; 0 disables Claude Code's idle abort for silent tools.
+  CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: '0' };
 }
 export class ClaudeAdapter implements HarnessAdapter {
   cwd: string;

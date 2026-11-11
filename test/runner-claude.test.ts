@@ -53,6 +53,7 @@ test('Claude environment and arguments isolate ambient capabilities without bypa
   assert.equal(env.CLAUDECODE, undefined); assert.equal(env.CLAUDE_CODE_SETTINGS_SOURCES, undefined);
   assert.equal(env.CLAUDE_CONFIG_DIR, '/auth'); assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'fixture');
   assert.equal(env.MCP_TOOL_TIMEOUT, '3600000');
+  assert.equal(env.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT, '0');
   const adapter = make(); const args = adapter.arguments('http://127.0.0.1:1/token', { threadId: session });
   for (const flag of ['--restricted', '--strict-mcp-config', '--disable-slash-commands', '--no-chrome']) assert.ok(args.includes(flag));
   assert.equal(args[args.indexOf('--tools') + 1], '');
