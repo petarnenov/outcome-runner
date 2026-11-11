@@ -62,8 +62,8 @@ export function parseFlags(args: string[]): Flags {
     const match = flagPattern.exec(arg);
     const name = match?.[1] as Flag | undefined;
     if (!match || !name || name in flags || (name === 'harness' && !harnesses.includes(match[2] as Harness))) {
-      throw new Error('Expected --harness=<claude|codex>, --model=<id>, --effort=<level>, --coverage=<n> and --no-mascot, ' +
-        `each at most once; rejected ${JSON.stringify(arg)}`);
+      throw new Error('Expected --harness=<claude|codex>, --model=<id>, --effort=<level> and --coverage=<n>, each at most once, ' +
+        `and --no-mascot at most once; rejected ${JSON.stringify(arg)}`);
     }
     flags[name] = match[2];
   }

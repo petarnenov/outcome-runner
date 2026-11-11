@@ -52,24 +52,34 @@ test('D: unknown statuses give no mascot and empty blockers count as none', () =
   assert.equal(runMascot({ status: 'exhausted', code: 0, line: null })!.caption, 'exhausted: 0 accepted, 0 remaining');
 });
 
-test('C: every status literal the runner and CLI can produce has exactly one mood', () => {
+/**
+ * Collects every single-quoted literal in the value expression of each `status:` property. A type member such as
+ * `status: string; id: string; grade?: TaskCompletion['grade']` ends at its `;`, so only the value part is read.
+ */
+function statusLiterals(source: string): Set<string> {
   const literals = new Set<string>();
-  const sources = ['src/runner.ts', 'src/cli.ts'].map(path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'));
-  for (const source of sources) {
-    for (const [, expression] of source.matchAll(/\bstatus:\s*([^,}\n]+)/gu)) {
-      for (const [, literal] of expression.matchAll(/'([^']+)'/gu)) literals.add(literal);
-    }
+  for (const [, expression] of source.matchAll(/\bstatus:\s*([^,}\n]+)/gu)) {
+    for (const [, literal] of expression.split(';')[0].matchAll(/'([^']+)'/gu)) literals.add(literal);
   }
+  return literals;
+}
+
+const tasks: readonly string[] = TASK_EVENT_STATUSES; const runs: readonly string[] = RUN_STATUSES;
+const excluded: readonly string[] = NON_OUTCOME_STATUSES;
+const unmapped = (literals: Set<string>) =>
+  [...literals].filter(literal => [tasks, runs, excluded].filter(list => list.includes(literal)).length !== 1);
+
+test('C: every status literal the runner and CLI can produce has exactly one mood', () => {
+  const sources = ['src/runner.ts', 'src/cli.ts'].map(path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'));
+  const literals = new Set(sources.flatMap(source => [...statusLiterals(source)]));
   // The ternary `config.maxAccepted ? 'incomplete' : 'exhausted'` contributes both branches.
   for (const expected of ['exhausted', 'incomplete', 'limit-reached', 'cancelled', 'unavailable', 'accepted', 'blocked', 'recorded']) {
     assert.ok(literals.has(expected), expected);
   }
-  const tasks: readonly string[] = TASK_EVENT_STATUSES; const runs: readonly string[] = RUN_STATUSES;
-  const excluded: readonly string[] = NON_OUTCOME_STATUSES;
-  for (const literal of literals) {
-    const lists = [tasks, runs, excluded].filter(list => list.includes(literal));
-    assert.equal(lists.length, 1, `status ${literal} must be in exactly one list`);
-  }
+  assert.deepEqual(unmapped(literals), [], 'every status literal must be in exactly one list');
+  // A new literal without a mood, plain or inside a conditional, would be reported.
+  assert.deepEqual(unmapped(statusLiterals("return { status: 'paused', x };")), ['paused']);
+  assert.deepEqual(unmapped(statusLiterals("return { status: ready ? 'exhausted' : 'waiting', x };")), ['waiting']);
   for (const status of tasks) {
     assert.ok(Object.hasOwn(TASK_EVENT_MOODS, status), status);
     assert.ok(taskMascot({ status, id: 'A' }));
@@ -98,6 +108,6 @@ test('C: --no-mascot is accepted once in any position and refused when repeated 
     { noMascot: true, harness: 'codex', coverage: '90' });
   assert.deepEqual(parseFlags(['--coverage=90', '--no-mascot']), { coverage: '90', noMascot: true });
   for (const args of [['--no-mascot', '--no-mascot'], ['--no-mascot=1'], ['--model=m', '--no-mascot=']]) {
-    assert.throws(() => parseFlags(args), /--no-mascot, each at most once; rejected/u);
+    assert.throws(() => parseFlags(args), /and --no-mascot at most once; rejected/u);
   }
 });
