@@ -13,6 +13,7 @@ import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolInput, WorkerRepl
 import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions } from '../src/test-grading.ts';
 import { preparedTestFramework } from './support/prepared-test-framework.ts';
+import { scriptedArchive } from './support/scripted-archive.ts';
 
 const fragments = [planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions];
@@ -52,7 +53,7 @@ test('README describes the graded test workflow', () => {
 
 const passingOptions: RunOptions = { openspec: { probe: () => ({ status: 0 }), configPresent: () => true },
   selection: { interactive: false, probe: harness => ({ harness, available: true, version: 'scripted' }) },
-  testFramework: preparedTestFramework, mergePolling: { delay: async () => {} } };
+  testFramework: preparedTestFramework, mergePolling: { delay: async () => {} }, runCommand: scriptedArchive() };
 
 function fixture(t: TestContext) {
   const base = mkdtempSync(join(tmpdir(), 'graded-test-')); t.after(() => rmSync(base, { recursive: true, force: true }));
@@ -95,10 +96,11 @@ function fixture(t: TestContext) {
   return { config, host };
 }
 
-type Kind = 'investigate' | 'plan' | 'planningReview' | 'work' | 'implementationReview';
+type Kind = 'investigate' | 'plan' | 'planningReview' | 'work' | 'implementationReview' | 'document' | 'documentReview';
 const kindOf = (prompt: string): Kind => prompt.includes('Inspect current files') ? 'investigate' :
   prompt.includes('Create proposal.md') ? 'plan' : prompt.includes('Review planning artifacts') ? 'planningReview' :
-  prompt.includes('Implement all approved') ? 'work' : 'implementationReview';
+  prompt.includes('Implement all approved') ? 'work' : prompt.includes('Update the documentation inside') ? 'document' :
+  prompt.includes('Review the documentation changes') ? 'documentReview' : 'implementationReview';
 
 // A scripted adapter records every prompt; it never starts a real harness.
 function recorder(prompts: { kind: Kind; prompt: string }[], { rejectFirstPlanningReview = false } = {}) {
@@ -194,7 +196,8 @@ test('scripted prompts carry graded instructions at a non-default threshold thro
       }
     } });
   assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.ok(broken);
-  for (const kind of ['investigate', 'plan', 'planningReview', 'work', 'implementationReview'] as Kind[]) {
+  for (const kind of ['investigate', 'plan', 'planningReview', 'work', 'implementationReview', 'document',
+    'documentReview'] as Kind[]) {
     assert.ok(byKind(prompts, kind).length, kind);
   }
   for (const { prompt } of prompts) {
@@ -228,7 +231,7 @@ test('scripted prompts state the default 85% threshold in every purpose', async 
   byKind(prompts, 'planningReview').forEach(prompt => assertPlanningReview(prompt, 85));
   byKind(prompts, 'work').forEach(prompt => assertWork(prompt, 85));
   byKind(prompts, 'implementationReview').forEach(prompt => assertImplementationReview(prompt, 85));
-  for (const kind of ['plan', 'planningReview', 'work', 'implementationReview'] as Kind[]) {
+  for (const kind of ['plan', 'planningReview', 'work', 'implementationReview', 'document', 'documentReview'] as Kind[]) {
     assert.equal(byKind(prompts, kind).length, 1, kind);
   }
 });
