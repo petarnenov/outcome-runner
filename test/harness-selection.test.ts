@@ -12,6 +12,7 @@ import { publishToOrigin } from './support/git-origin.ts';
 import { runQueue } from '../src/runner.ts';
 import type { PullRequestHost, RunOptions } from '../src/runner.ts';
 import { RunStore } from '../src/run-store.ts';
+import { invocationIdentity } from '../src/invocation-identity.ts';
 import { ClaudeAdapter } from '../src/claude-adapter.ts';
 import { createHarness, resolveHarness } from '../src/harness.ts';
 import type { CodexSelection } from '../src/harness.ts';
@@ -330,7 +331,7 @@ test('runner: an interactive choice is frozen exactly like the same flags and dr
   assert.equal((await f.run(f.config, deps)).status, 'incomplete');
   const recorded = f.state();
   const flagged = { ...f.config, harness: 'claude' as Harness, model: 'claude-sonnet-5-5', effort: 'high', coverage: 90 };
-  assert.equal(recorded.identityHash, hash({ ...flagged, leaves: ['A'] }));
+  assert.equal(recorded.identityHash, hash(invocationIdentity({ ...flagged, leaves: ['A'] })));
   assert.ok(f.prompts.length && f.prompts.every(prompt => prompt.includes('Resolved coverage threshold: 90%.')));
   // A flag restart with the same values has the same identity and is accepted without prompts.
   const again = live({ interactive: false });
@@ -356,7 +357,8 @@ test('runner: choosing Codex reads it once and resolution validates against that
 
 test('runner: a restart reuses the recorded Codex selection without prompts and reads Codex once', async t => {
   const f = fixture(t);
-  const identity = { ...f.config, harness: 'codex', model: 'gpt-a', effort: 'high', coverage: 90, leaves: ['A'] };
+  const identity = invocationIdentity({ ...f.config, harness: 'codex', model: 'gpt-a', effort: 'high', coverage: 90,
+    leaves: ['A'] });
   new RunStore(f.config.stateDirectory, identity, { repositoryRoot: f.root }).close();
   const before = f.state().identityHash;
   const { deps, calls } = live({ answers: [] });
@@ -369,8 +371,8 @@ test('runner: a restart reuses the recorded Codex selection without prompts and 
 
 test('runner: a restart with a differing flag is refused as incompatible and leaves the state unchanged', async t => {
   const f = fixture(t);
-  new RunStore(f.config.stateDirectory, { ...f.config, harness: 'claude', model: 'claude-opus-5-5', effort: 'medium', coverage: 85,
-    leaves: ['A'] }, { repositoryRoot: f.root }).close();
+  new RunStore(f.config.stateDirectory, invocationIdentity({ ...f.config, harness: 'claude', model: 'claude-opus-5-5',
+    effort: 'medium', coverage: 85, leaves: ['A'] }), { repositoryRoot: f.root }).close();
   const before = readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8');
   const { deps, calls } = live({});
   await assert.rejects(f.run({ ...f.config, model: 'claude-sonnet-5-5' }, deps), /incompatible/u);

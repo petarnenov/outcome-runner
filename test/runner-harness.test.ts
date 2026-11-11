@@ -9,6 +9,7 @@ import type { CodexSelection } from '../src/harness.ts';
 import { ClaudeAdapter } from '../src/claude-adapter.ts';
 import { CodexAdapter } from '../src/codex-adapter.ts';
 import { RunStore } from '../src/run-store.ts';
+import type { InvocationIdentity } from '../src/invocation-identity.ts';
 import { git } from '../src/git.ts';
 import { main } from './support/isolated-cli.ts';
 import { publishToOrigin } from './support/git-origin.ts';
@@ -19,6 +20,8 @@ const tool = { name: 'echo', description: 'Echo', inputSchema: { type: 'object' 
 const codexCatalogFixture = new Map([['gpt-6.1-sol', ['low', 'medium', 'high']], ['pinned', ['medium']], ['other', ['low']]]);
 const codex = (defaults: Partial<CodexSelection> = {}) => async (): Promise<CodexSelection> =>
   ({ catalog: codexCatalogFixture, ...defaults });
+/** The store compares whatever identity it is given; these tests use partial identities. */
+const asIdentity = (value: object) => value as unknown as InvocationIdentity;
 
 /** A repository whose start branch exists on origin, so the CLI resolves its run target. */
 function startCheckout(t: TestContext, directory: string): string {
@@ -72,15 +75,16 @@ test('Codex selection is read-only and closes on success and refusal', async () 
 test('resolved harness model and effort changes and legacy identity cannot rewrite saved state', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'harness-state-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const identity = { ...(await resolveHarness({} as RunConfig)), leaves: ['A'], invocation: 'one' };
-  const first = new RunStore(directory, identity); first.close();
+  const first = new RunStore(directory, asIdentity(identity)); first.close();
   const before = readFileSync(join(directory, 'state.json'), 'utf8');
   const sonnet = await resolveHarness({ model: 'claude-sonnet-5-5' } as RunConfig);
   for (const patch of [{ harness: 'codex' }, { model: sonnet.model }, { effort: 'high' }, { coverage: 90 }]) {
-    assert.throws(() => new RunStore(directory, { ...identity, ...patch }), /incompatible/u);
+    assert.throws(() => new RunStore(directory, asIdentity({ ...identity, ...patch })), /incompatible/u);
     assert.equal(readFileSync(join(directory, 'state.json'), 'utf8'), before);
   }
-  const legacy = join(directory, 'legacy'); const old = new RunStore(legacy, { leaves: ['A'], invocation: 'old' }); old.close();
-  assert.throws(() => new RunStore(legacy, { ...identity, invocation: 'old' }), /incompatible/u);
+  const legacy = join(directory, 'legacy');
+  const old = new RunStore(legacy, asIdentity({ leaves: ['A'], invocation: 'old' })); old.close();
+  assert.throws(() => new RunStore(legacy, asIdentity({ ...identity, invocation: 'old' })), /incompatible/u);
 });
 
 test('CLI accepts each selection flag once and keeps invalid input private', async t => {

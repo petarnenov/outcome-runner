@@ -18,6 +18,7 @@ import { PAGE_BYTES } from '../src/text-page.ts';
 import type { RunEvent, RunOptions } from '../src/runner.ts';
 import { ClaimLedger } from '../src/claims.ts';
 import { RunStore } from '../src/run-store.ts';
+import { invocationIdentity } from '../src/invocation-identity.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolContext, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
 import { preparedTestFramework } from './support/prepared-test-framework.ts';
 import { separateArchive } from './support/scripted-archive.ts';
@@ -790,7 +791,8 @@ test('restart keeps the existing claim without another ledger commit', async t =
 
 test('a claim lost after push is resumed by the same durable claimant', async t => {
   const f = fixture(t); const config = { ...f.config, leaves: ['A'] };
-  const store = new RunStore(config.stateDirectory, { ...config, coverage: 85, root: realpathSync(f.root), leaves: ['A'] }, { repositoryRoot: f.root });
+  const store = new RunStore(config.stateDirectory, invocationIdentity({ ...config, coverage: 85, root: realpathSync(f.root),
+    leaves: ['A'] }), { repositoryRoot: f.root });
   store.update({ claimant: 'durable' }); store.close();
   const ledger = new ClaimLedger(f.root, 'proposal');
   ledger.acquire(ledger.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'durable', host: 'h',
@@ -922,7 +924,8 @@ test('coverage restart preserves frozen state and ownership and accepts equivale
   assert.equal(await main(path, candidate => runQueue({ ...candidate, stateDirectory: config.stateDirectory },
     { host: f.host, createAdapter: scripted }), line => { output += line; }, { cwd: f.root }), 4);
   const diagnostic = JSON.parse(output).diagnostics as string;
-  assert.match(readFileSync(diagnostic, 'utf8'), /durable invocation owns unfinished work/u);
+  // The ownership file of the same state directory leaves identity compatibility to the run store.
+  assert.match(readFileSync(diagnostic, 'utf8'), /Run state is incompatible/u);
   rmSync(join(diagnostic, '..'), { recursive: true, force: true });
   assert.equal(readFileSync(statePath, 'utf8'), state);
   assert.equal(readFileSync(ownerPath, 'utf8'), owner);

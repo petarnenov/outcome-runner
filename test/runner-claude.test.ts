@@ -9,6 +9,7 @@ import { ClaudeAdapter, claudeEnvironment } from '../src/claude-adapter.ts';
 import { claudeCatalog } from '../src/harness-catalog.ts';
 import type { AdapterOptions, SessionHandle, SpawnProcess, ToolDefinition, ToolInput, WorkerProcess, WorkerReply } from '../src/harness-adapter.ts';
 import { RunStore } from '../src/run-store.ts';
+import type { InvocationIdentity } from '../src/invocation-identity.ts';
 import { CodexFiles, brokerTool } from '../src/codex-files.ts';
 import type { FakeChild } from './support/types.ts';
 
@@ -196,7 +197,8 @@ test('real Claude Opus 5.5 medium uses only scoped broker and resumes without am
   mkdirSync(join(directory, '.claude'));
   writeFileSync(join(directory, '.claude/settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [
     { type: 'command', command: 'touch unexpected-hook' }] }] }, permissions: { allow: ['Bash'] } }));
-  const store = new RunStore(join(directory, 'state'), { leaves: ['A'], invocation: 'claude-smoke' }); t.after(() => store.close());
+  const store = new RunStore(join(directory, 'state'),
+    { leaves: ['A'], invocation: 'claude-smoke' } as unknown as InvocationIdentity); t.after(() => store.close());
   const broker = new CodexFiles({ root: directory, scopes: [{ mode: 'write', path: 'output' }], store,
     identity: { worker: 'claude-smoke' }, revalidate: async () => true });
   const handles: SessionHandle[] = [];
