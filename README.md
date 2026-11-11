@@ -1343,7 +1343,10 @@ start, and `end` with the run outcome (`unavailable` when the run fails). The
 run start and run end lines cover the run from the OpenSpec preflight onward.
 Refusals before the OpenSpec preflight, such as an invalid flag, an unreadable
 invocation file or a [target branch](#target-branch) refusal, exit with code 4
-without writing any step line. The task steps are `claim`, `worktree`, `setup`
+without writing any step line. A `missing-setting` refusal (see
+[Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation))
+writes only the run `start` line and the run `end` line with outcome
+`unavailable`, and no `preflight` line. The task steps are `claim`, `worktree`, `setup`
 (each setup command), `investigation`, `planning`, `planning check`,
 `planning review`, `implementation`, `commit`, `check` (each product check),
 `review`, `documentation`, `documentation review`, `final checks`, `archive`,
