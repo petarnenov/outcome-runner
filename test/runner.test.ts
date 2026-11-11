@@ -823,12 +823,15 @@ test('an unrelated target advance before merge returns to publish', async t => {
   assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.equal(f.records.length, 1);
 });
 
-test('a target advance inside the outcome scope blocks the result', async t => {
+test('a target advance inside the outcome scope is merged and reviewed again before publish', async t => {
   const f = fixture(t);
   const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host, createAdapter: scripted,
     afterEffect: async kind => { if (kind === 'implementation') advanceTarget(f, 'src/a/foreign.txt', 'scope'); } });
-  assert.equal(result.status, 'incomplete'); assert.equal(f.records.length, 0);
-  assert.match(blockedReason(result), /outcome scope/u);
+  assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.equal(f.records.length, 1);
+  assert.equal(git(f.root, 'show', 'origin/proposal:src/a/foreign.txt'), 'scope');
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+  assert.equal(state.completed.A.integrations.length, 1);
+  assert.equal(state.completed.A.integrations[0].outcome, 'clean');
 });
 
 test('coverage startup failures are private, exit 4 and allocate nothing', async t => {

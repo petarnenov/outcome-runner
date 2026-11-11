@@ -460,17 +460,34 @@ test('A: a restart between archive and receipt resumes without running the archi
   assert.deepEqual(g.state().completed.A.archive.specs, ['openspec/specs/finite-counter/spec.md']);
 });
 
-// A (required): a target change to the same openspec/specs file or the archived change blocks the task.
-for (const target of ['openspec/specs/finite-counter/spec.md', `${archived}/notes.md`]) {
-  test(`A: a target advance changing ${target.startsWith('openspec/specs') ? 'the same spec file' : 'the archived change'} blocks the task`, async t => {
-    const f = fixture(t);
-    const result = await runQueue(f.config, { ...passing, host: f.host, createAdapter: worker(), runCommand: scriptedArchive(),
-      afterEffect: async kind => { if (kind === 'archive') f.advance(target, '# Foreign change\n'); } });
-    assert.equal(result.status, 'incomplete'); assert.equal(f.records.length, 0);
-    assert.equal(f.state().blocked.A.reason, 'Target changed outcome scope');
-    assert.equal(f.state().blocked.A.work.stage, 'publish');
-  });
-}
+// A (required): a target change to the same openspec/specs file conflicts outside the task scopes, so it blocks with
+// target-conflict-unresolved and that path without a resolution session.
+test('A: a target advance changing the same spec file blocks with target-conflict-unresolved and its path', async t => {
+  const f = fixture(t); const prompts: { kind: Kind; prompt: string }[] = [];
+  const path = 'openspec/specs/finite-counter/spec.md';
+  const result = await runQueue(f.config, { ...passing, host: f.host, createAdapter: worker({ prompts }),
+    runCommand: scriptedArchive(), afterEffect: async kind => { if (kind === 'archive') f.advance(path, '# Foreign change\n'); } });
+  assert.equal(result.status, 'incomplete'); assert.equal(f.records.length, 0);
+  const blocked = f.state().blocked.A;
+  assert.equal(blocked.reason, 'target-conflict-unresolved');
+  assert.deepEqual(blocked.paths, [path]);
+  assert.equal(blocked.work.stage, 'integrate');
+  assert.deepEqual(result.blockers!.A.paths, [path]);
+  assert.ok(!prompts.some(entry => entry.prompt.includes('Resolve the merge conflicts')));
+});
+
+// A (required): a target change to the archived change is merged, and the result is checked and reviewed again.
+test('A: a target advance changing the archived change is merged, checked and reviewed again', async t => {
+  const f = fixture(t); const prompts: { kind: Kind; prompt: string }[] = [];
+  const result = await runQueue(f.config, { ...passing, host: f.host, createAdapter: worker({ prompts }),
+    runCommand: scriptedArchive(),
+    afterEffect: async kind => { if (kind === 'archive') f.advance(`${archived}/notes.md`, '# Foreign change\n'); } });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.equal(f.records.length, 1);
+  const completed = f.state().completed.A;
+  assert.equal(completed.integrations.length, 1); assert.equal(completed.integrations[0].outcome, 'clean');
+  assert.equal(count(prompts, 'implementationReview'), 2); assert.equal(count(prompts, 'documentReview'), 2);
+  assert.ok(git(f.root, 'show', `origin/proposal:${archived}/notes.md`));
+});
 
 test('README documents the documentation and archive stages', () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');

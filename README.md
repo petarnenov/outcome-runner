@@ -600,7 +600,10 @@ before its next step starts: claim, investigation, planning and planning review,
 implementation and implementation review, then documentation, documentation
 review, project checks, archive, receipt, publish, Pull Request and merge. See
 [Documentation and archive](#documentation-and-archive) for the stages after the
-implementation review.
+implementation review. When the target advances into the task's scope, an
+`integrate` stage merges it and checks and reviews the result again before the
+receipt is recorded anew; see
+[When the target advances during a run](#when-the-target-advances-during-a-run).
 
 ## Project and authority
 
@@ -749,7 +752,9 @@ changes preserve historical acceptance. Removed or altered receipts do not prove
 completion. A target that advanced without touching the task scopes, the change
 directory, the archived change directory or the `openspec/specs` files written by
 the archive is merged into the result and all final checks run again. A target
-change inside any of them is reported incomplete.
+change inside any of them is merged as well, and the merged result is checked
+and reviewed again before it is published; see
+[When the target advances during a run](#when-the-target-advances-during-a-run).
 
 When a task is merged but recording its acceptance fails (for example its
 original claim time cannot be recovered), the task is recorded as blocked and
@@ -772,7 +777,7 @@ matching kind is used, in this order:
 
 | `kind` | Meaning | Other fields |
 |---|---|---|
-| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete`, `stage` and `diagnostics` (the private `state.json` path) |
+| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete` (or `target-conflict-unresolved` with the conflicting `paths`, or `target-integration-rejected`; see [When the target advances during a run](#when-the-target-advances-during-a-run)), `stage` and `diagnostics` (the private `state.json` path) |
 | `max-accepted` | The task was not started because `maxAccepted` was reached | `reason` `max-accepted`, `limit` |
 | `waiting-for-dependency` | A dependency is not accepted yet (for example blocked in this run) | `reason` `waiting-for-dependency`, `dependencies` (the ids not accepted) |
 | `waiting-for-claim` | Another runner holds a claim on the task or on overlapping scopes | `reason` `waiting-for-claim`, `claim` with the claimed task `id` and `host` |
@@ -1024,6 +1029,72 @@ documentation files under `Documentation updated`, the archived change directory
 under `Archived change`, and, when there are any, the findings under
 `Documentation outside scope`.
 
+## When the target advances during a run
+
+The target branch can move while a task is worked, for example when another task
+or a person merges into it. The runner notices the advance before it publishes
+the task branch, while it waits for the Pull Request checks and before it merges
+(the merge wait returns to publish when `origin/<target>` changed), and handles
+it the same way in each case. It compares the files the target changed since the
+task's recorded base with the task's guarded paths: the task scopes, the change
+directory and, after the archive, the archived change directory and the
+`openspec/specs` files written by the archive.
+
+**Change outside the guarded paths.** As before, the target is merged into the
+task branch with a `chore(<commitScope>): integrate <target> into <id>` commit,
+the `setup` commands and the final checks run again and the tested head is
+pushed. The recorded base stays the same and no new review session runs.
+
+**Change inside the guarded paths.** The task is not blocked. It enters the
+durable `integrate` stage: the runner merges the advanced target into the task
+branch in the task worktree (with the same commit subject) and records the
+merged target as the task's new base in `state.json`, together with an
+`integration` record holding the `target`, the `previousBase`, the conflicting
+paths (`conflicts`), the `outcome` (`clean` or `conflict`) and the current
+`step`. Then, before the Pull Request is published or updated:
+
+1. a merge with conflicts gets one worker session to resolve them (see below);
+2. the `setup` commands and the project checks run again;
+3. a new implementation review session reviews the merged result;
+4. a new documentation review session reviews it as well.
+
+Earlier acceptances are never reused for the new base: the accepted review, the
+checks, the final checks, the tested head and the tested target are cleared
+when the integration starts. After both reviews accept, the receipt is recorded
+again with the new base, the new review and a manifest of the task's changes
+relative to the new base; then the usual publish, Pull Request and merge
+follow. An open Pull Request is reused and updated by the next push. Each
+finished integration is appended to `integrations` in the run state.
+
+**Conflicts.** When the merge conflicts, the worker gets exactly one worker
+session (an implementation session) with the conflicting paths, to resolve them
+inside the task scopes while keeping the intent of both sides. The runner then
+checks that no conflicting file still has a conflict marker (a line starting
+with `<<<<<<< ` or `>>>>>>> `) and no path is left unmerged, and concludes the
+merge. A conflicting path outside the task scopes, for example in the archived
+change or in an `openspec/specs` file, cannot be written by the worker, so the
+task is blocked at once without a session.
+
+**Blocking reasons.**
+
+| Reason | When |
+|---|---|
+| `target-conflict-unresolved` | A merge with conflicts: the resolution session fails, conflict markers or unmerged paths remain, a conflicting path is outside the task scopes, or the checks or a review do not accept the result. The conflicting `paths` are recorded with it |
+| `target-integration-rejected` | A merge without conflicts whose checks or reviews do not accept the result |
+
+The reason (and, for a conflict, the `paths`) is stored in the task's `blocked`
+entry in `state.json` and appears in its `blocked` entry of `blockers` in the
+run result (see [Unfinished results](#unfinished-results)), for example
+`{"kind":"blocked","stage":"integrate","reason":"target-conflict-unresolved","diagnostics":"...","paths":["src/counter/result.mjs"]}`.
+Every other blocked task keeps the reason `operation-incomplete`.
+
+**Restarts.** Every integration step is saved in `state.json` before the next
+effect. After a cancellation or a restart of the invocation, the run resumes the
+integration at the recorded step with the recorded base: it never merges the
+target a second time, runs only the outstanding resolution session, checks and
+reviews, and never reuses an acceptance from before the merge. A later run that
+recovers a blocked integration also resumes it at its recorded step.
+
 ## Run statistics ledger
 
 Each runner execution appends one compact JSON object and newline to
@@ -1095,7 +1166,7 @@ Each `tasks` entry contains:
 | id | string, task ID |
 | change | string, task change name |
 | outcome | accepted, blocked, claimed-elsewhere or not-started |
-| lastStage | string or null; claim, investigate, plan, work, document, document-review, final-checks, archive, receipt, publish, pr or merge |
+| lastStage | string or null; claim, investigate, plan, work, document, document-review, final-checks, archive, integrate, receipt, publish, pr or merge |
 | blockingReason | string or null; safe controller reason code when blocked |
 | durationSeconds | nonnegative number or null; OR-5 persisted claim-to-acceptance duration for accepted tasks |
 | complexityGrade | A, B, C, D, E or null |
@@ -1198,7 +1269,11 @@ without writing any step line. The task steps are `claim`, `worktree`, `setup`
 `review`, `documentation`, `documentation review`, `final checks`, `archive`,
 `receipt`, `integrate` (only when the target advanced), `push`,
 `pull request`, `wait`, `merge`, `acceptance`, `cleanup`, and `blocked`
-(`stopped at <step>`, naming the last step and never the reason).
+(`stopped at <step>`, naming the last step and never the reason). An
+integration of an in-scope target advance writes an `integrate` line before the
+merge, an `implementation` line before the conflict resolution session, `setup`
+and `check` lines for its checks, and `review` and `documentation review` lines
+for its reviews.
 
 - **Waits** log once when the wait starts, never on every poll: one `wait` line
   for mergeability and checks, one more when the pull request head is stale,
@@ -1308,7 +1383,10 @@ unfinished reasons and the invocation status are tested with scripted adapters,
 the scripted pull request host and Git fixtures with per-task dependencies and
 scopes. The dispose command is tested with Git fixtures, scripted adapters and
 scripted pull request hosts, through `disposeInvocation` and the exported
-`dispose` entry point with a temporary `XDG_STATE_HOME`. The `live:*` scripts exercise a real
+`dispose` entry point with a temporary `XDG_STATE_HOME`. Target advances during
+a run (clean and conflicting merges, restarts and advances outside the scopes)
+are tested with Git fixtures that push to the fixture origin, scripted adapters
+and the scripted pull request host. The `live:*` scripts exercise a real
 harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
 Step lines are captured through `RunOptions.steps`.
 
