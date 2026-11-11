@@ -474,11 +474,11 @@
       "title": "Secret scanning without false positives on test fixtures",
       "change": "secret-scan-config",
       "priority": 21,
-      "scopes": [".gitguardian.yaml", "docs"],
+      "scopes": [".gitguardian.yaml", "scripts", "docs"],
       "dependencies": [],
       "criteria": [
         "A .gitguardian.yaml in the repository root keeps scanning all product code and ignores only the known false positive for the path string /etc/passwd used by test fixtures, by match rather than by excluding the test directory.",
-        "Real secrets in test files are still reported.",
+        "A test in scripts reads .gitguardian.yaml and shows that its only ignore entry is the exact /etc/passwd match, that no repository path, including test, is excluded from scanning, and that the configuration is valid YAML with the keys GitGuardian documents. These local tests are the evidence; running the hosted GitGuardian scanner is not required and is not part of the evidence.",
         "docs explain how to add a reviewed false positive to the configuration instead of marking it by hand in the dashboard."
       ]
     }

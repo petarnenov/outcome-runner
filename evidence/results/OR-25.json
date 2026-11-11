@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "id": "OR-25",
+  "taskHash": "3ed3750fc268e4f393086fcd4e879b96877f54e672d6849fcd06f052c36881ac",
+  "authority": "owner-2026-11-11-outcome-runner-codex-6",
+  "specification": {
+    "openspec/changes/archive/2026-11-11-release-concurrent-merges/design.md": "b6645f588146b4bedd528fb498735f4fd53a9fff33fd78e35c41134eebbc07b2",
+    "openspec/changes/archive/2026-11-11-release-concurrent-merges/proposal.md": "92bbfbd6903fe5966d2d1400d92b6b6d381ffa67c1588f98d56c7861d8818a4a",
+    "openspec/changes/archive/2026-11-11-release-concurrent-merges/specs/automatic-semantic-versioning/spec.md": "a6d6d83d5e6ce778da25dbb7c826b5a828afc50fa80388161115b8d8c9506268"
+  },
+  "review": {
+    "reviewer": "codex:01a1cc10-149d-7570-81ba-408bf3e90c20",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": ".github/workflows/release.yml",
+      "hash": "d8465bfd7c651c37e42c6c77a4e3cd0476e84283284672b0a5734e9406f79d92"
+    },
+    {
+      "path": "docs/releasing.md",
+      "hash": "ef651d906eb647ccffc20367327698cc2f5a0bde3aa5d18e5d7e92003caba77d"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-release-concurrent-merges/design.md",
+      "hash": "b6645f588146b4bedd528fb498735f4fd53a9fff33fd78e35c41134eebbc07b2"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-release-concurrent-merges/proposal.md",
+      "hash": "92bbfbd6903fe5966d2d1400d92b6b6d381ffa67c1588f98d56c7861d8818a4a"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-release-concurrent-merges/specs/automatic-semantic-versioning/spec.md",
+      "hash": "a6d6d83d5e6ce778da25dbb7c826b5a828afc50fa80388161115b8d8c9506268"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-release-concurrent-merges/tasks.md",
+      "hash": "723cd9646a671be7223c62aa5fd6cf61a032f863459657c55663949e7410cda8"
+    },
+    {
+      "path": "openspec/specs/automatic-semantic-versioning/spec.md",
+      "hash": "88ab8d95bed8c41156de9b52a7ebfaa9fdf1870fe32b437b522c76a11de62563"
+    },
+    {
+      "path": "scripts/publish-release.test.ts",
+      "hash": "cdb887b131ea585d6334e25f8f8a776571ca975f73a178f3d21baae5afc99672"
+    },
+    {
+      "path": "scripts/publish-release.ts",
+      "hash": "9d9c2f44d7124f4c347e91e23c234980eaa8f48cb7818e633a257b71fda79894"
+    }
+  ],
+  "head": "affa4ba78dc007d7b83614422bdf37da53dcabea",
+  "base": "45e25a33426c4a8579dd662b2fec7237ed7fb01a"
+}
