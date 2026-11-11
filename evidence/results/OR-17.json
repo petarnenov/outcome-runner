@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "id": "OR-17",
+  "taskHash": "22056a684dd4436059fb7e1a0f2666b204087f63a501cf6d9cf28b04f48f9029",
+  "authority": "owner-2026-11-11-outcome-runner-or-17-claude",
+  "specification": {
+    "openspec/changes/archive/2026-11-11-log-runner-steps/design.md": "ad8205cab684112a0ff6e51ea513066e7b0ec2fd3333a1872978d178540ba018",
+    "openspec/changes/archive/2026-11-11-log-runner-steps/proposal.md": "4c72b6f729083fb2c78c954aea06e676fe5f77662e98aa4bb92e5fcb746b1f31",
+    "openspec/changes/archive/2026-11-11-log-runner-steps/specs/runner-step-log/spec.md": "96d94969b7774766cc86bfb91b0b83a3e126efd56c6430499addc4648a85bde3"
+  },
+  "review": {
+    "reviewer": "claude:fe132ca8-15d5-48f1-a22a-9f3985b54d84",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "00d9bc6170ac426b23021d6c3fc328c1595e1d0d6f4add53f6cd25b10e61a3d0"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-log-runner-steps/design.md",
+      "hash": "ad8205cab684112a0ff6e51ea513066e7b0ec2fd3333a1872978d178540ba018"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-log-runner-steps/proposal.md",
+      "hash": "4c72b6f729083fb2c78c954aea06e676fe5f77662e98aa4bb92e5fcb746b1f31"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-log-runner-steps/specs/runner-step-log/spec.md",
+      "hash": "96d94969b7774766cc86bfb91b0b83a3e126efd56c6430499addc4648a85bde3"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-log-runner-steps/tasks.md",
+      "hash": "ee8dd7cdde2b732647e73ba9870e76fbf83a769abcd0e140d027f87ceb470939"
+    },
+    {
+      "path": "openspec/specs/runner-step-log/spec.md",
+      "hash": "e26e4d51eb8b548527a0c694830166afbae5dde01074066520e5f034f36aeea5"
+    },
+    {
+      "path": "src/git-lock.ts",
+      "hash": "5fb0c45a729546d8e8dda78dfa1e29a8052eadc81a093af6575e5424a7da3419"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "5cb180757dc8f7bbd2ab7b7c88d79300cad709ad3d4cc8ac51df2552793e41d4"
+    },
+    {
+      "path": "src/step-log.ts",
+      "hash": "ab00bd6848ff039c3a722f47c557aa4f88b2e716562c27d8558d3497136bc6c9"
+    },
+    {
+      "path": "test/runner-steps.test.ts",
+      "hash": "d6ea18c3b3b5b0ef0d6e40613e956a4edf895f4f169e864fb4ed0369d4a081bf"
+    },
+    {
+      "path": "test/step-log.test.ts",
+      "hash": "3759e2a1d92c4da61fcc955ff91b0661ca826acbe2ef673c1a0e772acf339743"
+    },
+    {
+      "path": "test/support/git-lock-child.ts",
+      "hash": "cc28910dd8390772c43f9e1fadbcdb9857fc7e38067373ef393a00a3f9f020d8"
+    }
+  ],
+  "head": "3e7644cf1ba93c498ec39c28acbb851492fc5eb0",
+  "base": "5153caf94d9559f80e3b2e10e820df4041205555"
+}
