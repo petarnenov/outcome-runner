@@ -1,12 +1,12 @@
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { git, receiptAt } from '../src/git.ts';
 import { hash } from '../src/model.ts';
-import type { RunConfig, Work } from '../src/model.ts';
+import type { Queue, RunConfig, Work } from '../src/model.ts';
 import { compareIdentity, invocationIdentity, missingSetting, MissingSettingError, REQUIRED_SETTINGS }
   from '../src/invocation-identity.ts';
 import type { InvocationIdentity } from '../src/invocation-identity.ts';
@@ -15,7 +15,7 @@ import type { RunOptions } from '../src/runner.ts';
 import { main } from '../src/cli.ts';
 import { Statistics, ledgerPath } from '../src/statistics.ts';
 import type { RunStatistics } from '../src/statistics.ts';
-import { runnerFixture } from './support/runner-fixture.ts';
+import { hasBranch, runnerFixture } from './support/runner-fixture.ts';
 import type { RunnerFixture } from './support/runner-fixture.ts';
 
 const TASKS = { A: 'hash-a', B: 'hash-b' };
@@ -231,6 +231,7 @@ test('D: added tasks update the stored identity; removed or changed tasks are re
 
 /** The number of commits on the claims ledger branch of origin. */
 const claimCommits = (f: RunnerFixture) => git(f.remote, 'rev-list', '--count', 'work-queue-claims-main');
+const claimOf = (f: RunnerFixture, id: string) => JSON.parse(git(f.remote, 'show', `work-queue-claims-main:${id}.json`));
 const sessionsOf = (work: Work, purpose: string) => (work.sessions ?? []).filter(item => item.purpose === purpose).length;
 const statePath = (config: RunConfig) => join(config.stateDirectory, 'state.json');
 
@@ -259,6 +260,15 @@ const receiptOf = (f: RunnerFixture, index = 0) => {
   const task = f.queue.tasks[index];
   return receiptAt(f.root, 'origin/main', `evidence/results/${task.id}.json`, hash(task), null)!;
 };
+
+/** Commits `queue` as the project queue on origin/main through the integrator clone. */
+function publishQueue(f: RunnerFixture, queue: Queue, message: string): void {
+  const clone = f.integrator;
+  git(clone, 'fetch', '-q', 'origin'); git(clone, 'checkout', '-q', '-B', 'main', 'origin/main');
+  writeFileSync(join(clone, f.project.queue), JSON.stringify(queue));
+  git(clone, 'add', '-A'); git(clone, 'commit', '-q', '-m', message);
+  git(clone, 'push', '-q', 'origin', 'HEAD:refs/heads/main');
+}
 
 // 5.9 (C) (required)
 test('C: a newer runner resumes legacy state with unchanged settings without a second claim', async t => {
@@ -300,4 +310,68 @@ test('C: the frozen model is reused when the invocation no longer names it and t
   const state = JSON.parse(readFileSync(statePath(flagged), 'utf8'));
   assert.equal(state.identityHash, before.identityHash); assert.deepEqual(state.identity, before.identity);
   assert.equal(state.changes, undefined);
+});
+
+// 5.11 (B) (required)
+test('B: a missing required setting is refused before any effect and then accepted without losing state', async t => {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const config = f.config();
+  const before = await interrupted(f, config);
+  const bytes = readFileSync(statePath(config), 'utf8');
+  const requiredSettings = [{ path: 'project.example', example: 'value' }];
+  let probed = 0;
+  await assert.rejects(f.run(config, { requiredSettings,
+    openspec: { probe: () => { probed += 1; return { status: 0 }; }, configPresent: () => true } }),
+  (error: MissingSettingError) => {
+    assert.ok(error instanceof MissingSettingError);
+    assert.equal(error.reason, 'missing-setting'); assert.equal(error.setting, 'project.example');
+    assert.equal(error.example, 'value'); assert.match(error.message, /project\.example.*"value"/u);
+    return true;
+  });
+  assert.equal(probed, 0);
+  assert.equal(readFileSync(statePath(config), 'utf8'), bytes);
+  assert.ok(existsSync(before.current.path)); assert.ok(hasBranch(f.root, before.current.branch));
+  assert.equal(claimOf(f, 'A').branch, before.current.branch); assert.equal(claimCommits(f), '1');
+  const lines: string[] = [];
+  const withSetting = { ...config, project: { ...config.project, example: 'chosen' } } as RunConfig;
+  const result = await f.run(withSetting, { requiredSettings, steps: line => lines.push(line) });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.match(lines.find(line => line.includes(' A '))!, /A implementation: resuming/u);
+  assert.equal(claimCommits(f), '1');
+  const state = JSON.parse(readFileSync(statePath(config), 'utf8'));
+  assert.equal(sessionsOf(state.completed.A, 'investigate'), 1);
+  assert.equal(state.changes.length, 1);
+  assert.equal(state.changes[0].kind, 'setting-added'); assert.equal(state.changes[0].setting, 'project.example');
+  assert.deepEqual(state.settings, { 'project.example': hash('chosen') });
+  assert.equal(state.identityHash, before.identityHash);
+  assert.deepEqual(receiptOf(f).invocationChanges, state.changes);
+});
+
+// 5.12 (B) (required)
+test('B: a changed task hash or a removed task of an unfinished invocation is still refused', async t => {
+  const f = runnerFixture(t, { ids: ['A', 'B'] });
+  const config = f.config();
+  const before = await interrupted(f, config);
+  assert.equal(before.current.id, 'A');
+  const bytes = readFileSync(statePath(config), 'utf8');
+  const unchanged = () => {
+    assert.equal(readFileSync(statePath(config), 'utf8'), bytes);
+    assert.ok(existsSync(before.current.path)); assert.ok(hasBranch(f.root, before.current.branch));
+    assert.equal(claimOf(f, 'A').branch, before.current.branch); assert.equal(claimCommits(f), '1');
+  };
+  const tasks = config.authority.tasks;
+  // (a) A's hash in authority.tasks changes while the queue stays.
+  await assert.rejects(f.run({ ...config, authority: { ...config.authority, tasks: { ...tasks, A: '0'.repeat(64) } } }),
+    /Task source differs from frozen authority/u);
+  unchanged();
+  // (c) B, frozen in authority.tasks, is removed.
+  await assert.rejects(f.run({ ...config, authority: { ...config.authority, tasks: { A: tasks.A } } }),
+    /Run state is incompatible/u);
+  unchanged();
+  // (b) The queue and authority.tasks change together to a new definition of A.
+  const queue = structuredClone(f.queue); queue.tasks[0].title = 'Counter A, revised';
+  publishQueue(f, queue, 'test(fixture): revise A');
+  await assert.rejects(f.run({ ...config, authority: { ...config.authority, tasks: { ...tasks, A: hash(queue.tasks[0]) } } }),
+    /Run state is incompatible/u);
+  unchanged();
 });
