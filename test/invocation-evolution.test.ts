@@ -4,16 +4,19 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { git, receiptAt } from '../src/git.ts';
 import { hash } from '../src/model.ts';
-import type { RunConfig } from '../src/model.ts';
+import type { RunConfig, Work } from '../src/model.ts';
 import { compareIdentity, invocationIdentity, missingSetting, MissingSettingError, REQUIRED_SETTINGS }
   from '../src/invocation-identity.ts';
 import type { InvocationIdentity } from '../src/invocation-identity.ts';
 import { RunStore } from '../src/run-store.ts';
+import type { RunOptions } from '../src/runner.ts';
 import { main } from '../src/cli.ts';
-import { ledgerPath } from '../src/statistics.ts';
+import { Statistics, ledgerPath } from '../src/statistics.ts';
 import type { RunStatistics } from '../src/statistics.ts';
 import { runnerFixture } from './support/runner-fixture.ts';
+import type { RunnerFixture } from './support/runner-fixture.ts';
 
 const TASKS = { A: 'hash-a', B: 'hash-b' };
 const AT = Date.parse('2026-11-12T10:00:00Z');
@@ -222,3 +225,79 @@ test('D: added tasks update the stored identity; removed or changed tasks are re
 });
 
 // 5.8 (D) (coverage-only): not needed, coverage reached.
+
+// Runner tests: the Git fixture of runnerFixture (a bare origin, the project queue, scripted adapters and the scripted
+// pull request host). An invocation is interrupted from afterEffect('implementation') and run again.
+
+/** The number of commits on the claims ledger branch of origin. */
+const claimCommits = (f: RunnerFixture) => git(f.remote, 'rev-list', '--count', 'work-queue-claims-main');
+const sessionsOf = (work: Work, purpose: string) => (work.sessions ?? []).filter(item => item.purpose === purpose).length;
+const statePath = (config: RunConfig) => join(config.stateDirectory, 'state.json');
+
+/** Runs `config` until its implementation session returned, then cancels; returns the recorded state. */
+async function interrupted(f: RunnerFixture, config: RunConfig, extra: RunOptions = {}) {
+  const controller = new AbortController();
+  const result = await f.run(config, { signal: controller.signal, ...extra,
+    afterEffect: async kind => { if (kind === 'implementation') controller.abort(); } });
+  assert.equal(result.status, 'cancelled', JSON.stringify(result));
+  const state = JSON.parse(readFileSync(statePath(config), 'utf8'));
+  assert.equal(state.current.stage, 'work');
+  return state;
+}
+
+/** Rewrites state.json the way the previous runner wrote it: the whole resolved configuration is the identity. */
+function toLegacy(config: RunConfig): void {
+  const { identitySchema: _schema, operationKey: _key, settings: _settings, changes: _changes, ...state } =
+    JSON.parse(readFileSync(statePath(config), 'utf8'));
+  const { harness, model, effort, coverage, root, leaves } = state.identity;
+  const identity = { ...config, harness, model, effort, coverage, root, leaves };
+  writeFileSync(statePath(config), JSON.stringify({ ...state, identity, identityHash: hash(identity) }));
+}
+
+const receiptOf = (f: RunnerFixture, index = 0) => {
+  git(f.root, 'fetch', '-q', 'origin');
+  const task = f.queue.tasks[index];
+  return receiptAt(f.root, 'origin/main', `evidence/results/${task.id}.json`, hash(task), null)!;
+};
+
+// 5.9 (C) (required)
+test('C: a newer runner resumes legacy state with unchanged settings without a second claim', async t => {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const config = f.config();
+  const before = await interrupted(f, config);
+  assert.equal(claimCommits(f), '1');
+  toLegacy(config);
+  // A newer runner resolves an unknown setting and the default archive command explicitly.
+  const newer = { ...config, newerRunnerSetting: { enabled: true },
+    project: { ...config.project, archive: { command: 'openspec', args: ['archive', '{change}', '--yes'] } } } as RunConfig;
+  const result = await f.run(newer);
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.deepEqual(result.accepted, ['A']);
+  const state = JSON.parse(readFileSync(statePath(config), 'utf8'));
+  const completed = state.completed.A as Work;
+  assert.equal(claimCommits(f), '1');
+  assert.equal(completed.branch, before.current.branch); assert.equal(completed.path, before.current.path);
+  assert.equal(completed.operation, before.current.operation);
+  assert.equal(sessionsOf(completed, 'investigate'), 1);
+  assert.equal(sessionsOf(completed, 'plan'), sessionsOf(before.current, 'plan'));
+  assert.equal(state.identitySchema, 2);
+  assert.deepEqual(state.changes.map((change: { kind: string }) => change.kind), ['identity-upgraded']);
+  assert.deepEqual(receiptOf(f).invocationChanges, state.changes);
+});
+
+// 5.10 (C) (required): a regression guard for the existing selectHarness -> recordedSelection path.
+test('C: the frozen model is reused when the invocation no longer names it and the default differs', async t => {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const flagged = f.config('one', { model: 'claude-sonnet-5-5' });
+  const before = await interrupted(f, flagged);
+  assert.equal(before.identity.model, 'claude-sonnet-5-5');
+  const { model: _model, ...unset } = flagged;
+  const statistics = new Statistics();
+  // The selection default is claude-opus-5-5; the recorded selection comes from state.json.
+  const result = await f.run(unset as RunConfig, { statistics });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.equal(statistics.finish('exhausted', 0).settings.model.value, 'claude-sonnet-5-5');
+  const state = JSON.parse(readFileSync(statePath(flagged), 'utf8'));
+  assert.equal(state.identityHash, before.identityHash); assert.deepEqual(state.identity, before.identity);
+  assert.equal(state.changes, undefined);
+});
