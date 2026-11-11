@@ -199,7 +199,7 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
 | 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked, a foreign claim or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)) |
-| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
+| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `missing-setting`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
 
 After an interruption, run the **same command with the same file** from the same
 branch to resume. Do not delete the state under `~/.local/state/outcome-runner/`.
@@ -207,7 +207,9 @@ The runner also creates a `work-queue-claims-<target>` branch. It is never
 merged; keep it while work is unfinished. When you no longer want an invocation,
 end it with `outcome-runner dispose <invocation file>` instead of resuming it;
 see [Disposing of an invocation](#disposing-of-an-invocation). Never edit the
-claims branch or the ownership files by hand.
+claims branch or the ownership files by hand. A newer runner resumes the same
+invocation, and tasks can be added to it; see
+[Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation).
 
 ## Target branch
 
@@ -721,9 +723,12 @@ check in the invocation example. Every worker prompt states the percentage.
 
 The resolved target, harness, model, effort and coverage are frozen in invocation identity.
 Omitted coverage and explicit 85 are equivalent; a changed threshold is refused
-on restart without changing saved state or ownership. A
-restart with changed settings or legacy state without this identity is refused;
-finish that invocation using its original runner and configuration. Do not erase
+on restart without changing saved state or ownership. A restart with another
+changed authorised setting is refused the same way. A newer runner resumes the
+invocation and migrates state written by an older runner, and tasks can be added
+to an unfinished invocation; see
+[Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation).
+Do not erase
 state or ownership to migrate active work. Start a new invocation only once the
 previous work is reconciled and accepted or explicitly disposed under authority
 with `outcome-runner dispose` (see
@@ -813,6 +818,81 @@ run. Unstarted tasks explained as `max-accepted` are not in-progress work. A
 `limit-reached` run therefore exits 0 with `status` `released` when nothing else
 is held, `completed` when it keeps in-progress work, and `blocked` when it keeps
 a blocked task, so `state.json` never hides a block.
+
+## Upgrading the runner or adding tasks during an invocation
+
+An unfinished invocation can be resumed by a newer runner, and its owner can add
+tasks to it, without losing its claims, worktrees, reviews or accepted tasks.
+
+**What is frozen.** The invocation identity (identity schema 2) contains only
+what the owner authorised: the invocation name, the repository root, the
+authority (`reference`, `instruction`, `target` and the task ids with their
+hashes in `tasks`), the project `target`, `queue`, `changes` and `receipts`, the
+harness, model, effort and coverage, the checks (`checks`, `planningCheck` and
+`setup`; an omitted `setup` equals `[]`) and the leaves. Runner defaults such as
+the `archive` command, operational settings such as `maxAccepted`,
+`commitScope`, `commitSuffix` and `repository`, and settings a newer runner
+introduces are not part of it, so they never make a resumed invocation
+incompatible.
+
+**Upgrading the runner.** Install the newer runner and run the same command
+with the same invocation file from the same branch. The unfinished task resumes
+at its recorded stage with the same claim, branch and worktree, and the
+operations, reviews and accepted tasks recorded before are kept. A harness,
+model, effort or coverage that neither a flag nor the invocation file sets is
+taken from the frozen identity, never from a newer default. State written by an
+older runner, whose identity was the whole resolved configuration, is migrated
+in place when its recorded identity is intact and matches; the operation ids
+recorded before stay the same, so no effect is repeated. A legacy state whose
+recorded identity was edited by hand is refused with
+`Run state is incompatible` and left unchanged.
+
+**Missing required setting.** A newer runner may require a setting the
+invocation file lacks. The run is then refused with exit code 4 before the
+OpenSpec preflight and before any lock, state, ownership file, claim or worktree
+is touched:
+
+```json
+{"status":"unavailable","reason":"missing-setting","setting":"project.example","example":"value","diagnostics":"..."}
+```
+
+`setting` is the dot path of the setting in the invocation file and `example` an
+example value; the diagnostics message shows it nested, for example
+`{"project":{"example":"value"}}`. Add exactly that setting to the invocation
+file and run the same command again: the durable state is kept and the
+unfinished work resumes at its recorded stage. Only the path of a required
+setting and a hash of its value are stored, never the value. This release of
+the runner requires no such setting.
+
+**Adding tasks.** Add the new tasks to the queue on `origin/<target>`, print
+their hashes with `outcome-runner hash`, add them to `authority.tasks` of the
+unfinished invocation (and to `leaves`, when the file sets `leaves`) and run the
+same command again. The added tasks pass the same authority and
+[dependency checks](#dependency-check) as the others. Existing claims,
+worktrees, reviews and accepted tasks are kept: the current task resumes first
+at its recorded stage, blocked tasks are recovered next, and only then are the
+remaining tasks, existing and added, claimed in queue order (smaller `priority`
+first, then id).
+
+**Still refused.** Removing a task from `authority.tasks` or `leaves` and
+changing a task hash are refused as before, and `state.json` stays unchanged. A
+hash that no longer matches the queue is refused with
+`Task source differs from frozen authority`; a removed task, or a task whose
+definition changed in both the queue and `authority.tasks`, is refused with
+`Run state is incompatible`. A changed harness, model, effort, coverage, check or
+authority field is refused in the same way.
+
+**Records.** Every such change is appended to `changes` in `state.json`:
+
+| `kind` | Fields | When |
+|---|---|---|
+| `identity-upgraded` | `from` (1), `to` (2), `at` | State written by an older runner was migrated |
+| `setting-added` | `setting`, `at` | A required setting was added to the invocation file |
+| `tasks-added` | `tasks` (the sorted new ids), `at` | Tasks were added to `authority.tasks` or `leaves` |
+
+Every receipt written afterwards lists the changes recorded so far in
+`invocationChanges`. Receipts of invocations without changes have no such
+field.
 
 ## Disposing of an invocation
 
@@ -1205,8 +1285,8 @@ Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
 `cancelled` use 3; `unavailable` uses 4. Only unavailable has a nonnull
 `failureReason`: `openspec-missing`, `openspec-not-initialized`,
 `openspec-layout-created`, `harness-unavailable`, `test-framework-missing`,
-`test-framework-analysis-failed`, `test-framework-prepared` or
-`startup-or-run-failed` (target refusals, `invocation-running`,
+`test-framework-analysis-failed`, `test-framework-prepared`, `missing-setting`
+or `startup-or-run-failed` (target refusals, `invocation-running`,
 `invocation-disposed` and `dependencies-outside-invocation` are recorded as
 `startup-or-run-failed`).
 Blocked tasks use safe `blockingReason` codes
@@ -1386,7 +1466,10 @@ scripted pull request hosts, through `disposeInvocation` and the exported
 `dispose` entry point with a temporary `XDG_STATE_HOME`. Target advances during
 a run (clean and conflicting merges, restarts and advances outside the scopes)
 are tested with Git fixtures that push to the fixture origin, scripted adapters
-and the scripted pull request host. The `live:*` scripts exercise a real
+and the scripted pull request host. Runner upgrades, required settings and added
+tasks are tested with the same fixtures: an interrupted invocation's `state.json`
+is rewritten the way an older runner wrote it, and `RunOptions.requiredSettings`
+declares a required setting. The `live:*` scripts exercise a real
 harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
 Step lines are captured through `RunOptions.steps`.
 
