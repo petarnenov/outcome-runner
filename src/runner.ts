@@ -352,7 +352,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       }
       try {
         const claimedAt = recoverClaimTime(work);
-        if (work.claimedAt !== claimedAt) { save({ claimedAt }); work = activeWork(); }
+        if (work.claimedAt !== claimedAt) save({ claimedAt });
         const prompt = `Task ${work.id}; OpenSpec directory ${work.directory}. ` +
           `Exact source: ${JSON.stringify(authorized(queue, work.id))}\n`;
         if (prompt.length > 65536) throw new Error('Selected outcome prompt is too large');
