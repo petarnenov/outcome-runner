@@ -1,3 +1,10 @@
+## 0.12.1 - 2026-11-11
+
+### Fixes
+
+- show failing checks their standard output (303e04d)
+- disable the MCP tool idle timeout for product checks (6db1b8f)
+
 ## 0.12.0 - 2026-11-11
 
 ### Features
