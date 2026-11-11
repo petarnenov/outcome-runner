@@ -1,5 +1,7 @@
 import { main } from '../../src/cli.ts';
 import { runQueue } from '../../src/runner.ts';
+import type { RunOptions } from '../../src/runner.ts';
+import type { RunConfig } from '../../src/model.ts';
 
 const [path, root, phase] = process.argv.slice(2);
 const signalsBefore = ['SIGINT', 'SIGTERM'].map(signal => process.listenerCount(signal));
@@ -12,7 +14,7 @@ try {
     ready();
     await new Promise<void>(resolve => process.once('message', () => resolve()));
     return { status: 'exhausted', accepted: [], remaining: [], completions: {} };
-  } : (config, options) => runQueue(config, { ...options,
+  } : (config: RunConfig, options: RunOptions) => runQueue(config, { ...options,
     openspec: { interactive: phase === 'preflight', probe: () => ({ status: phase === 'preflight' ? 1 : 0 }),
       configPresent: () => true, say: () => {}, ask: async () => { ready(); return new Promise<string>(() => {}); } },
     selection: { interactive: phase === 'selection', recorded: () => null,

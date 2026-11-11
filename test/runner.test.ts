@@ -124,7 +124,7 @@ function realHarness(config: RunConfig) {
 }
 
 function scripted(options: ScriptedOptions): HarnessAdapter {
-  return { probe: () => ({ status: 'interface-ready' }), close() {}, async startAction(prompt) {
+  return { probe: () => ({ status: 'interface-ready' }), close() {}, async startAction(prompt: string) {
     const id = /Task ([A-D]);/u.exec(prompt)![1].toLowerCase();
     const directory = `openspec/changes/counter-${id}`;
     const write = async (path: string, content: string) => {
@@ -410,7 +410,7 @@ test('planning validation and review findings are repaired before implementation
       }
       return options.handleTool(name, input);
     } });
-    return { ...inner, async startAction(prompt) {
+    return { ...inner, async startAction(prompt: string) {
       const result = await inner.startAction(prompt);
       if (prompt.includes('Create proposal.md') && ++planning === 1) {
         writeFileSync(join(options.cwd, 'openspec/changes/counter-a/specs/finite-counter/spec.md'), '# Invalid delta\n');
@@ -1051,7 +1051,7 @@ test('report schema, optional reports and review prompts enforce the completion 
       assert.deepEqual(schema.properties.completion.required, ['summary', 'grade']);
       assert.deepEqual(schema.properties.completion.properties.grade.enum, ['A', 'B', 'C', 'D', 'E']);
       const inner = scripted(options as ScriptedOptions);
-      return { ...inner, async startAction(prompt) {
+      return { ...inner, async startAction(prompt: string) {
         if (prompt.includes('Review actual implementation')) {
           assert.match(prompt, /two or three English sentences/u);
           assert.match(prompt, /whole-task complexity: A \(most complex\), B, C, D, E \(easiest\)/u);
@@ -1291,7 +1291,7 @@ test('B: resumed execution preserves selection provenance, original claim durati
     } },
     createAdapter: options => {
       const adapter = scripted(options);
-      return { ...adapter, async startAction(prompt) {
+      return { ...adapter, async startAction(prompt: string) {
         options.onUsage?.({ inputTokens: 2, outputTokens: 3, totalTokens: 5 });
         return adapter.startAction(prompt);
       } };
