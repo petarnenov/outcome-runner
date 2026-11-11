@@ -481,6 +481,25 @@
         "A test in scripts reads .gitguardian.yaml and checks the shape above: version 2, exactly one ignored_matches entry with match /etc/passwd, and no paths-ignore or other exclusion. The shape given here is the whole contract; no external documentation, hosted GitGuardian scanner or network access is needed or part of the evidence.",
         "docs explain how to add a reviewed false positive to the configuration instead of marking it by hand in the dashboard."
       ]
+    },
+    {
+      "id": "OR-27",
+      "title": "Merge the advanced target in the worktree and merge only while origin is unchanged",
+      "change": "merge-when-target-unchanged",
+      "priority": 22,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-20"],
+      "criteria": [
+        "Owners may merge pull requests into the target while invocations run, including changes inside a running task's scopes. A task is never blocked only because the target advanced; the reason Target changed outcome scope is no longer produced.",
+        "Before publishing and again before merging, the runner fetches origin/<target>. When it differs from the commit the task branch was last integrated with, the runner merges origin/<target> into the task branch inside the task worktree, never in the checkout it was started from, and runs the frozen product checks on the merged result. When the merge brought changes inside the task scopes, the implementation review runs again on the merged result.",
+        "Immediately before merging the pull request, the runner fetches origin/<target> again and compares it with the target commit it merged and checked. Only when they are equal does it merge, and it merges with the exact checked pull request head (for example gh pr merge --match-head-commit), so no unchecked combination reaches the target.",
+        "When origin/<target> advanced again in the meantime, the runner repeats the worktree merge, checks and comparison. After 5 consecutive attempts without an unchanged target the task is blocked with reason target-keeps-advancing, keeping its worktree and branch so a restart continues.",
+        "A worktree merge with conflicts gives the worker one implementation session to resolve them inside the task scopes, followed by checks and review; otherwise the task is blocked with reason target-conflict-unresolved naming the conflicting paths. The durable state records each integrated target commit, so a restart resumes from the last one.",
+        "Each worktree merge, comparison with origin and retry is logged as a step line, with the attempt number when retried.",
+        "Tests use scripted adapters and Git fixtures and cover: a target advanced inside the task scopes merged in the worktree, checked, reviewed and accepted; a target advanced outside the scopes merged and checked without a new review; origin advancing between the check and the merge causing a repeat; the attempt limit blocking with target-keeps-advancing; a changed pull request head refusing the merge; a conflict resolved and an unresolved conflict blocking with its paths; a restart resuming from the recorded target commit; and the start checkout left untouched.",
+        "README replaces the advice not to merge into the target during a run with how the runner integrates an advanced target.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
