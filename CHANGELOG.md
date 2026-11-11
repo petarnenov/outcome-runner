@@ -1,3 +1,12 @@
+## 0.12.0 - 2026-11-11
+
+### Features
+
+- implement OR-14 (32c0e29)
+- implement OR-14 (fd2dd80)
+- implement OR-14 (73dbf52)
+- implement OR-14 (a224734)
+
 ## 0.11.1 - 2026-11-11
 
 ### Fixes
