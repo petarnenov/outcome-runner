@@ -6,11 +6,14 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { isatty } from 'node:tty';
 import { CodexFiles, brokerTool } from './codex-files.ts';
 import { git } from './git.ts';
+import { primaryOf, withGitLock } from './git-lock.ts';
 import { resolveCoverage, safePath, within } from './model.ts';
 import type { Project, RunConfig } from './model.ts';
 import { PreflightError, isInteractive, promptOn } from './openspec-preflight.ts';
 import type { ProcessStatus } from './openspec-preflight.ts';
 import type { RunStore } from './run-store.ts';
+import { setupWorktree } from './setup-worktree.ts';
+import type { SetupWorktree } from './setup-worktree.ts';
 import { cancellable } from './statistics.ts';
 import { pageOffset } from './text-page.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition, ToolInput } from './harness-adapter.ts';
@@ -65,6 +68,8 @@ export interface TestFrameworkDeps {
   writeFile: (path: string, content: string) => void;
   /** Working-tree status and content snapshot: path -> `<XY>:<sha256 | missing>`. */
   snapshot: (root: string) => Map<string, string>;
+  /** Creates or reuses the setup worktree that receives the setup; the start checkout is never changed. */
+  setupWorktree: (root: string, config: RunConfig) => SetupWorktree;
 }
 
 const numberOrNull = { anyOf: [{ type: 'number', minimum: 0, maximum: 100 }, { type: 'null' }] };
@@ -194,31 +199,38 @@ export function workingTreeSnapshot(root: string): Map<string, string> {
 
 const TEMPORARY_PREFIX = 'outcome-test-framework-';
 
+// Each group of Git operations on the shared repository runs under the per-clone Git lock and returns before the
+// analysis session or any prompt starts.
 export const temporaryWorktree: TemporaryWorktree = {
   add(root, target) {
-    git(root, 'fetch', 'origin', target);
-    const sha = git(root, 'rev-parse', `origin/${target}`);
+    const primary = primaryOf(root);
+    const sha = withGitLock(primary, () => {
+      git(root, 'fetch', 'origin', target);
+      return git(root, 'rev-parse', `origin/${target}`);
+    });
     const directory = realpathSync(mkdtempSync(join(tmpdir(), TEMPORARY_PREFIX)));
     try {
-      const primary = dirname(resolve(root, git(root, 'rev-parse', '--git-common-dir')));
       if (within(directory, realpathSync(root)) || within(directory, realpathSync(primary))) {
         throw new Error('The temporary worktree must be outside the repository');
       }
-      git(root, 'worktree', 'add', '--detach', join(directory, 'tree'), sha);
+      withGitLock(primary, () => git(root, 'worktree', 'add', '--detach', join(directory, 'tree'), sha));
     } catch (error) {
       rmSync(directory, { recursive: true, force: true });
-      try { git(root, 'worktree', 'prune'); } catch { /* The original failure is reported. */ }
+      try { withGitLock(primary, () => git(root, 'worktree', 'prune')); } catch { /* The original failure is reported. */ }
       throw error;
     }
     return join(directory, 'tree');
   },
   remove(root, path) {
     const errors: string[] = [];
-    try { git(root, 'worktree', 'remove', '--force', path); } catch (error) { errors.push((error as Error).message); }
+    let primary: string | undefined;
+    try { primary = primaryOf(root); } catch (error) { errors.push((error as Error).message); }
+    const locked = (fn: () => unknown) => primary === undefined ? fn() : withGitLock(primary, fn);
+    try { locked(() => git(root, 'worktree', 'remove', '--force', path)); } catch (error) { errors.push((error as Error).message); }
     const parent = dirname(path);
     try { rmSync(basename(parent).startsWith(TEMPORARY_PREFIX) ? parent : path, { recursive: true, force: true }); }
     catch (error) { errors.push((error as Error).message); }
-    try { git(root, 'worktree', 'prune'); } catch (error) { errors.push((error as Error).message); }
+    try { locked(() => git(root, 'worktree', 'prune')); } catch (error) { errors.push((error as Error).message); }
     if (errors.length) throw new Error(`Temporary worktree removal failed: ${errors.join('; ')}`);
   },
 };
@@ -233,6 +245,7 @@ export function defaultTestFrameworkDeps(): Omit<TestFrameworkDeps, 'createAdapt
     exec: (program, args, cwd) => statusOf(spawnSync(program, args, { cwd, shell: false, stdio: ['ignore', 2, 2] })),
     writeFile: (path, content) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, content); },
     snapshot: workingTreeSnapshot,
+    setupWorktree,
   };
 }
 
@@ -357,7 +370,7 @@ const failure = (message: string, details?: unknown) =>
 /**
  * Analyses origin/<target> in one read-only session of the selected harness and requires a test framework
  * enforcing the resolved coverage for every technology. Interactive runs may set up a recommended framework
- * in the working tree; nothing is committed or pushed.
+ * in the setup worktree outside the start checkout; nothing is committed or pushed.
  */
 export async function testFrameworkPreflight(config: RunConfig, overrides: Partial<TestFrameworkDeps> = {}): Promise<void> {
   const deps = { ...defaultTestFrameworkDeps(), ...overrides } as TestFrameworkDeps;
@@ -401,7 +414,12 @@ export async function testFrameworkPreflight(config: RunConfig, overrides: Parti
     { unprepared: names, report: analysed });
   }
 
-  const before = deps.snapshot(root);
+  // The setup worktree is created (or reused) on the first chosen recommendation; its snapshot is taken then.
+  let setup: SetupWorktree | undefined; let before = new Map<string, string>();
+  const setupTree = (): string => {
+    if (!setup) { setup = deps.setupWorktree(root, config); before = deps.snapshot(setup.path); }
+    return setup.path;
+  };
   const written = new Set<string>(); const left: string[] = [];
   for (const technology of unprepared) {
     const options = technology.recommendations;
@@ -412,12 +430,13 @@ export async function testFrameworkPreflight(config: RunConfig, overrides: Parti
       Number(answer) - 1 : -1;
     if (index < 0) { deps.say(`Skipped ${technology.name}.\n`); left.push(technology.name); continue; }
     const chosen = options[index];
-    const refusal = chosen.changes.map(change => refusedChange(root, change.path, project)).find(reason => reason !== null);
+    const directory = setupTree();
+    const refusal = chosen.changes.map(change => refusedChange(directory, change.path, project)).find(reason => reason !== null);
     if (refusal) {
       deps.say(`Refused ${chosen.framework} for ${technology.name}: ${refusal}.\n`);
       left.push(technology.name); continue;
     }
-    deps.say(`${chosen.framework} for ${technology.name} runs these install commands in ${root} without a shell:\n` +
+    deps.say(`${chosen.framework} for ${technology.name} runs these install commands in ${directory} without a shell:\n` +
       (chosen.install.length ? chosen.install.map(step => `  ${JSON.stringify([step.command, ...step.args])}\n`).join('') : '  (none)\n') +
       'and writes these files:\n' +
       chosen.changes.map(change => `--- ${change.path}\n${change.content}${change.content.endsWith('\n') ? '' : '\n'}`).join(''));
@@ -425,31 +444,33 @@ export async function testFrameworkPreflight(config: RunConfig, overrides: Parti
       deps.say(`Declined ${chosen.framework} for ${technology.name}.\n`);
       left.push(technology.name); continue;
     }
-    const failedStep = chosen.install.find(step => deps.exec(step.command, step.args, root).status !== 0);
+    const failedStep = chosen.install.find(step => deps.exec(step.command, step.args, directory).status !== 0);
     if (failedStep) {
       deps.say(`Install command failed: ${JSON.stringify([failedStep.command, ...failedStep.args])}; ` +
         `no file changes were applied for ${technology.name}.\n`);
       left.push(technology.name); continue;
     }
     try {
-      for (const change of chosen.changes) { deps.writeFile(join(root, change.path), change.content); written.add(change.path); }
+      for (const change of chosen.changes) { deps.writeFile(join(directory, change.path), change.content); written.add(change.path); }
     } catch (caught) {
       deps.say(`Writing the file changes for ${technology.name} failed: ${(caught as Error).message}.\n`);
       left.push(technology.name);
     }
   }
 
-  const after = deps.snapshot(root);
+  const after = setup ? deps.snapshot(setup.path) : new Map<string, string>();
   const changedFiles = [...new Set([...[...after].filter(([path, value]) => before.get(path) !== value).map(([path]) => path),
     ...written])].sort();
-  const advice = `commit and push them to origin/${target}, then run again`;
+  const place = setup ? { setupWorktree: setup.path, setupBranch: setup.branch } : {};
+  const advice = setup ? ` in the setup worktree ${setup.path} on branch ${setup.branch}; commit them there, push the branch ` +
+    `and merge it into ${target}, then run again` : '';
   if (left.length) {
     const message = `Test framework missing for ${left.join(', ')}` +
-      (changedFiles.length ? `; changed ${changedFiles.join(', ')}; ${advice}` : '');
+      (changedFiles.length ? `; changed ${changedFiles.join(', ')}${advice}` : '');
     deps.say(message + '\n');
-    throw new PreflightError('test-framework-missing', message, { unprepared: left, changedFiles });
+    throw new PreflightError('test-framework-missing', message, { unprepared: left, changedFiles, ...place });
   }
-  const message = `Changed ${changedFiles.join(', ')}; ${advice}`;
+  const message = `Changed ${changedFiles.join(', ')}${advice}`;
   deps.say(message + '\n');
-  throw new PreflightError('test-framework-prepared', message, { changedFiles });
+  throw new PreflightError('test-framework-prepared', message, { changedFiles, ...place });
 }

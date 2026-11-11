@@ -1,12 +1,16 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { isatty } from 'node:tty';
 import { git } from './git.ts';
-import { safePath } from './model.ts';
+import { primaryOf, withGitLock } from './git-lock.ts';
+import { safePath, validBranchName } from './model.ts';
 import type { RunConfig } from './model.ts';
+import { setupWorktree } from './setup-worktree.ts';
+import type { SetupWorktree } from './setup-worktree.ts';
 
 export const OPENSPEC_INSTALL: readonly string[] = ['npm', 'install', '-g', '@fission-ai/openspec@latest'];
 export const OPENSPEC_CONFIG = 'openspec/config.yaml';
@@ -43,6 +47,8 @@ export interface PreflightDeps {
   exists: (path: string) => boolean;
   /** Creates a new file (never overwrites), creating parent directories. */
   writeFile: (path: string, content: string) => void;
+  /** Creates or reuses the setup worktree that receives the layout files; the start checkout is never changed. */
+  setupWorktree: (root: string, config: RunConfig) => SetupWorktree;
 }
 
 interface TtyStream { isTTY?: boolean }
@@ -65,9 +71,9 @@ export function promptOn(input: Readable, output: Writable, signal?: AbortSignal
 const statusOf = (result: { error?: Error; status: number | null }): ProcessStatus =>
   ({ status: result.error ? null : result.status });
 
-/** Fetches origin <target> and lists openspec/config.yaml there; any git failure throws a plain Error. */
+/** Fetches origin <target> under the Git lock and lists openspec/config.yaml there; any git failure throws a plain Error. */
 export function configAtOrigin(root: string, target: string): boolean {
-  try { git(root, 'fetch', 'origin', target); }
+  try { withGitLock(primaryOf(root), () => git(root, 'fetch', 'origin', target)); }
   catch (error) { throw new Error(`git fetch origin ${target} failed: ${(error as Error).message}`); }
   let listing: string;
   try { listing = git(root, 'ls-tree', '--name-only', `origin/${target}`, '--', OPENSPEC_CONFIG); }
@@ -91,6 +97,7 @@ export function defaultPreflightDeps(): PreflightDeps {
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, content, { flag: 'wx' });
     },
+    setupWorktree,
   };
 }
 
@@ -98,7 +105,7 @@ const accepted = (answer: string): boolean => ['y', 'yes'].includes(answer.trim(
 
 /**
  * Verifies that the OpenSpec CLI is available and that openspec/config.yaml exists at origin/<target>.
- * Interactive runs may install the CLI or create the layout; non-interactive runs only refuse.
+ * Interactive runs may install the CLI or create the layout in the setup worktree; non-interactive runs only refuse.
  */
 export async function openspecPreflight(config: RunConfig, overrides: Partial<PreflightDeps> = {}): Promise<void> {
   const deps: PreflightDeps = { ...defaultPreflightDeps(), ...overrides };
@@ -108,10 +115,7 @@ export async function openspecPreflight(config: RunConfig, overrides: Partial<Pr
   deps.signal?.throwIfAborted();
   const project = config?.project;
   const target = project?.target;
-  if (!config?.root || typeof target !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9/_-]*$/u.test(target) ||
-      target.includes('..') || target.endsWith('/')) {
-    throw new Error('Invalid OFF configuration or authority');
-  }
+  if (!config?.root || !validBranchName(target)) throw new Error('Invalid OFF configuration or authority');
   const changes = safePath(project.changes); const receipts = safePath(project.receipts);
   const root = realpathSync(config.root);
 
@@ -125,7 +129,8 @@ export async function openspecPreflight(config: RunConfig, overrides: Partial<Pr
     if (!accepted(await deps.ask(`Install it now with \`${install}\`? [y/N] `))) {
       throw new PreflightError('openspec-missing', 'OpenSpec CLI unavailable and installation was declined');
     }
-    if (deps.exec(OPENSPEC_INSTALL[0], OPENSPEC_INSTALL.slice(1), root).status !== 0) {
+    // The global install writes no project file, so it runs outside the start checkout.
+    if (deps.exec(OPENSPEC_INSTALL[0], OPENSPEC_INSTALL.slice(1), tmpdir()).status !== 0) {
       throw new PreflightError('openspec-missing', `OpenSpec installation failed: ${install}`);
     }
     if (!cliAvailable()) {
@@ -138,16 +143,19 @@ export async function openspecPreflight(config: RunConfig, overrides: Partial<Pr
   if (!deps.interactive) throw new PreflightError('openspec-not-initialized', `OpenSpec not initialized: ${missing}`);
   const layout = new Map([[OPENSPEC_CONFIG, OPENSPEC_CONFIG_CONTENT], [`${changes}/.gitkeep`, ''], [`${receipts}/.gitkeep`, '']]);
   deps.say(`OpenSpec is not initialized: ${missing}. The project layout consists of ${[...layout.keys()].join(', ')}.\n`);
-  if (!accepted(await deps.ask('Create the missing layout files in the working tree (they are not committed or pushed)? [y/N] '))) {
+  if (!accepted(await deps.ask('Create the missing layout files in a setup worktree outside your checkout ' +
+      '(they are not committed or pushed)? [y/N] '))) {
     throw new PreflightError('openspec-not-initialized', `OpenSpec not initialized: ${missing}; layout creation was declined`);
   }
+  const setup = deps.setupWorktree(root, config);
   const created: string[] = [];
   for (const [path, content] of layout) {
-    const file = join(root, path);
+    const file = join(setup.path, path);
     if (!deps.exists(file)) { deps.writeFile(file, content); created.push(path); }
   }
-  const message = (created.length ? `Created ${created.join(', ')}` : 'The OpenSpec layout files already exist in the working tree') +
-    `; commit and push them to origin/${target}, then run again`;
+  const where = `the setup worktree ${setup.path} on branch ${setup.branch}`;
+  const message = (created.length ? `Created ${created.join(', ')} in ${where}` : `The OpenSpec layout files already exist in ${where}`) +
+    `; commit them there, push the branch and merge it into ${target}, then run again`;
   deps.say(message + '\n');
-  throw new PreflightError('openspec-layout-created', message);
+  throw new PreflightError('openspec-layout-created', message, { setupWorktree: setup.path, setupBranch: setup.branch, created });
 }

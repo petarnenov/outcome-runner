@@ -14,6 +14,7 @@ import type { RunStatistics } from '../src/statistics.ts';
 import { playMascot } from '../mascot/mascot.ts';
 import { recordingPlayer as recorder } from './support/mascot-player.ts';
 import type { PlayerCall } from './support/mascot-player.ts';
+import { publishToOrigin } from './support/git-origin.ts';
 
 type Runner = (config: RunConfig, options: RunOptions) => Promise<{ status: string }>;
 type Write = (chunk: string, ...rest: unknown[]) => boolean;
@@ -23,7 +24,7 @@ const SHOW = '\x1b[?25h';
 function fixture(t: TestContext) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'cli-mascot-')));
   t.after(() => rmSync(base, { recursive: true, force: true }));
-  const root = join(base, 'repository'); mkdirSync(root); git(root, 'init', '-b', 'main');
+  const root = join(base, 'repository'); mkdirSync(root); git(root, 'init', '-b', 'main'); publishToOrigin(root);
   const path = join(base, 'invocation.json'); writeFileSync(path, JSON.stringify({ invocation: 'mascot' }));
   const env: NodeJS.ProcessEnv = { XDG_STATE_HOME: join(base, 'state') };
   const records = (): RunStatistics[] => readFileSync(ledgerPath(env), 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));

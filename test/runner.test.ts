@@ -13,7 +13,7 @@ import { main } from './support/isolated-cli.ts';
 import { main as ledgerMain } from '../src/cli.ts';
 import { Statistics, ledgerPath } from '../src/statistics.ts';
 import type { RunStatistics } from '../src/statistics.ts';
-import { runQueue as runQueueWithPreflight } from '../src/runner.ts';
+import { invocationLockFiles, runQueue as runQueueWithPreflight } from '../src/runner.ts';
 import { PAGE_BYTES } from '../src/text-page.ts';
 import type { RunEvent, RunOptions } from '../src/runner.ts';
 import { ClaimLedger } from '../src/claims.ts';
@@ -70,7 +70,8 @@ function fixture(t: TestContext, { second = false } = {}) {
     if (process.env.KEEP_OUTCOME_FIXTURE !== '1') rmSync(base, { recursive: true, force: true });
   });
   const remote = join(base, 'origin.git'); const root = join(base, 'project');
-  mkdirSync(root); git(base, 'init', '--bare', remote); git(root, 'init', '-b', 'integration');
+  // The start checkout is on the target branch: the run target is the branch the runner starts from.
+  mkdirSync(root); git(base, 'init', '--bare', remote); git(root, 'init', '-b', second ? 'staging' : 'proposal');
   git(root, 'config', 'user.name', 'Fixture Worker'); git(root, 'config', 'user.email', 'fixture@example.invalid');
   const project: Project = { queue: second ? 'planning/work.json' : 'docs/work-queue/queue.json',
     changes: 'openspec/changes', receipts: second ? 'evidence/results' : 'docs/work-queue/receipts',
@@ -265,20 +266,26 @@ test('protected result stays incomplete while independent work proceeds without 
   assert.deepEqual(result.remaining, ['A', 'B', 'C']);
   assert.ok(!JSON.stringify(result).includes('Private text'));
   assert.ok(!JSON.stringify(result).includes('Please approve'));
-  await assert.rejects(runQueue({ ...f.config, invocation: 'other', stateDirectory: join(f.base, 'other') },
-    { host: f.host, createAdapter: scripted }), /durable invocation/u);
+  // Another invocation of the clone runs; the unfinished claim of A keeps it and its dependents out of reach.
+  const other = await runQueue({ ...f.config, invocation: 'other', stateDirectory: join(f.base, 'other') },
+    { host: f.host, createAdapter: scripted });
+  assert.equal(other.status, 'incomplete'); assert.ok(other.claimedElsewhere!.A);
   const count = f.records.length;
   const retry = await runQueue(f.config, { host: f.host, createAdapter: scripted });
   assert.equal(retry.status, 'incomplete'); assert.equal(f.records.length, count);
 });
 
-test('different state directory cannot bypass the active repository lock', async t => {
+test('a second process of the same invocation is refused while another invocation runs alongside', async t => {
   const f = fixture(t); let checked = false;
   const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host, createAdapter: scripted,
     afterEffect: async kind => {
-      if (kind !== 'claim') return;
-      await assert.rejects(runQueue({ ...f.config, stateDirectory: join(f.base, 'other') },
-        { host: f.host, createAdapter: scripted }), /locked/u); checked = true;
+      if (kind !== 'claim' || checked) return;
+      checked = true;
+      await assert.rejects(runQueue({ ...f.config, leaves: ['A'] }, { host: f.host, createAdapter: scripted }),
+        (error: Error & { reason?: string }) => error.reason === 'invocation-running' && /locked/u.test(error.message));
+      const other = await runQueue({ ...f.config, leaves: ['D'], invocation: 'other', stateDirectory: join(f.base, 'other') },
+        { host: f.host, createAdapter: scripted });
+      assert.equal(other.status, 'exhausted', JSON.stringify(other));
     } });
   assert.equal(result.status, 'exhausted'); assert.ok(checked);
 });
@@ -685,7 +692,7 @@ test('rejected model change after completion preserves released ownership for a 
   const f = fixture(t);
   const config = { ...f.config, leaves: ['A'] };
   assert.equal((await runQueue(config, { host: f.host, createAdapter: scripted })).status, 'exhausted');
-  const ownerPath = join(f.base, '.work-queue-locks', `${hash(realpathSync(f.root))}-owner.json`);
+  const ownerPath = invocationLockFiles(realpathSync(f.root), f.config.stateDirectory).ownership;
   const before = readFileSync(ownerPath, 'utf8');
   const stateBefore = readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8');
   assert.equal(JSON.parse(before).released, true);
@@ -904,7 +911,7 @@ test('coverage restart preserves frozen state and ownership and accepts equivale
     if (kind === 'claim') throw Object.assign(new Error('Interrupted'), { interrupted: true });
   } }), /Interrupted/u);
   const statePath = join(config.stateDirectory, 'state.json');
-  const ownerPath = join(f.base, '.work-queue-locks', `${hash(realpathSync(f.root))}-owner.json`);
+  const ownerPath = invocationLockFiles(realpathSync(f.root), config.stateDirectory).ownership;
   const state = readFileSync(statePath, 'utf8'); const owner = readFileSync(ownerPath, 'utf8');
   const { root: _root, stateDirectory: _state, ...invocation } = config;
   const path = join(f.base, 'invocation.json'); writeFileSync(path, JSON.stringify({ ...invocation, coverage: 90 }));

@@ -2,9 +2,9 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { git } from '../src/git.ts';
@@ -30,9 +30,12 @@ interface Script {
   files?: string[];
 }
 
+const SETUP_BRANCH = 'outcome/setup-scripted';
+
 function scripted(script: Script = {}) {
   const calls = { probe: [] as [string, string[], string][], exec: [] as [string, string[], string][],
-    asked: [] as string[], said: [] as string[], written: new Map<string, string>(), configChecks: [] as [string, string][] };
+    asked: [] as string[], said: [] as string[], written: new Map<string, string>(), configChecks: [] as [string, string][],
+    setups: [] as string[] };
   const existing = new Set(script.files ?? []);
   const statuses = [...(script.probe ?? [0])];
   const deps: PreflightDeps = {
@@ -57,6 +60,8 @@ function scripted(script: Script = {}) {
       if (existing.has(path) || calls.written.has(path)) throw new Error(`Refusing to overwrite ${path}`);
       calls.written.set(path, content);
     },
+    // The scripted setup worktree is the workspace itself, so written paths stay easy to compare.
+    setupWorktree: root => { calls.setups.push(root); return { path: root, branch: SETUP_BRANCH }; },
   };
   return { deps, calls };
 }
@@ -97,14 +102,15 @@ test('available and initialized continues silently without installing or creatin
   assert.deepEqual(calls.probe, [['openspec', ['--version'], root]]);
   assert.deepEqual(calls.configChecks, [[root, 'main']]);
   assert.deepEqual(calls.exec, []); assert.deepEqual(calls.asked, []); assert.deepEqual(calls.said, []);
-  assert.equal(calls.written.size, 0);
+  assert.equal(calls.written.size, 0); assert.deepEqual(calls.setups, []);
 });
 
-test('missing CLI, yes and a successful install runs exactly the npm argument array then re-checks', async t => {
+test('missing CLI, yes and a successful install runs exactly the npm argument array outside the checkout then re-checks', async t => {
   const { root } = workspace(t);
   const { deps, calls } = scripted({ probe: [1, 0], answers: [' Yes '] });
   await openspecPreflight(configFor(root), deps);
-  assert.deepEqual(calls.exec, [['npm', ['install', '-g', '@fission-ai/openspec@latest'], root]]);
+  // The global install writes no project file, so it runs in the operating system temporary directory.
+  assert.deepEqual(calls.exec, [['npm', ['install', '-g', '@fission-ai/openspec@latest'], tmpdir()]]);
   assert.deepEqual(OPENSPEC_INSTALL, ['npm', 'install', '-g', '@fission-ai/openspec@latest']);
   assert.deepEqual(calls.probe.map(([program, args]) => [program, args]), [['openspec', ['--version']], ['openspec', ['--version']]]);
   assert.ok(calls.exec.every(([program]) => program !== 'openspec'));
@@ -138,24 +144,28 @@ test('declining the install, or an empty answer, installs nothing and refuses wi
   }
 });
 
-test('missing config and yes creates only the missing layout files and asks to commit and push', async t => {
+test('missing config and yes creates only the missing layout files in the setup worktree and asks to merge them', async t => {
   const { root } = workspace(t);
   const existing = join(root, 'openspec/changes/.gitkeep');
   const { deps, calls } = scripted({ config: false, answers: ['yes'], files: [existing] });
   await assert.rejects(openspecPreflight(configFor(root), deps), (error: PreflightError) => {
     refusedWith('openspec-layout-created')(error);
-    assert.match(error.message, /commit and push them to origin\/main/u);
+    assert.match(error.message, /commit them there, push the branch and merge it into main, then run again/u);
+    assert.ok(error.message.includes(`the setup worktree ${root} on branch ${SETUP_BRANCH}`));
     assert.match(error.message, /openspec\/config\.yaml/u); assert.match(error.message, /evidence\/results\/\.gitkeep/u);
+    assert.deepEqual(error.details, { setupWorktree: root, setupBranch: SETUP_BRANCH,
+      created: ['openspec/config.yaml', 'evidence/results/.gitkeep'] });
     return true;
   });
   assert.deepEqual([...calls.written], [[join(root, 'openspec/config.yaml'), 'schema: spec-driven\n'],
     [join(root, 'evidence/results/.gitkeep'), '']]);
-  assert.deepEqual(calls.exec, []); assert.equal(calls.asked.length, 1);
+  assert.deepEqual(calls.exec, []); assert.equal(calls.asked.length, 1); assert.deepEqual(calls.setups, [root]);
+  assert.match(calls.asked[0], /setup worktree outside your checkout/u);
   assert.match(calls.said.join(''), /missing at origin\/main/u);
-  assert.match(calls.said.join(''), /commit and push/u);
+  assert.match(calls.said.join(''), /push the branch and merge it/u);
 });
 
-test('missing config and yes with every file already present still stops for commit and push', async t => {
+test('missing config and yes with every file already present still stops for commit and merge', async t => {
   const { root } = workspace(t);
   const files = ['openspec/config.yaml', 'openspec/changes/.gitkeep', 'evidence/results/.gitkeep'].map(path => join(root, path));
   const { deps, calls } = scripted({ config: false, answers: ['y'], files });
@@ -165,21 +175,44 @@ test('missing config and yes with every file already present still stops for com
   assert.equal(calls.written.size, 0);
 });
 
-test('real layout creation writes files in the working tree without committing or pushing', async t => {
+/** HEAD, the current branch, the index and the porcelain status of a checkout. */
+const checkoutState = (root: string) => ({ head: git(root, 'rev-parse', 'HEAD'), branch: git(root, 'branch', '--show-current'),
+  index: git(root, 'ls-files', '--stage'), status: git(root, 'status', '--porcelain', '--untracked-files=all') });
+const outcomesOf = (root: string) => join(dirname(root), `${basename(root)}-outcomes`);
+
+test('C: interactive layout creation writes into the setup worktree and leaves the start checkout unchanged', async t => {
   const { root } = repository(t);
   mkdirSync(join(root, 'openspec/changes'), { recursive: true });
   writeFileSync(join(root, 'openspec/changes/.gitkeep'), 'kept');
-  git(root, 'rm', '-q', 'openspec/config.yaml'); git(root, 'commit', '-m', 'test: remove config'); git(root, 'push', 'origin', 'HEAD:main');
-  const head = git(root, 'rev-parse', 'HEAD'); const said: string[] = [];
+  git(root, 'add', '.'); git(root, 'rm', '-q', 'openspec/config.yaml');
+  git(root, 'commit', '-m', 'test: remove config'); git(root, 'push', 'origin', 'HEAD:main');
+  const before = checkoutState(root); const listing = readdirSync(root, { recursive: true }).sort();
+  // A declined prompt creates no setup worktree.
+  await assert.rejects(openspecPreflight(configFor(root), { interactive: true, ask: async () => 'no', say: () => {},
+    probe: () => ({ status: 0 }), exec: () => { throw new Error('No process may run'); } }), refusedWith('openspec-not-initialized'));
+  assert.equal(existsSync(outcomesOf(root)), false);
+  assert.equal(git(root, 'worktree', 'list').split('\n').length, 1);
+  let message = ''; const said: string[] = [];
   await assert.rejects(openspecPreflight(configFor(root), { interactive: true, ask: async () => 'yes', say: text => { said.push(text); },
-    probe: () => ({ status: 0 }), exec: () => { throw new Error('No process may run'); } }), refusedWith('openspec-layout-created'));
-  assert.equal(readFileSync(join(root, 'openspec/config.yaml'), 'utf8'), 'schema: spec-driven\n');
-  assert.equal(readFileSync(join(root, 'evidence/results/.gitkeep'), 'utf8'), '');
-  assert.equal(readFileSync(join(root, 'openspec/changes/.gitkeep'), 'utf8'), 'kept');
-  assert.equal(git(root, 'rev-parse', 'HEAD'), head);
-  assert.equal(git(root, 'rev-parse', 'origin/main'), head);
-  assert.equal(git(root, 'diff', '--cached', '--name-only'), '');
-  assert.match(said.join(''), /commit and push/u);
+    probe: () => ({ status: 0 }), exec: () => { throw new Error('No process may run'); } }), (error: PreflightError) => {
+    refusedWith('openspec-layout-created')(error); message = error.message; return true;
+  });
+  const [setup] = readdirSync(outcomesOf(root)); const path = join(outcomesOf(root), setup);
+  assert.match(setup, /^setup-[a-f0-9]{64}$/u);
+  const branch = git(path, 'branch', '--show-current');
+  assert.match(branch, /^outcome\/setup-[a-f0-9]{12}$/u);
+  assert.equal(git(path, 'rev-parse', 'HEAD'), git(root, 'rev-parse', 'origin/main'));
+  assert.equal(readFileSync(join(path, 'openspec/config.yaml'), 'utf8'), 'schema: spec-driven\n');
+  assert.equal(readFileSync(join(path, 'evidence/results/.gitkeep'), 'utf8'), '');
+  assert.equal(readFileSync(join(path, 'openspec/changes/.gitkeep'), 'utf8'), 'kept');
+  assert.ok(message.includes(path) && message.includes(branch), message);
+  assert.match(said.join(''), /push the branch and merge it into main/u);
+  // The start checkout is unchanged and no file was created under it.
+  assert.deepEqual(checkoutState(root), before);
+  assert.deepEqual(readdirSync(root, { recursive: true }).sort(), listing);
+  assert.equal(existsSync(join(root, 'openspec/config.yaml')), false);
+  assert.equal(existsSync(join(root, 'evidence')), false);
+  assert.equal(git(root, 'rev-parse', 'origin/main'), before.head);
 });
 
 test('missing config and no creates nothing and refuses with openspec-not-initialized', async t => {
@@ -187,7 +220,7 @@ test('missing config and no creates nothing and refuses with openspec-not-initia
   for (const answer of ['no', '']) {
     const { deps, calls } = scripted({ config: false, answers: [answer] });
     await assert.rejects(openspecPreflight(configFor(root), deps), refusedWith('openspec-not-initialized'));
-    assert.equal(calls.written.size, 0); assert.equal(calls.asked.length, 1);
+    assert.equal(calls.written.size, 0); assert.equal(calls.asked.length, 1); assert.deepEqual(calls.setups, []);
   }
 });
 
@@ -200,6 +233,7 @@ test('non-interactive refusals never ask, install or create', async t => {
   const config = scripted({ interactive: false, config: false });
   await assert.rejects(openspecPreflight(configFor(root), config.deps), refusedWith('openspec-not-initialized'));
   assert.deepEqual(config.calls.asked, []); assert.deepEqual(config.calls.said, []); assert.equal(config.calls.written.size, 0);
+  assert.deepEqual(config.calls.setups, []);
 });
 
 test('a git failure in the config check propagates without a reason, prompt, explanation or file', async t => {
@@ -215,11 +249,18 @@ test('a git failure in the config check propagates without a reason, prompt, exp
 
 test('the preflight rejects unsafe project paths and targets before any effect', async t => {
   const { root } = workspace(t);
-  for (const project of [{ target: '../main' }, { target: 'main/' }, { changes: '../escape' }, { receipts: '/abs' }]) {
+  for (const project of [{ target: '../main' }, { target: 'main/' }, { target: 'a b' }, { target: '-x' },
+    { changes: '../escape' }, { receipts: '/abs' }]) {
     const { deps, calls } = scripted();
     const config = configFor(root);
     await assert.rejects(openspecPreflight({ ...config, project: { ...config.project, ...project } }, deps));
     assert.deepEqual(calls.probe, []);
+  }
+  // Every valid Git branch name is a valid target, including names with dots.
+  for (const target of ['release/1.2', 'fix/v2.0']) {
+    const { deps, calls } = scripted(); const config = configFor(root);
+    await openspecPreflight({ ...config, project: { ...config.project, target } }, deps);
+    assert.deepEqual(calls.configChecks, [[root, target]]);
   }
 });
 

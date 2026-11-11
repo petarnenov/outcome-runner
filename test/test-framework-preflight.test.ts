@@ -1,7 +1,7 @@
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { git } from '../src/git.ts';
@@ -16,15 +16,21 @@ import { defaultTestFrameworkDeps, isPrepared, refusedChange, temporaryWorktree,
   testFrameworkReportTool, validateReport, workingTreeSnapshot } from '../src/test-framework-preflight.ts';
 import type { TestFrameworkDeps, Technology } from '../src/test-framework-preflight.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
+import { publishToOrigin } from './support/git-origin.ts';
 
 // Every test scripts the harness session, the temporary worktree, the answers, the install executor, the snapshots
-// and the file writes; only the default worktree and snapshot tests use git, and no test starts a harness,
-// runs a package manager or uses a real TTY.
+// and the file writes; only the default worktree, setup worktree and snapshot tests use git, and no test starts a
+// harness, runs a package manager or uses a real TTY.
 
 const TRACKED: Record<string, string> = { 'package.json': '{"name":"fixture"}\n', 'pyproject.toml': '[project]\nname = "fixture"\n',
   'go.mod': 'module fixture\n', 'src/app.py': 'print(1)\n' };
 const reply = { status: 'worker-returned', threadId: 'analysis', events: [], text: 'private' } as WorkerReply;
 const context = { threadId: 'analysis' };
+const SETUP_BRANCH = 'outcome/setup-scripted';
+/** The advice that follows the changed files when the scripted setup worktree is the workspace itself. */
+const advice = (root: string) => ` in the setup worktree ${root} on branch ${SETUP_BRANCH}; commit them there, ` +
+  'push the branch and merge it into main, then run again';
+const place = (root: string) => ({ setupWorktree: root, setupBranch: SETUP_BRANCH });
 
 function workspace(t: TestContext) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'test-framework-preflight-')));
@@ -68,7 +74,8 @@ interface Script {
 function scripted(t: TestContext, script: Script = {}) {
   const calls = { asked: [] as string[], said: [] as string[], exec: [] as [string, string[], string][],
     written: new Map<string, string>(), added: [] as string[], removed: [] as string[], adapters: [] as HarnessOptions[],
-    prompts: [] as string[], rejections: [] as string[], closed: 0, snapshots: 0, removedWhenAsked: [] as number[] };
+    prompts: [] as string[], rejections: [] as string[], closed: 0, snapshots: 0, removedWhenAsked: [] as number[],
+    setups: [] as string[] };
   const answers = [...(script.answers ?? [])]; const snapshots = [...(script.snapshots ?? [])];
   const deps: TestFrameworkDeps = {
     signal: script.signal,
@@ -106,6 +113,8 @@ function scripted(t: TestContext, script: Script = {}) {
     exec: (command, args, cwd) => { calls.exec.push([command, args, cwd]); return { status: script.status ? script.status(command, args) : 0 }; },
     writeFile: (path, content) => { calls.written.set(path, content); },
     snapshot: () => { calls.snapshots += 1; return snapshots.shift() ?? new Map(); },
+    // The scripted setup worktree is the workspace itself, so the setup paths stay easy to compare.
+    setupWorktree: root => { calls.setups.push(root); return { path: root, branch: SETUP_BRANCH }; },
   };
   return { deps, calls };
 }
@@ -131,7 +140,7 @@ test('E: all technologies prepared: nothing is asked, executed or written and st
   for (const interactive of [true, false]) {
     const { deps, calls } = scripted(t, { interactive, reports: [{ technologies: [prepared('Node.js', 95)] }] });
     await testFrameworkPreflight(configFor(root), deps);
-    assert.deepEqual(calls.asked, []); nothingDone(calls); assert.equal(calls.snapshots, 0);
+    assert.deepEqual(calls.asked, []); nothingDone(calls); assert.equal(calls.snapshots, 0); assert.deepEqual(calls.setups, []);
     assert.equal(calls.adapters.length, 1); assert.equal(calls.closed, 1); removedOnce(calls);
     if (interactive) {
       assert.match(calls.said.join(''), /Node\.js \(runtime\) prepared; evidence: package\.json/u);
@@ -152,7 +161,7 @@ test('E: non-interactive with an unprepared technology refuses with the report a
     assert.equal(details.report.technologies[1].recommendations[0].framework, 'pytest');
   }));
   assert.deepEqual(calls.asked, []); assert.deepEqual(calls.said, []); nothingDone(calls);
-  assert.equal(calls.snapshots, 0); removedOnce(calls);
+  assert.equal(calls.snapshots, 0); assert.deepEqual(calls.setups, []); removedOnce(calls);
 });
 
 test('E: a failing analysis session refuses with test-framework-analysis-failed and removes the worktree', async t => {
@@ -258,7 +267,7 @@ test('D: invalid reports are refused to the harness and fail the analysis', asyn
     /one to three recommendations/u);
 });
 
-test('D: skipping a technology executes and writes nothing and names it', async t => {
+test('D: skipping a technology executes and writes nothing, creates no setup worktree and names it', async t => {
   const { root } = workspace(t);
   for (const answer of ['s', 'skip', '0', '2', 'x']) {
     const { deps, calls } = scripted(t, { answers: [answer], reports: [{ technologies: [prepared(), python()] }] });
@@ -272,7 +281,7 @@ test('D: skipping a technology executes and writes nothing and names it', async 
     assert.match(said, /1\) pytest: pytest enforces line, branch and function coverage\./u);
     assert.match(said, /Skipped Python\./u);
     assert.equal(calls.said.at(-1), 'Test framework missing for Python\n');
-    nothingDone(calls); assert.equal(calls.snapshots, 2); removedOnce(calls);
+    nothingDone(calls); assert.equal(calls.snapshots, 0); assert.deepEqual(calls.setups, []); removedOnce(calls);
   }
 });
 
@@ -316,21 +325,22 @@ test('D: a non-default coverage threshold of 90 reaches the prompt and the prepa
   assert.deepEqual(invalid.calls.added, []);
 });
 
-test('C: the first recommendation is preselected, installed without a shell and written, then the run stops for a commit', async t => {
+test('C: the first recommendation is preselected, installed without a shell and written in the setup worktree, then the run stops for a commit', async t => {
   const { root } = workspace(t);
   const after = new Map([['package-lock.json', '??:lock'], ['pytest.config.json', '??:config']]);
   const { deps, calls } = scripted(t, { answers: ['', 'y'], snapshots: [new Map(), after],
     reports: [{ technologies: [prepared(), python({ recommendations: [recommendation('pytest'), recommendation('coverage-py')] })] }] });
+  const message = `Changed package-lock.json, pytest.config.json${advice(root)}`;
   await assert.rejects(testFrameworkPreflight(configFor(root), deps), refusedWith('test-framework-prepared', error => {
-    assert.equal(error.message, 'Changed package-lock.json, pytest.config.json; commit and push them to origin/main, then run again');
-    assert.deepEqual(error.details, { changedFiles: ['package-lock.json', 'pytest.config.json'] });
+    assert.equal(error.message, message);
+    assert.deepEqual(error.details, { changedFiles: ['package-lock.json', 'pytest.config.json'], ...place(root) });
   }));
   assert.deepEqual(calls.exec, [['npm', ['install', '--save-dev', 'pytest'], root]]);
   assert.deepEqual([...calls.written], [[join(root, 'pytest.config.json'), '{"threshold":85}\n']]);
   assert.ok(calls.exec.every(([command]) => command !== 'git'));
-  assert.equal(calls.said.at(-1), 'Changed package-lock.json, pytest.config.json; commit and push them to origin/main, then run again\n');
+  assert.equal(calls.said.at(-1), message + '\n');
   assert.ok(calls.said.join('').includes('without a shell'));
-  assert.equal(calls.asked.length, 2); removedOnce(calls);
+  assert.equal(calls.asked.length, 2); assert.deepEqual(calls.setups, [root]); removedOnce(calls);
 });
 
 test('C: choosing a later recommendation uses only its commands and changes', async t => {
@@ -338,7 +348,7 @@ test('C: choosing a later recommendation uses only its commands and changes', as
   const { deps, calls } = scripted(t, { answers: ['2', 'yes'],
     reports: [{ technologies: [python({ recommendations: [recommendation('pytest'), recommendation('coverage-py')] })] }] });
   await assert.rejects(testFrameworkPreflight(configFor(root), deps), refusedWith('test-framework-prepared', error =>
-    assert.deepEqual(error.details, { changedFiles: ['coverage-py.config.json'] })));
+    assert.deepEqual(error.details, { changedFiles: ['coverage-py.config.json'], ...place(root) })));
   assert.deepEqual(calls.asked[0], 'Choose 1-2 or s to skip [1]: ');
   assert.match(calls.said.join(''), /1\) pytest: .*\n {2}2\) coverage-py: /u);
   assert.deepEqual(calls.exec, [['npm', ['install', '--save-dev', 'coverage-py'], root]]);
@@ -364,8 +374,8 @@ test('C: a failing install command stops later commands and the file changes', a
   const { deps, calls } = scripted(t, { answers: ['', 'y'], reports: [{ technologies: [python({ recommendations: [recommendation('pytest', 85, { changes })] })] }] });
   deps.writeFile = path => { if (path.endsWith('b.cfg')) throw new Error('disk full'); calls.written.set(path, 'a'); };
   await assert.rejects(testFrameworkPreflight(configFor(root), deps), refusedWith('test-framework-missing', error => {
-    assert.equal(error.message, 'Test framework missing for Python; changed a.cfg; commit and push them to origin/main, then run again');
-    assert.deepEqual(error.details, { unprepared: ['Python'], changedFiles: ['a.cfg'] });
+    assert.equal(error.message, `Test framework missing for Python; changed a.cfg${advice(root)}`);
+    assert.deepEqual(error.details, { unprepared: ['Python'], changedFiles: ['a.cfg'], ...place(root) });
   }));
   assert.match(calls.said.join(''), /disk full/u);
 });
@@ -463,9 +473,9 @@ test('C: files already dirty or untracked before the setup are not listed unless
   const after = new Map([...before, ['package.json', ' M:ddd'], ['pytest.config.json', '??:eee']]);
   const { deps, calls } = scripted(t, { answers: ['', 'y'], snapshots: [before, after], reports: [{ technologies: [python()] }] });
   await assert.rejects(testFrameworkPreflight(configFor(root), deps), refusedWith('test-framework-prepared', error =>
-    assert.deepEqual(error.details, { changedFiles: ['package.json', 'pytest.config.json'] })));
+    assert.deepEqual(error.details, { changedFiles: ['package.json', 'pytest.config.json'], ...place(root) })));
   const message = calls.said.at(-1)!;
-  assert.match(message, /^Changed package\.json, pytest\.config\.json; commit and push/u);
+  assert.match(message, /^Changed package\.json, pytest\.config\.json in the setup worktree .*; commit them there/u);
   assert.ok(!message.includes('src/app.py')); assert.ok(!message.includes('openspec/changes'));
   removedOnce(calls);
 });
@@ -476,8 +486,8 @@ test('B: a repository with two technologies prints both and asks once per unprep
   const report = { technologies: [python({ frameworks: [unittest] }), go()] };
   const mixed = scripted(t, { answers: ['', 'y', 's'], reports: [report] });
   await assert.rejects(testFrameworkPreflight(configFor(root), mixed.deps), refusedWith('test-framework-missing', error => {
-    assert.equal(error.message, 'Test framework missing for Go; changed pytest.config.json; commit and push them to origin/main, then run again');
-    assert.deepEqual(error.details, { unprepared: ['Go'], changedFiles: ['pytest.config.json'] });
+    assert.equal(error.message, `Test framework missing for Go; changed pytest.config.json${advice(root)}`);
+    assert.deepEqual(error.details, { unprepared: ['Go'], changedFiles: ['pytest.config.json'], ...place(root) });
   }));
   const said = mixed.calls.said.join('');
   assert.match(said, /- Python \(language\) not prepared; evidence: pyproject\.toml\n {2}framework unittest \(lines none, branches none, functions none\); evidence: src\/app\.py/u);
@@ -488,8 +498,10 @@ test('B: a repository with two technologies prints both and asks once per unprep
   removedOnce(mixed.calls);
   const both = scripted(t, { answers: ['', 'y', '1', 'Y'], reports: [report] });
   await assert.rejects(testFrameworkPreflight(configFor(root), both.deps), refusedWith('test-framework-prepared', error =>
-    assert.deepEqual(error.details, { changedFiles: ['gotest.config.json', 'pytest.config.json'] })));
+    assert.deepEqual(error.details, { changedFiles: ['gotest.config.json', 'pytest.config.json'], ...place(root) })));
   assert.deepEqual(both.calls.exec.map(([, args]) => args.at(-1)), ['pytest', 'gotest']);
+  // One setup worktree serves every technology of a start.
+  assert.deepEqual(both.calls.setups, [root]);
   removedOnce(both.calls);
 });
 
@@ -521,7 +533,7 @@ function invocation(base: string) {
 }
 
 test('B: the CLI exits 4 with the new reasons and keeps the details in the private diagnostics file', async t => {
-  const { base, root } = workspace(t); git(root, 'init', '-b', 'main');
+  const { base, root } = workspace(t); git(root, 'init', '-b', 'main'); publishToOrigin(root);
   const env = { XDG_STATE_HOME: join(base, 'xdg') }; const path = invocation(base);
   for (const reason of ['test-framework-missing', 'test-framework-analysis-failed', 'test-framework-prepared']) {
     const details = { unprepared: ['Python'], changedFiles: ['pytest.ini'], report: { technologies: [] } };
@@ -560,6 +572,45 @@ function repository(t: TestContext) {
   git(root, 'remote', 'add', 'origin', remote); git(root, 'push', 'origin', 'HEAD:main');
   return { base, root, remote };
 }
+
+/** HEAD, the current branch, the index and the porcelain status of a checkout. */
+const checkoutState = (root: string) => ({ head: git(root, 'rev-parse', 'HEAD'), branch: git(root, 'branch', '--show-current'),
+  index: git(root, 'ls-files', '--stage'), status: git(root, 'status', '--porcelain', '--untracked-files=all') });
+
+test('C: an accepted recommendation installs and writes in the setup worktree, and a second preflight reuses it', async t => {
+  const { root } = repository(t);
+  const before = checkoutState(root); const defaults = defaultTestFrameworkDeps();
+  const run = async () => {
+    const { deps, calls } = scripted(t, { answers: ['', 'y'], reports: [{ technologies: [python()] }] });
+    let failure!: PreflightError;
+    await assert.rejects(testFrameworkPreflight(configFor(root), { ...deps, setupWorktree: defaults.setupWorktree,
+      writeFile: defaults.writeFile, snapshot: workingTreeSnapshot }), (error: PreflightError) => {
+      failure = error; return refusedWith('test-framework-prepared')(error);
+    });
+    return { calls, failure, details: failure.details as { changedFiles: string[]; setupWorktree: string; setupBranch: string } };
+  };
+  const first = await run();
+  const path = first.details.setupWorktree;
+  assert.equal(dirname(path), join(dirname(root), `${basename(root)}-outcomes`));
+  assert.match(basename(path), /^setup-[a-f0-9]{64}$/u);
+  assert.equal(git(path, 'branch', '--show-current'), first.details.setupBranch);
+  assert.match(first.details.setupBranch, /^outcome\/setup-[a-f0-9]{12}$/u);
+  // The install command ran in the setup worktree and the file was written there.
+  assert.deepEqual(first.calls.exec, [['npm', ['install', '--save-dev', 'pytest'], path]]);
+  assert.equal(readFileSync(join(path, 'pytest.config.json'), 'utf8'), '{"threshold":85}\n');
+  assert.deepEqual(first.details.changedFiles, ['pytest.config.json']);
+  assert.ok(first.failure.message.includes(path) && first.failure.message.includes(first.details.setupBranch));
+  assert.match(first.calls.said.join(''), new RegExp(`runs these install commands in ${path.replaceAll('/', '\\/')} without a shell`, 'u'));
+  // The start checkout is unchanged.
+  assert.deepEqual(checkoutState(root), before);
+  assert.equal(existsSync(join(root, 'pytest.config.json')), false);
+  // A second preflight reuses the existing setup worktree.
+  const second = await run();
+  assert.equal(second.details.setupWorktree, path);
+  assert.deepEqual(second.calls.exec, [['npm', ['install', '--save-dev', 'pytest'], path]]);
+  assert.equal(git(root, 'worktree', 'list').split('\n').length, 2);
+  assert.deepEqual(checkoutState(root), before);
+});
 
 interface Observed { tree: string; head: string; branch: string; list: string }
 
@@ -662,7 +713,9 @@ function runnerFixture(t: TestContext) {
     project: { ...configFor(root).project, repository: 'fixture', checks: [{ command: 'node', args: ['-e', '', '{coverage}'] }],
       planningCheck: { command: 'node', args: ['-e', ''] } } };
   const untouched = () => {
-    assert.equal(existsSync(join(base, '.work-queue-locks')), false);
+    // Only the per-clone Git lock may exist yet: no invocation lock, ownership, state or claim.
+    const locks = join(base, '.work-queue-locks');
+    assert.ok(!existsSync(locks) || readdirSync(locks).every(name => name.includes('-git.sqlite')), String(existsSync(locks) && readdirSync(locks)));
     assert.equal(existsSync(config.stateDirectory), false);
     assert.equal(git(root, 'ls-remote', 'origin', 'work-queue-claims-main'), '');
   };

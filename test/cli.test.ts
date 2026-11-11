@@ -10,6 +10,7 @@ import { main } from './support/isolated-cli.ts';
 import { git } from '../src/git.ts';
 import { hash } from '../src/model.ts';
 import type { RunConfig } from '../src/model.ts';
+import { publishToOrigin } from './support/git-origin.ts';
 
 const task = { id: 'A', title: 'One', change: 'one', priority: 1, criteria: ['Works.'], scopes: ['src/a'], dependencies: [] };
 
@@ -22,6 +23,8 @@ function repository(base: string, name: string) {
   const root = join(base, name);
   mkdirSync(join(root, 'nested/deep'), { recursive: true });
   git(root, 'init', '-b', 'main');
+  // The run target is the start branch, which must exist on origin.
+  publishToOrigin(root);
   return root;
 }
 function invocationFile(base: string, content: object = { invocation: 'nightly' }) {
