@@ -364,7 +364,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           const claimedAt = recoverClaimTime(current);
           const acceptedAt = new Date(now()).toISOString();
           const completion = buildCompletion(current.review?.completion, claimedAt, acceptedAt);
-          const finished = { ...current, claimedAt, acceptedAt, completion, acceptedTarget: target };
+          let pr = current.pr;
+          if (pr && !pr.url) {
+            const found = await cancellable(Promise.resolve(host.find(current.branch)), signal);
+            if (found?.number === pr.number) pr = { ...pr, url: found.url };
+          }
+          const finished = { ...current, pr, claimedAt, acceptedAt, completion, acceptedTarget: target };
           store.update({ current: null, completed: { ...completed, [current.id]: finished } });
           completed[current.id] = finished;
           statistics?.decision(finished, 'accepted', finished);
