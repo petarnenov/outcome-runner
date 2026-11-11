@@ -6,6 +6,7 @@ import { digest, safePath } from './model.ts';
 import { readPage } from './text-page.ts';
 import type { TextPage } from './text-page.ts';
 import type { CheckRecord, Project, PullRequest, ReviewRecord, Work } from './model.ts';
+import type { InvocationChange } from './run-store.ts';
 
 export interface Receipt {
   version: number;
@@ -20,6 +21,8 @@ export interface Receipt {
   manifest: { path: string; hash: string }[];
   head: string;
   base: string;
+  /** The changes recorded for the invocation when the receipt was written; omitted when there were none. */
+  invocationChanges?: InvocationChange[];
 }
 
 /**

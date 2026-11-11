@@ -45,16 +45,19 @@ const defaultMascot: MascotPlayer = (mood, caption, { signal, env }) => playMasc
 
 /**
  * Uses an error's specific `reason` (for example from the OpenSpec or test framework preflight) or the generic
- * startup reason. The message, stack and any `details` stay in the private diagnostics file.
+ * startup reason. A `missing-setting` refusal also names the missing `setting` and an `example` of it. The message,
+ * stack and any `details` stay in the private diagnostics file.
  * Returns the line object it wrote; the exit code is always 4.
  */
 function reportFailure(error: unknown, output: Output): object {
-  const { message, stack, reason: specific, details } = error as Error & { reason?: unknown; details?: unknown };
+  const { message, stack, reason: specific, details, setting, example } = error as Error &
+    { reason?: unknown; details?: unknown; setting?: unknown; example?: unknown };
   const reason = typeof specific === 'string' && specific ? specific : 'startup-or-run-failed';
   const directory = mkdtempSync(join(tmpdir(), 'work-queue-error-'));
   const diagnostics = join(directory, 'error.json');
   writeFileSync(diagnostics, JSON.stringify({ reason, message, stack, ...(details === undefined ? {} : { details }) }), { mode: 0o600 });
-  const line = { status: 'unavailable', reason, diagnostics };
+  const line = { status: 'unavailable', reason,
+    ...(typeof setting === 'string' && setting ? { setting, example } : {}), diagnostics };
   output(JSON.stringify(line) + '\n');
   return line;
 }
