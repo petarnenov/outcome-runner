@@ -11,6 +11,7 @@ import { CodexAdapter } from '../src/codex-adapter.ts';
 import { codexSelection, resolveHarness } from '../src/harness.ts';
 import { parseFlags } from '../src/cli.ts';
 import { main } from './support/isolated-cli.ts';
+import { publishToOrigin } from './support/git-origin.ts';
 import { runQueue } from '../src/runner.ts';
 import { git } from '../src/git.ts';
 import type { Harness, RunConfig } from '../src/model.ts';
@@ -182,20 +183,22 @@ test('CLI flags parse in any order, at most once each, and override the invocati
     assert.throws(() => parseFlags(args), /Expected --harness=<claude\|codex>, --model=<id>, --effort=<level> and --coverage=<n>/u);
   }
   const directory = mkdtempSync(join(tmpdir(), 'catalog-cli-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  // The run target is the start branch, which must exist on origin.
+  const cwd = join(directory, 'project'); mkdirSync(cwd); git(cwd, 'init', '-q', '-b', 'main'); publishToOrigin(cwd);
   const path = join(directory, 'config.json');
   writeFileSync(path, JSON.stringify({ invocation: 'fixture', model: 'claude-opus-5-5', effort: 'low' }));
   let received!: RunConfig;
   const runner = async (config: RunConfig) => { received = config; return { status: 'exhausted' }; };
-  assert.equal(await main(path, runner, () => {}, { args: ['--effort=high', '--model=claude-haiku-5-5', '--harness=claude'] }), 0);
+  assert.equal(await main(path, runner, () => {}, { cwd, args: ['--effort=high', '--model=claude-haiku-5-5', '--harness=claude'] }), 0);
   assert.deepEqual([received.harness, received.model, received.effort], ['claude', 'claude-haiku-5-5', 'high']);
-  assert.equal(await main(path, runner, () => {}, { args: ['--model=claude-sonnet-5-5', '--effort=max'] }), 0);
+  assert.equal(await main(path, runner, () => {}, { cwd, args: ['--model=claude-sonnet-5-5', '--effort=max'] }), 0);
   assert.deepEqual([received.model, received.effort], ['claude-sonnet-5-5', 'max']);
-  assert.equal(await main(path, runner, () => {}, {}), 0);
+  assert.equal(await main(path, runner, () => {}, { cwd }), 0);
   assert.deepEqual([received.harness, received.model, received.effort], [undefined, 'claude-opus-5-5', 'low']);
   for (const args of [['--model=a', '--model=b'], ['--model='], ['--verbose']]) {
     const lines: string[] = []; let ran = false;
     assert.equal(await main(path, async () => { ran = true; return { status: 'exhausted' }; },
-      line => lines.push(line), { args }), 4);
+      line => lines.push(line), { cwd, args }), 4);
     assert.equal(ran, false); assert.equal(lines.length, 1);
     const report = JSON.parse(lines[0]);
     assert.deepEqual(Object.keys(report), ['status', 'reason', 'diagnostics']);
@@ -214,7 +217,7 @@ const withPassingOpenspec: typeof runQueue = (config, options = {}) =>
 async function refused(t: TestContext, args: string[], rejected: string) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'catalog-refusal-')));
   t.after(() => rmSync(base, { recursive: true, force: true }));
-  const root = join(base, 'project'); mkdirSync(root); git(root, 'init', '-b', 'main');
+  const root = join(base, 'project'); mkdirSync(root); git(root, 'init', '-b', 'main'); publishToOrigin(root);
   const path = join(base, 'invocation.json'); writeFileSync(path, JSON.stringify({ invocation: 'fixture', project }));
   const lines: string[] = [];
   assert.equal(await main(path, withPassingOpenspec, line => lines.push(line), { args, cwd: root, env: { XDG_STATE_HOME: join(base, 'state') } }), 4);

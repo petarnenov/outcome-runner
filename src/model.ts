@@ -109,6 +109,9 @@ export interface DocumentationRecord { base: string; files: string[]; outsideSco
 /** Archive stage result: the archived change directory and the specification files the archive wrote. */
 export interface ArchiveRecord { directory: string; specs: string[]; head: string }
 
+/** A cleanup step after acceptance; failed steps are recorded and never change the result. */
+export type CleanupStep = 'worktree' | 'local-branch' | 'remote-branch';
+
 export interface Work extends Task {
   taskHash: string;
   operation: string;
@@ -141,6 +144,7 @@ export interface Work extends Task {
   claimedAt?: string;
   acceptedAt?: string;
   completion?: TaskCompletion;
+  cleanup?: { failed: CleanupStep[] };
 }
 
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) :
@@ -155,6 +159,20 @@ export function safePath(path: string): string {
     throw new Error('Expected a safe repository-relative path');
   }
   return path;
+}
+const FORBIDDEN_BRANCH_CHARACTERS = '~^:?*[\\';
+/**
+ * The rules of `git check-ref-format --branch` for a plain branch name: nonempty, not `@`; no component beginning
+ * with a dot or ending with `.lock`; no `..`, `@{` or `//`; no control character, space, `~`, `^`, `:`, `?`, `*`,
+ * `[` or backslash; no leading `-` or `/`; no trailing `/` or dot.
+ */
+export function validBranchName(name: unknown): name is string {
+  if (typeof name !== 'string' || !name || name === '@') return false;
+  if (name.startsWith('-') || name.startsWith('/') || name.endsWith('/') || name.endsWith('.')) return false;
+  if (name.includes('..') || name.includes('@{') || name.includes('//')) return false;
+  if ([...name].some(character => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127 ||
+    FORBIDDEN_BRANCH_CHARACTERS.includes(character))) return false;
+  return name.split('/').every(part => part.length > 0 && !part.startsWith('.') && !part.endsWith('.lock'));
 }
 export const within = (path: string, scope: string): boolean => path === scope || path.startsWith(`${scope}/`);
 /** A documentation file is a README file, a Markdown file, or any file under a docs or doc directory. */
@@ -214,8 +232,7 @@ export function validateConfig<T extends RunConfig>(config: T): T {
   const project = config.project;
   if ((config.mode ?? 'OFF') !== 'OFF' || !config.root || !config.stateDirectory ||
       !config.invocation || !config.authority?.reference || !config.authority?.instruction ||
-      !project || !/^[A-Za-z0-9][A-Za-z0-9/_-]*$/u.test(project.target ?? '') ||
-      project.target.includes('..') || project.target.endsWith('/') ||
+      !project || !validBranchName(project.target) ||
       config.authority.target !== project.target || !config.authority.tasks ||
       config.maxAccepted !== undefined && (!Number.isSafeInteger(config.maxAccepted) || config.maxAccepted < 1)) {
     throw new Error('Invalid OFF configuration or authority');

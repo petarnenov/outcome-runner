@@ -8,6 +8,7 @@ import { git } from '../src/git.ts';
 import { hash } from '../src/model.ts';
 import type { Harness, RunConfig } from '../src/model.ts';
 import { main } from './support/isolated-cli.ts';
+import { publishToOrigin } from './support/git-origin.ts';
 import { runQueue } from '../src/runner.ts';
 import type { PullRequestHost, RunOptions } from '../src/runner.ts';
 import { RunStore } from '../src/run-store.ts';
@@ -177,7 +178,7 @@ test('flag and JSON values skip their prompts', async () => {
 test('CLI flags and invocation JSON reach the selection, which asks only the remaining questions', async t => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'selection-cli-')));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const root = join(directory, 'project'); mkdirSync(root); git(root, 'init', '-b', 'main');
+  const root = join(directory, 'project'); mkdirSync(root); git(root, 'init', '-b', 'main'); publishToOrigin(root);
   const path = join(directory, 'invocation.json');
   writeFileSync(path, JSON.stringify({ invocation: 'selection', model: 'claude-haiku-5-5' }));
   const { deps, calls } = scripted();

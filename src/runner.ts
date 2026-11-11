@@ -8,9 +8,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay, setImmediate as yieldLoop } from 'node:timers/promises';
 import { hash, digest, within, safePath, validateConfig, validateQueue, archiveCommand, isDocumentation,
   specsDirectory } from './model.ts';
-import type { CheckRecord, CommandSpec, PullRequest, Purpose, Queue, ReviewRecord, RunConfig, Task, Work,
+import type { CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose, Queue, ReviewRecord, RunConfig, Task, Work,
   WorkerReport, TaskCompletion } from './model.ts';
-import { command, git, gitPage, fileAt, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS, MERGE_STATE_POLL_MS } from './git.ts';
+import { command, git, gitPage, fileAt, hasRef, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS,
+  MERGE_STATE_POLL_MS } from './git.ts';
+import { lockRootOf, withGitLock } from './git-lock.ts';
 import { pageOffset, readPage } from './text-page.ts';
 import { RunStore } from './run-store.ts';
 import { buildCompletion, validCompletion } from './completion.ts';
@@ -33,7 +35,11 @@ export interface PullRequestHost {
   merge(pr: PullRequest, head: string): void | Promise<void>;
 }
 
-export interface RunEvent { status: string; id: string; summary?: string; durationSeconds?: number; grade?: TaskCompletion['grade'] }
+export interface RunEvent {
+  status: string; id: string; summary?: string; durationSeconds?: number; grade?: TaskCompletion['grade'];
+  /** Cleanup steps that failed after acceptance; omitted when the cleanup succeeded. */
+  cleanupFailed?: CleanupStep[];
+}
 
 export interface RunResult {
   status: string;
@@ -82,6 +88,17 @@ const reviewRecord = ({ reviewer, outcome }: ReviewRecord) => ({ reviewer, outco
 const scopesOverlap = (first: string[], second: string[]): boolean => first.some(path =>
   second.some(other => within(path, other) || within(other, path)));
 const DOCUMENTATION_ROUNDS = 4;
+
+/**
+ * The per-invocation lock and ownership files of one clone: `<hash(primary)>-<hash(stateDirectory)>.sqlite` and
+ * `<hash(primary)>-<hash(stateDirectory)>-owner.json` beside the primary checkout. Different invocations of one
+ * clone use different files, so they run concurrently and never read each other's ownership.
+ */
+export function invocationLockFiles(primary: string, stateDirectory: string): { lock: string; ownership: string } {
+  const lockRoot = join(dirname(primary), '.work-queue-locks');
+  const key = `${hash(primary)}-${hash(resolve(stateDirectory))}`;
+  return { lock: join(lockRoot, `${key}.sqlite`), ownership: join(lockRoot, `${key}-owner.json`) };
+}
 
 /** Paths a result manifest may contain: the task scopes and, after the archive, the archived change and its spec files. */
 export function manifestScopes(work: Pick<Work, 'scopes' | 'directory' | 'archive'>): string[] {
@@ -170,6 +187,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   const { afterEffect = async () => {}, report = () => {}, now = Date.now, runCommand = command } = options;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
   // One read-only analysis of origin/<target> with the resolved harness, model and effort precedes the lock and claims.
+  // Its Git groups have released the Git lock before the invocation lock is requested below.
   await cancellable(testFrameworkPreflight(config, { createAdapter, signal, ...options.testFramework }), signal);
   const root = realpathSync(config.root); const project = config.project;
   const primary = dirname(resolve(root, git(root, 'rev-parse', '--git-common-dir')));
@@ -177,11 +195,13 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   while (!existsSync(stateAncestor)) { missing.unshift(stateAncestor.split('/').at(-1)!); stateAncestor = dirname(stateAncestor); }
   const statePath = join(realpathSync(stateAncestor), ...missing);
   if (within(statePath, primary)) throw new Error('State must be outside the primary checkout');
-  const lockRoot = join(dirname(primary), '.work-queue-locks');
-  mkdirSync(lockRoot, { recursive: true, mode: 0o700 });
-  const lock = new DatabaseSync(join(lockRoot, `${hash(primary)}.sqlite`));
+  lockRootOf(primary);
+  // The lock and ownership belong to this invocation only; other invocations of the clone run concurrently.
+  const files = invocationLockFiles(primary, config.stateDirectory);
+  const lock = new DatabaseSync(files.lock);
+  const outcomes = join(dirname(primary), `${primary.split('/').at(-1)}-outcomes`);
   let store!: RunStore; let adapter: HarnessAdapter | null | undefined; let stopped = false;
-  const ownershipFile = join(lockRoot, `${hash(primary)}-owner.json`);
+  const ownershipFile = files.ownership;
   const stop = () => {
     stopped = true;
     if (store?.state.current) statistics?.decision(store.state.current, 'blocked', store.state.current, 'cancelled');
@@ -189,7 +209,11 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   };
   signal?.addEventListener('abort', stop, { once: true });
   try {
-    lock.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;');
+    try { lock.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;'); }
+    catch (error) {
+      throw Object.assign(new Error(`This invocation is already running in another process (${(error as Error).message})`),
+        { reason: 'invocation-running' });
+    }
     if (existsSync(ownershipFile)) {
       const previous = JSON.parse(readFileSync(ownershipFile, 'utf8'));
       if (!previous.released && (previous.identity !== hash(config) ||
@@ -200,8 +224,10 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     const ownership = { identity: hash(config), stateDirectory: resolve(config.stateDirectory), released: false };
     const release = () => writeFileSync(ownershipFile, JSON.stringify({ ...ownership, released: true }));
     const refresh = () => {
-      git(root, 'fetch', 'origin', project.target);
-      const target = git(root, 'rev-parse', `origin/${project.target}`);
+      const target = withGitLock(primary, () => {
+        git(root, 'fetch', 'origin', project.target);
+        return git(root, 'rev-parse', `origin/${project.target}`);
+      });
       const queue = validateQueue(JSON.parse(fileAt(root, target, project.queue).toString()), project);
       return { target, queue };
     };
@@ -221,7 +247,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     statistics?.setting('leaves', [...ids], sources.leaves ?? 'default');
     writeFileSync(ownershipFile, JSON.stringify(ownership), { mode: 0o600 });
     const host: PullRequestHost = options.host ?? new GitHubHost(root, project);
-    const ledger = new ClaimLedger(root, project.target);
+    const ledger = new ClaimLedger(root, project.target, fn => withGitLock(primary, fn));
     if (!store.state.claimant) store.update({ claimant: randomUUID() });
     const claimant = store.state.claimant!;
     const commitSubject = (type: string, text: string) => `${type}(${project.commitScope ?? 'work-queue'}): ${text}${project.commitSuffix ?? ''}`;
@@ -234,6 +260,32 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     const rememberPr = (pr: PullRequest) => {
       const previous = activeWork().pr;
       save({ pr: { ...pr, url: pr.url ?? (previous?.number === pr.number ? previous.url : undefined) } });
+    };
+    // Removes the worktree, the local branch and (after acceptance) the remote branch of an accepted task under the
+    // Git lock. Each step is attempted independently; the failed steps are returned and never change the result.
+    const cleanupTask = (work: Pick<Work, 'path' | 'branch'>, remote: boolean): CleanupStep[] => {
+      const failed: CleanupStep[] = [];
+      const steps: [CleanupStep, () => void][] = [
+        ['worktree', () => {
+          if (existsSync(work.path)) {
+            if (!within(resolve(work.path), outcomes)) throw new Error('Task worktree outside the outcomes directory');
+            git(root, 'worktree', 'remove', '--force', work.path);
+          }
+          git(root, 'worktree', 'prune');
+        }],
+        ['local-branch', () => { if (hasRef(root, `refs/heads/${work.branch}`)) git(root, 'branch', '-D', work.branch); }],
+        ...(remote ? [['remote-branch', () => {
+          if (git(root, 'ls-remote', 'origin', `refs/heads/${work.branch}`)) git(root, 'push', 'origin', '--delete', work.branch);
+        }] as [CleanupStep, () => void]] : []),
+      ];
+      try {
+        withGitLock(primary, () => {
+          for (const [step, run] of steps) { try { run(); } catch { failed.push(step); } }
+        });
+      } catch {
+        for (const [step] of steps) if (!failed.includes(step)) failed.push(step);
+      }
+      return failed;
     };
     const authorized = (queue: Queue, id: string): Task => {
       const task = queue.tasks.find(item => item.id === id);
@@ -399,6 +451,14 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     for (const work of recovery.filter(work => ids.includes(work.id))) statistics?.decision(work, 'blocked', work);
     if (store.state.current) statistics?.decision(store.state.current, 'blocked', store.state.current);
     store.update({ blocked: {} });
+    // Leftover worktrees and local branches of tasks this invocation already accepted are removed before any task
+    // is selected. Only this invocation's own state is considered; failures are recorded and never stop the run.
+    for (const [id, entry] of Object.entries(store.state.completed ?? {})) {
+      if (!entry?.path || !entry.branch || !existsSync(entry.path) && !hasRef(root, `refs/heads/${entry.branch}`)) continue;
+      const failed = cleanupTask(entry, false);
+      store.update({ completed: { ...store.state.completed, [id]: { ...entry, cleanup: { failed } } } });
+      await cancellable(afterEffect('sweep', entry), signal);
+    }
     for (;;) {
       await yieldLoop();
       if (signal?.aborted) stopped = true;
@@ -448,7 +508,14 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           return { status: 'incomplete', ...resultData(acceptedIds), remaining: ids.filter(id => !done.has(id)),
             blockers: { [current.id]: { stage: current.stage, reason: 'operation-incomplete', diagnostics: join(store.directory, 'state.json') } } };
         }
-        report({ status: 'accepted', id: current.id, ...completed[current.id].completion });
+        // The merge is confirmed, so the task worktree, local branch and remote branch are no longer needed.
+        const cleanupFailed = cleanupTask(completed[current.id], true);
+        if (cleanupFailed.length) {
+          completed[current.id] = { ...completed[current.id], cleanup: { failed: cleanupFailed } };
+          store.update({ completed: { ...store.state.completed, [current.id]: completed[current.id] } });
+        }
+        report({ status: 'accepted', id: current.id, ...completed[current.id].completion,
+          ...(cleanupFailed.length ? { cleanupFailed } : {}) });
       }
       const newlyAccepted = Object.keys(completed).filter(id => done.has(id) && !store.state.baselineDone!.includes(id));
       const remaining = ids.filter(id => !done.has(id));
@@ -493,8 +560,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           host: hostname(), branch, claimedAt: new Date(now()).toISOString(),
         }, commitSubject('chore', `claim ${task.id}`))) continue;
         save({ ...task, taskHash: hash(task), operation, stage: 'claim', base: target, branch,
-          path: join(dirname(primary), `${primary.split('/').at(-1)}-outcomes`, operation),
-          directory: `${project.changes}/${task.change}` });
+          path: join(outcomes, operation), directory: `${project.changes}/${task.change}` });
         work = activeWork();
       }
       try {
@@ -505,7 +571,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         if (prompt.length > 65536) throw new Error('Selected outcome prompt is too large');
         if (work.stage === 'claim') {
           if (!existsSync(work.path)) {
-            git(root, 'worktree', 'add', '-b', work.branch, work.path, work.base);
+            const claimed = work;
+            withGitLock(primary, () => git(root, 'worktree', 'add', '-b', claimed.branch, claimed.path, claimed.base));
             await cancellable(afterEffect('claim', work), signal);
           }
           if (git(work.path, 'rev-parse', 'HEAD') !== work.base || git(work.path, 'status', '--porcelain')) {
@@ -673,7 +740,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           }
           const manifest = paths.map(path => ({ path, hash: digest(readFileSync(join(work.path, path))) }));
           const receipt = { version: 1, id: work.id, taskHash: work.taskHash,
-            authority: config.authority.reference, specification: now.specification,
+            authority: config.authority.reference, target: project.target, specification: now.specification,
             review: { ...reviewRecord(now.review!), accepted: true },
             checks: checkRecords(now.documentationChecks ?? now.checks!), manifest,
             head: git(work.path, 'rev-parse', 'HEAD'), base: work.base };
@@ -690,7 +757,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           save({ finalChecks: checks(work, project.checks) });
           if (git(work.path, 'status', '--porcelain')) throw new Error('Final checks changed tracked inputs');
           const head = git(work.path, 'rev-parse', 'HEAD');
-          git(work.path, 'push', 'origin', `HEAD:refs/heads/${work.branch}`);
+          const published = work;
+          withGitLock(primary, () => git(published.path, 'push', 'origin', `HEAD:refs/heads/${published.branch}`));
           save({ head, testedTarget: targetNow, stage: 'pr' });
         }
         if (activeWork().stage === 'pr') {

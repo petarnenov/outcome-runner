@@ -1,6 +1,7 @@
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveHarness, codexSelection, createHarness } from '../src/harness.ts';
@@ -8,7 +9,9 @@ import type { CodexSelection } from '../src/harness.ts';
 import { ClaudeAdapter } from '../src/claude-adapter.ts';
 import { CodexAdapter } from '../src/codex-adapter.ts';
 import { RunStore } from '../src/run-store.ts';
+import { git } from '../src/git.ts';
 import { main } from './support/isolated-cli.ts';
+import { publishToOrigin } from './support/git-origin.ts';
 import type { RunConfig } from '../src/model.ts';
 import type { HarnessOptions, ToolDefinition } from '../src/harness-adapter.ts';
 
@@ -16,6 +19,13 @@ const tool = { name: 'echo', description: 'Echo', inputSchema: { type: 'object' 
 const codexCatalogFixture = new Map([['gpt-6.1-sol', ['low', 'medium', 'high']], ['pinned', ['medium']], ['other', ['low']]]);
 const codex = (defaults: Partial<CodexSelection> = {}) => async (): Promise<CodexSelection> =>
   ({ catalog: codexCatalogFixture, ...defaults });
+
+/** A repository whose start branch exists on origin, so the CLI resolves its run target. */
+function startCheckout(t: TestContext, directory: string): string {
+  const root = join(directory, 'project'); mkdirSync(root); git(root, 'init', '-q', '-b', 'main'); publishToOrigin(root);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  return root;
+}
 
 test('Claude is the exact default while Codex resolves and freezes its own settings', async () => {
   assert.deepEqual(await resolveHarness({ root: '/project' } as RunConfig, () => { throw new Error('No Codex for Claude'); }),
@@ -76,14 +86,15 @@ test('resolved harness model and effort changes and legacy identity cannot rewri
 test('CLI accepts each selection flag once and keeps invalid input private', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'harness-cli-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'config.json'); writeFileSync(path, '{"invocation":"fixture"}');
+  const cwd = startCheckout(t, directory);
   let received!: RunConfig; const lines: string[] = [];
   const runner = async (config: RunConfig) => { received = config; return { status: 'exhausted' }; };
-  assert.equal(await main(path, runner, value => lines.push(value), { args: ['--harness=codex'] }), 0);
+  assert.equal(await main(path, runner, value => lines.push(value), { cwd, args: ['--harness=codex'] }), 0);
   assert.equal(received.harness, 'codex');
-  assert.equal(await main(path, runner, value => lines.push(value), { args: ['--harness=claude'] }), 0);
+  assert.equal(await main(path, runner, value => lines.push(value), { cwd, args: ['--harness=claude'] }), 0);
   assert.equal(received.harness, 'claude');
   for (const args of [['--harness=unknown'], ['--harness=codex', '--harness=claude']]) {
-    assert.equal(await main(path, runner, value => lines.push(value), { args }), 4);
+    assert.equal(await main(path, runner, value => lines.push(value), { cwd, args }), 4);
     assert.equal(JSON.parse(lines.at(-1)!).reason, 'startup-or-run-failed');
   }
 });
@@ -94,7 +105,7 @@ test('CLI never publishes private transport questions or authentication errors',
   const config = join(directory, 'config.json'); writeFileSync(config, '{"invocation":"fixture"}');
   let output = '';
   const code = await main(config, async () => { throw new Error('PRIVATE authentication: approve this?'); },
-    line => { output += line; });
+    line => { output += line; }, { cwd: startCheckout(t, directory) });
   assert.equal(code, 4); assert.ok(!output.includes('approve')); assert.ok(!output.includes('authentication'));
   const report = JSON.parse(output);
   assert.match(readFileSync(report.diagnostics, 'utf8'), /PRIVATE authentication: approve this/u);

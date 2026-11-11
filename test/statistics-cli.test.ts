@@ -13,6 +13,7 @@ import { runQueue } from '../src/runner.ts';
 import { ledgerEffects, ledgerPath } from '../src/statistics.ts';
 import type { RunStatistics } from '../src/statistics.ts';
 import type { RunConfig } from '../src/model.ts';
+import { publishToOrigin } from './support/git-origin.ts';
 
 afterEach(t => {
   const error = (t as unknown as { error?: Error }).error;
@@ -21,7 +22,7 @@ afterEach(t => {
 function fixture(t: TestContext) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'ledger-cli-')));
   t.after(() => rmSync(base, { recursive: true, force: true }));
-  const root = join(base, 'repository'); mkdirSync(root); git(root, 'init', '-b', 'main');
+  const root = join(base, 'repository'); mkdirSync(root); git(root, 'init', '-b', 'main'); publishToOrigin(root);
   const path = join(base, 'invocation.json'); const env = { XDG_STATE_HOME: join(base, 'state'), PRIVATE_ENV: 'SECRET_ENV' };
   const config = { invocation: 'statistics', authority: { reference: 'owner-ref', instruction: 'SECRET_AUTHORITY',
     target: 'main', tasks: {} }, project: { target: 'main', changes: 'openspec/changes', receipts: 'evidence/results',

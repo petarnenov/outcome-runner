@@ -13,6 +13,9 @@ export interface Claim {
 
 export interface LedgerSnapshot { head: string | null; claims: Map<string, Claim> }
 
+/** Runs one group of Git operations under a lock; the default runs it directly. */
+export type LockWrapper = <T>(fn: () => T) => T;
+
 export const claimsBranch = (target: string): string => `work-queue-claims-${target.replaceAll('/', '-')}`;
 
 function assertClaim(claim: Claim, id: string): Claim {
@@ -26,12 +29,14 @@ export class ClaimLedger {
   branch: string;
   ref: string;
   tracking: string;
+  withLock: LockWrapper;
 
-  constructor(root: string, target: string) {
+  constructor(root: string, target: string, withLock: LockWrapper = fn => fn()) {
     this.root = root;
     this.branch = claimsBranch(target);
     this.ref = `refs/heads/${this.branch}`;
     this.tracking = `refs/work-queue/claims/${this.branch}`;
+    this.withLock = withLock;
   }
 
   remoteHead(): string | null {
@@ -39,26 +44,30 @@ export class ClaimLedger {
   }
 
   pull(): LedgerSnapshot {
-    if (!this.remoteHead()) return { head: null, claims: new Map() };
-    git(this.root, 'fetch', 'origin', `+${this.ref}:${this.tracking}`);
-    const head = git(this.root, 'rev-parse', this.tracking);
-    const files = git(this.root, 'ls-tree', '--name-only', head).split('\n').filter(Boolean);
-    return { head, claims: new Map(files.map((file): [string, Claim] => {
-      const id = file.replace(/\.json$/u, '');
-      return [id, assertClaim(JSON.parse(fileAt(this.root, head, file).toString()), id)];
-    })) };
+    return this.withLock(() => {
+      if (!this.remoteHead()) return { head: null, claims: new Map<string, Claim>() };
+      git(this.root, 'fetch', 'origin', `+${this.ref}:${this.tracking}`);
+      const head = git(this.root, 'rev-parse', this.tracking);
+      const files = git(this.root, 'ls-tree', '--name-only', head).split('\n').filter(Boolean);
+      return { head, claims: new Map(files.map((file): [string, Claim] => {
+        const id = file.replace(/\.json$/u, '');
+        return [id, assertClaim(JSON.parse(fileAt(this.root, head, file).toString()), id)];
+      })) };
+    });
   }
 
   // A plain push is the compare-and-swap; false means another claim won.
   acquire({ head }: Pick<LedgerSnapshot, 'head'>, claim: Claim, message: string): boolean {
-    const commit = this.commitClaim(head, claim, message);
-    try {
-      git(this.root, 'push', 'origin', `${commit}:${this.ref}`);
-      return true;
-    } catch (error) {
-      if (this.remoteHead() !== head) return false;
-      throw error;
-    }
+    return this.withLock(() => {
+      const commit = this.commitClaim(head, claim, message);
+      try {
+        git(this.root, 'push', 'origin', `${commit}:${this.ref}`);
+        return true;
+      } catch (error) {
+        if (this.remoteHead() !== head) return false;
+        throw error;
+      }
+    });
   }
 
   commitClaim(head: string | null, claim: Claim, message: string): string {
