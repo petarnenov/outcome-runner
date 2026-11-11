@@ -320,6 +320,25 @@
         "README replaces 'Give each machine its own clone' with how to run many runners on one branch, explains that the target is the branch the runner starts from, and describes worktree cleanup.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-17",
+      "title": "Log every logical step before it starts",
+      "change": "log-runner-steps",
+      "priority": 12,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-16"],
+      "criteria": [
+        "Before the runner starts each logical step it writes one clear, short line to stderr, so a person watching the console always sees what the runner is about to do. The line is written before the step has any effect.",
+        "Logical steps include at least: start of the run with invocation, harness, model and effort; each preflight (harness version, OpenSpec, test framework); claiming a task; preparing its worktree; each setup command; the planning session; the planning check; the implementation session; each product check; commit and push; creating or updating the pull request; waiting for mergeability and checks; integrating an advanced target; merging; recording the receipt and acceptance; worktree and branch cleanup; and the end of the run with its outcome.",
+        "Each line has the form '[outcome-runner] HH:MM:SS <task id or run> <step>: <message>', is a single line of at most 120 characters, in English, and never contains secrets, worker output, file contents or private diagnostics.",
+        "Waits and polling loops (mergeability, stale pull request head, Git lock) log once when the wait starts, not on every poll. A step that is retried logs again with the attempt number.",
+        "On resume, steps already completed in the durable state are not logged as started again; a step continued from state logs with 'resuming'.",
+        "stdout, exit codes, the diagnostics file and receipts are unchanged. Step lines go through an injected output so tests can capture them.",
+        "Tests use scripted adapters and Git fixtures and cover: the ordered step lines of a task accepted end to end, each appearing before the effect of its step; a blocked task whose last line names the step where it was blocked; a polling wait logged once; a retried step logged with its attempt; a resumed run not repeating completed steps; the line format and 120-character limit; and stdout identical to a run without step logging.",
+        "README describes the step lines on stderr and their format.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
