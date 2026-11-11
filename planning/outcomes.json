@@ -6,11 +6,7 @@
       "title": "Selectable model and effort per harness",
       "change": "selectable-harness-model-effort",
       "priority": 1,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
+      "scopes": ["src", "test", "README.md"],
       "dependencies": [],
       "criteria": [
         "Add one module under src/ that answers which models and which efforts per model each harness offers; harness.ts, claude-adapter.ts and codex-adapter.ts use it instead of their own hard-coded model and effort checks.",
@@ -31,14 +27,8 @@
       "title": "Configurable test coverage threshold",
       "change": "configurable-test-coverage-threshold",
       "priority": 2,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-1"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-1"],
       "criteria": [
         "The invocation JSON accepts an optional integer field coverage and the CLI accepts --coverage=<n>; n must be an integer from 1 to 100, otherwise the run is refused with exit code 4. The CLI value overrides the JSON value.",
         "When neither is given, the coverage threshold is 85.",
@@ -56,14 +46,8 @@
       "title": "OpenSpec preflight with install offer",
       "change": "openspec-preflight-install-offer",
       "priority": 3,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-2"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-2"],
       "criteria": [
         "Before any harness check, selection prompt, claim or worktree is created, the runner checks that the OpenSpec CLI is available (openspec --version exits 0) and that openspec/config.yaml exists at origin/<target> of the repository.",
         "The startup is interactive only when both process.stdin and process.stderr are TTYs; all prompts and their explanations are written to stderr so stdout keeps only the existing JSON lines.",
@@ -82,16 +66,8 @@
       "title": "Interactive harness, model, effort and coverage selection",
       "change": "interactive-harness-selection",
       "priority": 4,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-1",
-        "OR-2",
-        "OR-3"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-1", "OR-2", "OR-3"],
       "criteria": [
         "After the OpenSpec preflight passes, the runner checks the availability of both harnesses with their existing probes: Claude Code 2.1.321 or newer and Codex CLI 0.167.0 or newer; a missing executable counts as unavailable with reason not-installed instead of failing the run.",
         "Interactive (same TTY rule and stderr output as the OpenSpec preflight): the runner shows each harness with its status and version or reason, and asks the user to choose among the available harnesses only; claude is the preselected answer when available. When only one harness is available it is shown and preselected.",
@@ -114,14 +90,8 @@
       "title": "Completion summary with duration and complexity grade",
       "change": "completion-summary-grade",
       "priority": 5,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-4"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-4"],
       "criteria": [
         "The runner records the time a task is claimed in its work state; the record survives a restart.",
         "The outcome_report schema gains an optional completion object with summary (string) and grade (one of A, B, C, D, E). The implementation review session must provide it whenever it reports accepted; an accepted report without a valid completion is refused like any other invalid private report.",
@@ -139,15 +109,8 @@
       "title": "Graded test planning up to the coverage threshold",
       "change": "graded-test-planning",
       "priority": 6,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-2",
-        "OR-5"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-2", "OR-5"],
       "criteria": [
         "The plan session prompt requires tasks.md to contain a test section in which every planned test has a complexity grade from A (most complex) to E (easiest), listed from E to A.",
         "The planning review prompt requires the reviewer to report changes-required when a planned test lacks a grade or the tests are not listed from E to A.",
@@ -164,15 +127,8 @@
       "title": "JSONL ledger of all runs for statistics",
       "change": "run-statistics-ledger",
       "priority": 7,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-5",
-        "OR-6"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-5", "OR-6"],
       "criteria": [
         "Every invocation of the runner, except the hash command, appends exactly one JSON object as one line to $XDG_STATE_HOME/outcome-runner/runs.jsonl (default ~/.local/state/outcome-runner/runs.jsonl) when it ends, whatever its exit code: 0, 3, 4, or a cancellation by SIGINT or SIGTERM.",
         "The file and its directories are created when missing, the file with mode 0600; existing lines are never rewritten or removed, and each record is written with a single append call so records of concurrent runs on one machine do not interleave.",
@@ -192,14 +148,8 @@
       "title": "Harness-analysed test framework preflight",
       "change": "test-framework-preflight",
       "priority": 8,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-4"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-4"],
       "criteria": [
         "After the OpenSpec preflight and the harness, model, effort and coverage selection, and before any claim is made, the runner analyses the repository at origin/<target> with the selected harness, model and effort in one read-only session.",
         "The analysis session runs in a temporary detached worktree of origin/<target> created outside the repository and removed afterwards, even when the analysis fails. It uses the existing broker with read-only access to every tracked file, has no write access, no run_checks and no shell, and reports through a private structured tool.",
@@ -221,14 +171,7 @@
       "title": "Automatic semantic versioning from Conventional Commits",
       "change": "automatic-semantic-versioning",
       "priority": 9,
-      "scopes": [
-        ".github",
-        "scripts",
-        "docs",
-        "package.json",
-        "tsconfig.json",
-        "CHANGELOG.md"
-      ],
+      "scopes": [".github", "scripts", "docs", "package.json", "tsconfig.json", "CHANGELOG.md"],
       "dependencies": [],
       "criteria": [
         "Add scripts/release.ts, TypeScript with erasable syntax only and Node built-ins only, that computes the next Semantic Versioning 2.0.0 version from the Conventional Commits 1.0.0 messages (subject and body) of every commit reachable from HEAD and not from the latest tag matching vMAJOR.MINOR.PATCH, including commits of merged branches.",
@@ -250,14 +193,8 @@
       "title": "Animated mascot module",
       "change": "animated-outcome-mascot",
       "priority": 10,
-      "scopes": [
-        "mascot",
-        "package.json",
-        "tsconfig.json"
-      ],
-      "dependencies": [
-        "OR-9"
-      ],
+      "scopes": ["mascot", "package.json", "tsconfig.json"],
+      "dependencies": ["OR-9"],
       "criteria": [
         "Add mascot/mascot.ts, TypeScript with erasable syntax only and Node built-ins only, with an original small mascot drawn with Unicode block characters and ANSI colours, at most 7 lines high and 20 columns wide. It is inspired by the style of a compact terminal logo but does not reproduce the Claude Code logo or any other existing logo or character.",
         "The module offers exactly these moods, each with its own eyes, mouth and colour: happy (green), angry (red), celebrating (yellow, with sparkles), content (cyan), sleepy (blue), sad (blue), startled (yellow) and dizzy (magenta).",
@@ -276,15 +213,8 @@
       "title": "Show the mascot when tasks and runs end",
       "change": "show-outcome-mascot",
       "priority": 11,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-5",
-        "OR-10"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-5", "OR-10"],
       "criteria": [
         "The runner plays the mascot from mascot/mascot.ts when a task or a run ends: happy when a task is accepted and merged; angry when a task is blocked; celebrating when a run ends exhausted; content when a run ends limit-reached; sleepy when a run ends incomplete without blockers, only waiting for claimed or dependent work; sad when a run ends incomplete with blockers; startled when a run is cancelled by SIGINT or SIGTERM; dizzy when the runner exits with code 4.",
         "Every event status the runner reports and every final run status maps to exactly one mood; a test fails when a status the runner can produce has no mood.",
@@ -303,13 +233,8 @@
       "title": "Install test prerequisites in the release workflow",
       "change": "release-workflow-test-prerequisites",
       "priority": 12,
-      "scopes": [
-        ".github",
-        "docs"
-      ],
-      "dependencies": [
-        "OR-9"
-      ],
+      "scopes": [".github", "docs"],
+      "dependencies": ["OR-9"],
       "criteria": [
         "The test suite runs openspec validate through the runner's planning check, so npm test fails in GitHub Actions when the OpenSpec CLI is missing; the first Release run on main failed this way with 27 failing tests.",
         "Before npm test, .github/workflows/release.yml installs the OpenSpec CLI with npm install -g @fission-ai/openspec@1.17.0 and prints openspec --version in a separate step, so a missing or broken CLI fails before the tests.",
@@ -323,10 +248,7 @@
       "title": "Tolerate a stale pull request head after a push",
       "change": "tolerate-stale-pull-request-head",
       "priority": 3,
-      "scopes": [
-        "src",
-        "test"
-      ],
+      "scopes": ["src", "test"],
       "dependencies": [],
       "criteria": [
         "Defect: when the target advanced while a task waited in the merge stage, the runner integrated the target, pushed a new head and then read the pull request at once; GitHub still reported the previous head, so the task was blocked with 'Checked head or target changed' although nothing foreign had changed (OR-2, PR #14, 2026-11-10). A restart with the same invocation then merged it.",
@@ -343,14 +265,8 @@
       "title": "Update documentation and archive the OpenSpec change before merge",
       "change": "document-and-archive-before-merge",
       "priority": 9,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-13"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-13"],
       "criteria": [
         "The stage order of a task becomes: implementation review accepted, documentation, documentation review, project checks, archive, receipt, publish, pull request, merge. Every new stage is saved in the run state and resumes after a restart without repeating a completed step; in particular the archive never runs twice.",
         "Documentation stage: a worker session with the selected harness updates every documentation file inside the task scopes (README files, Markdown files and directories such as docs) so that it matches the implemented behaviour and the task criteria. It may write only documentation files inside the task scopes. Documentation outside the scopes that needs changes is reported as findings and listed in the pull request body under 'Documentation outside scope'.",
@@ -370,12 +286,8 @@
       "title": "Pixel mascot redesign approved by the owner",
       "change": "redesign-mascot-pixel-sprite",
       "priority": 15,
-      "scopes": [
-        "mascot"
-      ],
-      "dependencies": [
-        "OR-10"
-      ],
+      "scopes": ["mascot"],
+      "dependencies": ["OR-10"],
       "criteria": [
         "Replace the OR-10 mascot art in mascot/mascot.ts with the pixel sprite the owner approved on 2026-11-11, derived from the owner's reference image: antennae, a wide body with two eye slots and X-shaped legs. The exported function, its options and the eight moods do not change.",
         "The sprite is 11 by 8 pixels. Rows 0 to 5, top to bottom, are '...B...B...', '....B.B....', '..BBBBBBB..', '.BBBBBBBBB.', 'BB00BBB11BB', 'BB00BBB11BB'. Rows 6 and 7 are the legs in one of two poses: pose 0 '..B.BBB.B..' and '.B.B...B.B.'; pose 1 '..B.BBB.B..' and 'B.B.....B.B'. '.' is empty, B is body, 0 is the left eye and 1 the right eye.",
@@ -394,14 +306,8 @@
       "title": "Many runners per branch, each in its own worktree",
       "change": "many-runners-per-branch",
       "priority": 10,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-14"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-14"],
       "criteria": [
         "The run target is the branch checked out where the runner starts. When the invocation omits project.target and authority.target, both resolve to that branch; when either is given and differs from it, the run is refused with exit code 4 and diagnostics reason target-differs-from-current-branch. A detached HEAD is refused with reason detached-head, and a branch missing on origin with reason target-missing-on-origin. The resolved target is part of the frozen invocation identity and is recorded in every receipt.",
         "Every task is still worked in its own worktree outside the checkout and reaches the target only through a pull request into that branch, merged by the runner. The runner never changes the working tree, index or local branch of the checkout it was started from.",
@@ -420,14 +326,8 @@
       "title": "Log every logical step before it starts",
       "change": "log-runner-steps",
       "priority": 12,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-16"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-16"],
       "criteria": [
         "Before the runner starts each logical step it writes one clear, short line to stderr, so a person watching the console always sees what the runner is about to do. The line is written before the step has any effect.",
         "Logical steps include at least: start of the run with invocation, harness, model and effort; each preflight (harness version, OpenSpec, test framework); claiming a task; preparing its worktree; each setup command; the planning session; the planning check; the implementation session; each product check; commit and push; creating or updating the pull request; waiting for mergeability and checks; integrating an advanced target; merging; recording the receipt and acceptance; worktree and branch cleanup; and the end of the run with its outcome.",
@@ -445,14 +345,8 @@
       "title": "Refuse incomplete task sets and explain every unfinished result",
       "change": "explain-unfinished-results",
       "priority": 13,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-17"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-17"],
       "criteria": [
         "Before claiming anything, the runner checks that every dependency of every task it will work (leaves, or all authority tasks) is either in that set or already accepted. Otherwise the run is refused with exit code 4 and diagnostics reason dependencies-outside-invocation, listing each task and its missing dependencies. The runner never again exits 3 because a dependency outside the invocation can never be worked.",
         "An incomplete result (exit code 3) always names, for every remaining task, why it was not finished: blocked with its reason and stage, waiting for a named dependency, waiting for a named foreign claim with overlapping scopes, or stopped by maxAccepted. blockers is never empty while remaining is not.",
@@ -467,14 +361,8 @@
       "title": "Dispose of an invocation with one command",
       "change": "dispose-invocation",
       "priority": 14,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-18"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-18"],
       "criteria": [
         "outcome-runner dispose <invocation file> ends an invocation the owner no longer wants: it releases the invocation's ownership, removes its claims of unaccepted tasks from the claims ledger with one commit naming the invocation, and marks its state released. Accepted tasks, receipts and merged pull requests are not touched.",
         "Dispose is refused with exit code 4 and a clear reason while a process of that invocation is running, and when the file does not match a known invocation state. Running it twice is safe and reports that nothing was left to release.",
@@ -491,14 +379,8 @@
       "title": "Recover when the target advances into a task scope",
       "change": "recover-target-scope-change",
       "priority": 15,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-19"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-19"],
       "criteria": [
         "When the target branch has changed files inside a task's scopes since the task's base, the runner no longer blocks the task with Target changed outcome scope. It merges the new target into the task branch in the task worktree and records the new base in durable state.",
         "A merge without conflicts is followed again by the product checks, the implementation review and the documentation review before the pull request is published or updated. A previous acceptance of those steps is never reused for the new base.",
@@ -514,14 +396,8 @@
       "title": "Keep invocation work across runner upgrades and added tasks",
       "change": "evolve-invocation",
       "priority": 16,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-20"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-20"],
       "criteria": [
         "The frozen invocation identity covers what the owner authorised (authority, target, tasks and their hashes, harness, model, effort, coverage, checks), not defaults or settings introduced by a newer runner. Upgrading the runner never by itself makes an unfinished invocation unrecoverable.",
         "When a newer runner requires a setting the invocation lacks, the run is refused with exit code 4 and a reason naming the missing setting and an example. Adding exactly that setting to the invocation file keeps the durable state and resumes the unfinished work; the change is recorded in state and in later receipts.",
@@ -536,14 +412,8 @@
       "title": "Durable review round budgets",
       "change": "durable-review-budgets",
       "priority": 17,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-21"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-21"],
       "criteria": [
         "Planning, implementation and documentation review rounds are counted per task in durable state, so a restart continues the same count instead of granting new rounds silently.",
         "A failing planning check or product check gives the worker its own bounded number of fix attempts and does not use up review rounds; the blocked reason says whether reviews or checks ran out and how many rounds of each were used.",
@@ -558,14 +428,8 @@
       "title": "No temporary diagnostic files in published work",
       "change": "no-diagnostic-leftovers",
       "priority": 18,
-      "scopes": [
-        "src",
-        "test",
-        "README.md"
-      ],
-      "dependencies": [
-        "OR-22"
-      ],
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-22"],
       "criteria": [
         "The worker prompt tells the worker to delete every scratch or diagnostic file it created before finishing, using delete_file.",
         "The implementation review is asked to reject files that only served diagnosis, such as temporary debug tests, and to name them in its findings.",
@@ -579,15 +443,8 @@
       "title": "Clear CLI usage, version and install guidance",
       "change": "cli-usage-and-install",
       "priority": 19,
-      "scopes": [
-        "src",
-        "test",
-        "README.md",
-        "package.json"
-      ],
-      "dependencies": [
-        "OR-23"
-      ],
+      "scopes": ["src", "test", "README.md", "package.json"],
+      "dependencies": ["OR-23"],
       "criteria": [
         "outcome-runner --version prints the installed version and --help prints the commands and their arguments, both with exit code 0.",
         "outcome-runner hash accepts a queue file and optional task ids and prints only those hashes. A missing file or an unknown task id is reported in one line on stderr naming the argument, with exit code 4, and never as a raw stack trace.",
@@ -602,11 +459,7 @@
       "title": "Release workflow survives merges close together",
       "change": "release-concurrent-merges",
       "priority": 20,
-      "scopes": [
-        ".github",
-        "scripts",
-        "docs"
-      ],
+      "scopes": [".github", "scripts", "docs"],
       "dependencies": [],
       "criteria": [
         "Release runs triggered by pushes to main never run at the same time; a queued run starts after the previous one finishes.",
@@ -621,10 +474,7 @@
       "title": "Secret scanning without false positives on test fixtures",
       "change": "secret-scan-config",
       "priority": 21,
-      "scopes": [
-        ".gitguardian.yaml",
-        "docs"
-      ],
+      "scopes": [".gitguardian.yaml", "docs"],
       "dependencies": [],
       "criteria": [
         "A .gitguardian.yaml in the repository root keeps scanning all product code and ignores only the known false positive for the path string /etc/passwd used by test fixtures, by match rather than by excluding the test directory.",
