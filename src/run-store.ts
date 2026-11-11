@@ -149,7 +149,8 @@ export class RunStore {
     if (state?.version !== 2 || !state.operations || typeof state.operations !== 'object' ||
         Array.isArray(state.operations) || !state.accepted || typeof state.accepted !== 'object' ||
         Array.isArray(state.accepted) || !Number.isSafeInteger(state.sequence) || typeof state.cancelled !== 'boolean' ||
-        !state.identity || typeof state.identity !== 'object' || !Array.isArray(state.frozen)) {
+        !state.identity || typeof state.identity !== 'object' || !Array.isArray(state.identity.leaves) ||
+        !Array.isArray(state.frozen) || state.changes !== undefined && !Array.isArray(state.changes)) {
       throw new Error(INCOMPATIBLE);
     }
     const legacy = state.identitySchema === undefined;
@@ -180,11 +181,14 @@ export class RunStore {
 
   /**
    * Records the required settings present in the invocation (dot path to value hash). A new state records them
-   * without a change; on resume, every path not recorded before appends a `setting-added` change.
+   * without a change; on resume, every path not recorded before appends a `setting-added` change. Values are never
+   * stored.
    */
   recordSettings(present: Record<string, string>): RunState {
     const known = this.state.settings ?? {};
-    if (this.created) return hash(known) === hash(present) && this.state.settings ? this.state : this.update({ settings: present });
+    if (this.created) {
+      return this.state.settings && hash(known) === hash(present) ? this.state : this.update({ settings: present });
+    }
     const added = Object.keys(present).filter(path => !Object.hasOwn(known, path)).sort();
     if (!added.length) return this.state;
     const at = new Date(this.now()).toISOString();
