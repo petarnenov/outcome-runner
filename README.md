@@ -881,7 +881,7 @@ Dispose prints one JSON line on stdout and exits with code 0:
 | Exit code | Meaning |
 |---|---|
 | 0 | Disposed, or nothing was left to release |
-| 4 | Refused or failed; the `reason` is `unknown-invocation`, `invocation-running` or `startup-or-run-failed` (for example an invalid argument), with a private `diagnostics` file |
+| 4 | Refused or failed; the `reason` is `unknown-invocation`, `invocation-running`, a [target branch](#target-branch) refusal (`detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`) or `startup-or-run-failed` (for example an invalid argument or an unreadable invocation file), with a private `diagnostics` file |
 
 Running dispose twice is safe: the second run reports `nothing-to-release`,
 leaves `state.json` and the claims branch unchanged, and lists the kept work
