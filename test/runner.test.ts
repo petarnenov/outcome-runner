@@ -150,6 +150,7 @@ function scripted(options: ScriptedOptions): HarnessAdapter {
     } else {
       result.outcome = 'accepted';
       if (prompt.includes('Review actual implementation')) {
+        result.completion = { summary: 'The counter now increments finite numbers. Invalid inputs are rejected.', grade: 'E' };
         const file = await options.handleTool('backlog_tool', { operation: 'read_file', input: { path: `src/${id}/result.mjs` } });
         if (!file.content.includes('Number.isFinite')) {
           result.outcome = 'changes-required'; result.findings = ['Reject NaN and infinities as required.'];
@@ -249,7 +250,7 @@ test('protected result stays incomplete while independent work proceeds without 
     return merge(pr, head);
   };
   const result = await runQueue(f.config, { host: f.host, createAdapter: scripted });
-  assert.equal(result.status, 'incomplete'); assert.deepEqual(result.accepted, ['D']);
+  assert.equal(result.status, 'incomplete'); assert.deepEqual(result.accepted, ['D']); assert.deepEqual(Object.keys(result.completions), ['D']);
   assert.deepEqual(result.remaining, ['A', 'B', 'C']);
   assert.ok(!JSON.stringify(result).includes('Private text'));
   assert.ok(!JSON.stringify(result).includes('Please approve'));
@@ -354,10 +355,10 @@ test('previously accepted dependency is usable outside selected tasks and counts
   assert.equal(first.status, 'exhausted');
   const second = await runQueue({ ...f.config, leaves: ['B'], maxAccepted: 1,
     invocation: 'second', stateDirectory: join(f.base, 'second') }, { host: f.host, createAdapter: scripted });
-  assert.equal(second.status, 'limit-reached', JSON.stringify(second)); assert.deepEqual(second.accepted, ['B']);
+  assert.equal(second.status, 'limit-reached', JSON.stringify(second)); assert.deepEqual(second.accepted, ['B']); assert.deepEqual(Object.keys(second.completions), ['B']);
   const previousOnly = await runQueue({ ...f.config, leaves: ['A'], maxAccepted: 1,
     invocation: 'third', stateDirectory: join(f.base, 'third') }, { host: f.host, createAdapter: scripted });
-  assert.equal(previousOnly.status, 'incomplete'); assert.deepEqual(previousOnly.accepted, []);
+  assert.equal(previousOnly.status, 'incomplete'); assert.deepEqual(previousOnly.accepted, []); assert.deepEqual(previousOnly.completions, {});
   assert.equal(f.records.length, 2);
 });
 
@@ -755,7 +756,9 @@ test('a claim lost after push is resumed by the same durable claimant', async t 
   const store = new RunStore(config.stateDirectory, { ...config, coverage: 85, root: realpathSync(f.root), leaves: ['A'] }, { repositoryRoot: f.root });
   store.update({ claimant: 'durable' }); store.close();
   const ledger = new ClaimLedger(f.root, 'proposal');
-  ledger.acquire(ledger.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'durable', host: 'h' }, 'chore: claim A');
+  ledger.acquire(ledger.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'durable', host: 'h',
+    taskHash: hash(f.queue.tasks[0]), claimedAt: '2026-01-01T00:00:00Z',
+    branch: `outcome/A-${hash({ invocation: config.invocation, id: 'A', authority: config.authority.reference }).slice(0, 12)}` }, 'chore: claim A');
   assert.equal((await runQueue(config, { host: f.host, createAdapter: scripted })).status, 'exhausted');
   assert.equal(ledgerCommits(f), '1');
 });
@@ -978,3 +981,189 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     }
   });
 }
+
+for (const boundary of ['claim', 'merge']) test(`completion timing includes downtime after ${boundary} and stays frozen`, async t => {
+  const f = fixture(t); const config = { ...f.config, leaves: ['A'] };
+  const start = Date.parse('2026-01-01T00:00:00Z');
+  const statePath = join(f.config.stateDirectory, 'state.json');
+  const state = () => JSON.parse(readFileSync(statePath, 'utf8'));
+  await assert.rejects(runQueue(config, { host: f.host, createAdapter: scripted, now: () => start,
+    afterEffect: async kind => {
+      if (kind === boundary) throw Object.assign(new Error('Interrupted'), { interrupted: true });
+    } }), /Interrupted/u);
+  assert.equal(state().current.claimedAt, new Date(start).toISOString());
+  // Model unfinished work written by an older runner. Restore its time from the owned ledger.
+  const legacy = state(); delete legacy.current.claimedAt;
+  writeFileSync(statePath, JSON.stringify(legacy));
+  const events: RunEvent[] = [];
+  const result = await runQueue(config, { host: f.host, createAdapter: scripted, now: () => start + 4325999,
+    report: event => {
+      events.push(event);
+      if (event.status === 'accepted') {
+        assert.equal(state().current, null);
+        assert.equal(state().completed.A.acceptedAt, new Date(start + 4325999).toISOString());
+        assert.equal(state().completed.A.completion.summary, event.summary);
+      }
+    } });
+  const expected = { summary: 'The counter now increments finite numbers. Invalid inputs are rejected. ' +
+    'The task took 1h 12m 5s from claim to acceptance and has complexity grade E.', durationSeconds: 4325, grade: 'E' };
+  assert.deepEqual(result.accepted, ['A']);
+  assert.deepEqual(result.completions, { A: expected });
+  assert.deepEqual(events, [{ status: 'accepted', id: 'A', ...expected }]);
+  assert.equal(state().completed.A.claimedAt, new Date(start).toISOString());
+  const repeatEvents: RunEvent[] = [];
+  const repeat = await runQueue(config, { host: f.host, createAdapter: scripted,
+    now: () => start + 999999999, report: event => repeatEvents.push(event) });
+  assert.deepEqual(repeat, result); assert.deepEqual(repeatEvents, []);
+});
+
+for (const invalid of ['missing', 'grade']) test(`accepted implementation review refuses ${invalid} completion before receipt`, async t => {
+  const f = fixture(t);
+  const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host,
+    createAdapter: options => scripted({ ...options, handleTool: async (name, input) => {
+      if (name === 'outcome_report' && input.completion) {
+        input = { ...input };
+        if (invalid === 'missing') delete input.completion;
+        else input.completion = { summary: 'Changed behavior. Added tests.', grade: 'F' } as unknown as ToolInput['completion'];
+      }
+      return options.handleTool(name, input, { threadId: 'test' });
+    } }) });
+  assert.equal(result.status, 'incomplete');
+  assert.deepEqual(result.accepted, []); assert.deepEqual(result.completions, {});
+  assert.equal(f.records.length, 0);
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+  assert.equal(state.blocked.A.work.stage, 'work');
+  assert.match(state.blocked.A.reason, /Invalid private report/u);
+  assert.equal(existsSync(join(state.blocked.A.work.path, f.project.receipts, 'A.json')), false);
+});
+
+test('report schema, optional reports and review prompts enforce the completion contract', async t => {
+  const f = fixture(t); let reviewed = false;
+  const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host,
+    createAdapter: options => {
+      const schema = options.tools.find(tool => tool.name === 'outcome_report')!.inputSchema as {
+        required: string[]; properties: { completion: { required: string[]; properties: { grade: { enum: string[] } } } };
+      };
+      assert.ok(!schema.required.includes('completion'));
+      assert.deepEqual(schema.properties.completion.required, ['summary', 'grade']);
+      assert.deepEqual(schema.properties.completion.properties.grade.enum, ['A', 'B', 'C', 'D', 'E']);
+      const inner = scripted(options as ScriptedOptions);
+      return { ...inner, async startAction(prompt) {
+        if (prompt.includes('Review actual implementation')) {
+          assert.match(prompt, /two or three English sentences/u);
+          assert.match(prompt, /whole-task complexity: A \(most complex\), B, C, D, E \(easiest\)/u);
+          assert.match(prompt, /not correctness, quality or execution speed/u);
+          const call = (completion: unknown) => options.handleTool('outcome_report',
+            { outcome: 'accepted', summary: 'Private diagnostic summary', findings: [], completion } as ToolInput,
+            { threadId: 'test' });
+          for (const completion of [null, [], 3, {}, { summary: 'Text' }, { grade: 'A' },
+            { summary: 3, grade: 'A' }, { summary: '  ', grade: 'A' }, { summary: 'Text', grade: 'F' }]) {
+            await assert.rejects(call(completion), /Invalid private report/u);
+          }
+          for (const grade of ['A', 'B', 'C', 'D', 'E']) {
+            await call({ summary: 'Valid change summary. Tests cover it.', grade });
+          }
+          // Nonaccepted implementation reviews can omit completion.
+          await options.handleTool('outcome_report', { outcome: 'changes-required', summary: 'Private diagnostic',
+            findings: ['Repair this.'] }, { threadId: 'test' });
+          reviewed = true;
+        } else if (prompt.includes('Review planning artifacts')) {
+          // Supplied malformed completion is invalid even when optional.
+          await assert.rejects(options.handleTool('outcome_report', { outcome: 'accepted', summary: 'Planning',
+            findings: [], completion: null } as unknown as ToolInput, { threadId: 'test' }), /Invalid private report/u);
+        }
+        return inner.startAction(prompt);
+      } };
+    } });
+  assert.equal(result.status, 'exhausted'); assert.ok(reviewed);
+  assert.match(result.completions.A.summary, /^The counter now/u);
+  assert.ok(!JSON.stringify(result).includes('Private diagnostic'));
+});
+
+test('claim-to-state gap reuses the matching ledger claim time', async t => {
+  const f = fixture(t); const config = { ...f.config, leaves: ['A'] };
+  const start = Date.parse('2026-01-01T00:00:00Z');
+  await assert.rejects(runQueue(config, { host: f.host, createAdapter: scripted, now: () => start,
+    afterEffect: async kind => {
+      if (kind === 'claim') throw Object.assign(new Error('Interrupted'), { interrupted: true });
+    } }), /Interrupted/u);
+  const path = join(f.config.stateDirectory, 'state.json');
+  const state = JSON.parse(readFileSync(path, 'utf8'));
+  state.current = null;
+  writeFileSync(path, JSON.stringify(state));
+  const result = await runQueue(config, { host: f.host, createAdapter: scripted, now: () => start + 10000 });
+  assert.equal(result.status, 'exhausted'); assert.equal(result.completions.A.durationSeconds, 10);
+});
+
+test('unrecoverable old claim time stays private and cannot invent completion', async t => {
+  const f = fixture(t); const config = { ...f.config, leaves: ['A'] };
+  await assert.rejects(runQueue(config, { host: f.host, createAdapter: scripted,
+    afterEffect: async kind => {
+      if (kind === 'claim') throw Object.assign(new Error('Interrupted'), { interrupted: true });
+    } }), /Interrupted/u);
+  const path = join(f.config.stateDirectory, 'state.json');
+  const state = JSON.parse(readFileSync(path, 'utf8')); delete state.current.claimedAt;
+  writeFileSync(path, JSON.stringify(state));
+  const pull = ClaimLedger.prototype.pull;
+  try {
+    ClaimLedger.prototype.pull = function () {
+      const snapshot = pull.call(this);
+      delete snapshot.claims.get('A')!.claimedAt;
+      return snapshot;
+    };
+    const result = await runQueue(config, { host: f.host, createAdapter: scripted });
+    assert.equal(result.status, 'incomplete'); assert.deepEqual(result.completions, {});
+    assert.ok(!JSON.stringify(result).includes('Cannot recover'));
+    const blocked = JSON.parse(readFileSync(path, 'utf8')).blocked.A;
+    assert.match(blocked.reason, /Cannot recover original claim timestamp/u);
+  } finally { ClaimLedger.prototype.pull = pull; }
+});
+
+test('multiple task completions survive cancellation and later exhausted results', async t => {
+  const f = fixture(t); const events: RunEvent[] = []; let milliseconds = 0;
+  const first = await runQueue(f.config, { host: f.host, createAdapter: scripted,
+    now: () => Date.parse('2026-01-01') + (milliseconds += 1000), report: event => {
+      events.push(event);
+      if (event.status === 'accepted' && event.id === 'B') process.emit('SIGINT');
+    } });
+  assert.equal(first.status, 'cancelled'); assert.deepEqual(first.accepted, ['A', 'B']);
+  assert.deepEqual(Object.keys(first.completions), ['A', 'B']);
+  for (const event of events.filter(event => event.status === 'accepted')) {
+    const { status, id, ...completion } = event;
+    assert.deepEqual(first.completions[id], completion);
+  }
+  const resumed = await runQueue(f.config, { host: f.host, createAdapter: scripted });
+  assert.equal(resumed.status, 'exhausted');
+  assert.deepEqual(Object.keys(resumed.completions), ['A', 'B', 'C', 'D']);
+  assert.deepEqual(resumed.completions.A, first.completions.A);
+  assert.deepEqual(resumed.completions.B, first.completions.B);
+});
+
+test('public completion uses the final review after repair and preserves three sentences', async t => {
+  const f = fixture(t); let implementationReviews = 0;
+  const summary = 'The counter increments finite numbers. Invalid inputs now throw. Tests exercise the behavior.';
+  const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host,
+    createAdapter: options => scripted({ ...options, handleTool: async (name, input) => {
+      if (name === 'outcome_report' && input.outcome === 'accepted') {
+        input = { ...input, summary: 'Private top-level review information' };
+        if (input.completion) {
+          implementationReviews += 1;
+          if (implementationReviews === 1) input = { ...input, outcome: 'changes-required',
+            findings: ['Private repair details'], completion: { summary: 'Obsolete summary. Needs repair.', grade: 'A' } };
+          else input.completion = { summary, grade: 'D' };
+        } else input.completion = { summary: 'Planning only. Do not publish.', grade: 'C' };
+      }
+      return options.handleTool(name, input, { threadId: 'test' });
+    } }) });
+  assert.equal(result.status, 'exhausted'); assert.equal(implementationReviews, 2);
+  assert.match(result.completions.A.summary, new RegExp('^' + summary.replaceAll('.', '\\.')));
+  assert.equal(result.completions.A.summary.split('.').filter(part => part.trim()).length, 4);
+  assert.equal(result.completions.A.grade, 'D');
+  assert.ok(!JSON.stringify(result).includes('Private'));
+  assert.ok(!JSON.stringify(result).includes('Planning only'));
+  const receipt = JSON.parse(git(f.root, 'show', `origin/${f.project.target}:${f.project.receipts}/A.json`));
+  for (const key of ['completion', 'summary', 'durationSeconds', 'grade', 'claimedAt', 'acceptedAt']) {
+    assert.ok(!(key in receipt));
+  }
+  assert.ok(!('completion' in receipt.review));
+});

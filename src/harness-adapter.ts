@@ -1,6 +1,6 @@
 import type { ChildProcessByStdio, SpawnOptionsWithStdioTuple, StdioPipe } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
-import type { Harness } from './model.ts';
+import type { Completion, Harness } from './model.ts';
 
 export interface ToolDefinition {
   type: 'function';
@@ -18,6 +18,7 @@ export interface BrokerInput {
 }
 
 export interface ToolInput {
+  completion?: Completion;
   operation?: string;
   input?: BrokerInput;
   outcome?: string;
