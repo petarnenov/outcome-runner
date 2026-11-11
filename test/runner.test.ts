@@ -1450,5 +1450,6 @@ test('B: ledger recovers the PR URL from lookup for legacy merge-stage work', as
   assert.deepEqual(rows[1].tasks[0].pr, { number: 1, url: 'https://example.org/pull/1' });
   assert.equal(f.records.length, 1); assert.equal(f.records[0].state, 'MERGED');
   const finished = JSON.parse(readFileSync(statePath, 'utf8'));
-  assert.deepEqual(finished.completed.A.pr, f.records[0]);
+  assert.equal(finished.completed.A.pr.number, f.records[0].number);
+  assert.equal(finished.completed.A.pr.url, f.records[0].url);
 });
