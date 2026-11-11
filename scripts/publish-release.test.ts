@@ -113,3 +113,52 @@ for (const stage of ['preinstall', 'typecheck', 'test']) {
     assert.equal(git(f.origin, 'tag', '--list', 'v1.2.4'), '');
   });
 }
+
+test('C T4 covered range is a no-op', t => {
+  const f = fixture(t);
+  assert.equal(publish(f.queued, { validate: valid, push: () => assert.fail('push'), notes: noNotes }), 'no release\n');
+});
+test('C T4 unrelated existing candidate tag stays immutable', t => {
+  const f = fixture(t);
+  git(f.author, 'checkout', '-b', 'unrelated');
+  git(f.author, 'commit', '--allow-empty', '-m', 'docs: unrelated');
+  git(f.author, 'tag', '-a', 'v1.2.4', '-m', 'unrelated');
+  git(f.author, 'push', 'origin', 'refs/tags/v1.2.4');
+  git(f.author, 'checkout', 'main');
+  f.advance('fix: pending');
+  const object = git(f.origin, 'rev-parse', 'v1.2.4');
+  const head = git(f.origin, 'rev-parse', 'main');
+  const pkg = git(f.origin, 'show', 'main:package.json');
+  assert.throws(() => publish(f.queued, { validate: valid, notes: noNotes }), /already exists/);
+  assert.equal(git(f.origin, 'rev-parse', 'v1.2.4'), object);
+  assert.equal(git(f.origin, 'rev-parse', 'main'), head);
+  assert.equal(git(f.origin, 'show', 'main:package.json'), pkg);
+});
+for (const transport of ['normal', 'confirmed', 'indeterminate', 'notes-failure']) {
+  test('C T5 publication outputs: ' + transport, t => {
+    const f = fixture(t); f.advance('fix: final section');
+    let notes = 0;
+    const run = () => publish(f.queued, {
+      validate: valid,
+      push: (cwd, tag) => {
+        assert.equal(notes, 0);
+        atomicPush(cwd, tag);
+        if (transport === 'confirmed' || transport === 'indeterminate') throw new Error('connection lost');
+      },
+      ...(transport === 'indeterminate' ? { inspect: () => { throw new Error('offline'); } } : {}),
+      notes: (cwd, tag, section) => {
+        notes++;
+        assert.equal(tag, 'v1.2.4');
+        assert.equal(git(f.origin, 'rev-parse', tag + '^{}'), git(f.origin, 'rev-parse', 'main'));
+        assert.equal(section, readFileSync(join(cwd, 'CHANGELOG.md'), 'utf8'));
+        assert.ok(section.startsWith('## 1.2.4'));
+        if (transport === 'notes-failure') throw new Error('GitHub offline');
+      },
+    });
+    if (transport === 'indeterminate') assert.throws(run, /Publication uncertain/);
+    else if (transport === 'notes-failure') assert.throws(run, /restore only missing/);
+    else assert.ok(run().startsWith('1.2.4\n'));
+    assert.equal(notes, transport === 'indeterminate' ? 0 : 1);
+    assert.equal(publish(f.queued, { validate: valid, notes: noNotes, push: () => assert.fail('duplicate push') }), 'no release\n');
+  });
+}

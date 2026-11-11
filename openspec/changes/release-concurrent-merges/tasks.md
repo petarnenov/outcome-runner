@@ -4,7 +4,7 @@
 - [x] Inspect release workflow, release scripts/tests, canonical specification, package test gates and release guide.
 - [x] Preserve source acceptance criteria in proposal.md and define delta scenarios.
 - [x] Resolve the local-verification requirement length warning by moving fixture details and required cases into its scenarios.
-- [ ] Bind this specification in a later work session before product writes or frozen checks.
+- [x] Bind this specification in a later work session before product writes or frozen checks.
 
 ## Implementation (after binding)
 - [ ] Preserve shared release concurrency group, cancellation disabled and release-event skip in .github/workflows/release.yml.
@@ -16,9 +16,9 @@
 ## Tests (easiest E to hardest A)
 Each item is one planned test or explicitly parameterized test family. Grades measure fixture/control complexity: E easiest, A most complex. All cases below are required by source criteria or delta scenarios; none may be skipped when coverage is already sufficient. Implement grade by grade starting with E. Add only useful (coverage-only) tests at the appropriate grade if needed until all 85% coverage gates pass; required tests are always written, including grades above the grade where coverage first passes.
 
-- [ ] **E (required) T1 — Workflow definition:** assert main push trigger, one constant release group, cancel-in-progress false, release-head skip, full history/tags, Node 24, pinned OpenSpec prerequisites, validation and orchestrator wiring, and notes gated on publication. Maps criterion 1 and “Queued main push”, “Release head is skipped”, “Validation fails”.
-- [ ] **E (required) T2 — Documentation contract:** verify release guide describes close merges, three total attempts, recomputation, immutable tags, pending-run coalescing, no force push, and missing-notes recovery; review against implemented behavior. Maps criterion 5 and “Maintainer previews and recovers”.
-- [ ] **D (required) T3 — Attempt bounds and failure gates:** controlled orchestration cases assert three-attempt cap, no retry for unchanged-main rejection, and zero release mutation/publication after installation/typecheck/test failure. Maps “Validation fails” and “Retry limit and unrelated failures”.
+- [x] **E (required) T1 — Workflow definition:** assert main push trigger, one constant release group, cancel-in-progress false, release-head skip, full history/tags, Node 24, pinned OpenSpec prerequisites, validation and orchestrator wiring, and notes gated on publication. Maps criterion 1 and “Queued main push”, “Release head is skipped”, “Validation fails”.
+- [x] **E (required) T2 — Documentation contract:** verify release guide describes close merges, three total attempts, recomputation, immutable tags, pending-run coalescing, no force push, and missing-notes recovery; review against implemented behavior. Maps criterion 5 and “Maintainer previews and recovers”.
+- [x] **D (required) T3 — Attempt bounds and failure gates:** controlled orchestration cases assert three-attempt cap, no retry for unchanged-main rejection, and zero release mutation/publication after installation/typecheck/test failure. Maps “Validation fails” and “Retry limit and unrelated failures”.
 - [ ] **C (required) T4 — Existing tag and no-op:** real Git fixtures verify an already covered range performs no push or notes creation, an unrelated existing candidate tag fails before mutation, and its tag object/commit/files remain unchanged. Maps criterion 4 and “Existing tag remains immutable”.
 - [ ] **C (required) T5 — Publication outputs:** real atomic publication plus stubbed GitHub notes verifies commit/tag consistency, exact final section, no premature notes, and a missing-notes error never creates another release. Include confirmed-published and indeterminate transport outcomes. Maps “Successful publication”, “Publication result is uncertain”.
 - [ ] **B (required) T6 — Main advances and changes bump:** bare origin and two clones force main advancement with a feature after local patch preparation; assert rejected refs absent, fresh validation, recomputation to minor release, both entries once, and only final notes published. Maps criteria 2–4 and “Main advances during validation”.

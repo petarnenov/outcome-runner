@@ -27,7 +27,9 @@ export function publish(cwd: string, hooks: Hooks = {}): string {
   const git = (...args: string[]) => command(work, 'git', args);
   try {
     const remote = command(cwd, 'git', ['remote', 'get-url', 'origin']);
-    command(cwd, 'git', ['clone', '--no-checkout', '--no-local', remote, work]);
+    const credentials = process.env.GH_TOKEN
+      ? ['-c', 'credential.https://github.com.helper=!gh auth git-credential'] : [];
+    command(cwd, 'git', [...credentials, 'clone', '--no-checkout', '--no-local', remote, work]);
     for (const key of ['user.name', 'user.email']) {
       git('config', key, command(cwd, 'git', ['config', key]));
     }
