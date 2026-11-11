@@ -991,29 +991,39 @@ For example:
   effort to 8 (ending with `...` when cut), so all four always appear; a value
   not chosen yet is shown as `auto`.
 - Lines contain only fixed text and safe values: task ids, the invocation,
-  harness, model and effort, a check or setup program name with its index, the
-  Pull Request number, attempt numbers and the run outcome. They never contain
-  secrets, worker output, file contents, check output, error messages, block
-  reasons or other private diagnostics.
+  harness, model and effort, the target branch name (in the `integrate` line),
+  a check or setup program name with its index, the Pull Request number,
+  attempt numbers and the run outcome. They never contain secrets, worker
+  output, file contents, check output, error messages, block reasons or other
+  private diagnostics.
 
 The run steps are `start`, one `preflight` line for each preflight (OpenSpec,
 harness version, test framework), `cleanup` for each leftover worktree swept on
 start, and `end` with the run outcome (`unavailable` when the run fails). The
-task steps are `claim`, `worktree`, `setup` (each setup command),
-`investigation`, `planning`, `planning check`, `planning review`,
-`implementation`, `commit`, `check` (each product check), `review`,
-`documentation`, `documentation review`, `final checks`, `archive`, `receipt`,
-`integrate` (only when the target advanced), `push`, `pull request`, `wait`,
-`merge`, `acceptance`, `cleanup`, and `blocked` (`stopped at <step>`, naming the
-last step and never the reason).
+run start and run end lines cover the run from the OpenSpec preflight onward.
+Refusals before the OpenSpec preflight, such as an invalid flag, an unreadable
+invocation file or a [target branch](#target-branch) refusal, exit with code 4
+without writing any step line. The task steps are `claim`, `worktree`, `setup`
+(each setup command), `investigation`, `planning`, `planning check`,
+`planning review`, `implementation`, `commit`, `check` (each product check),
+`review`, `documentation`, `documentation review`, `final checks`, `archive`,
+`receipt`, `integrate` (only when the target advanced), `push`,
+`pull request`, `wait`, `merge`, `acceptance`, `cleanup`, and `blocked`
+(`stopped at <step>`, naming the last step and never the reason).
 
 - **Waits** log once when the wait starts, never on every poll: one `wait` line
   for mergeability and checks, one more when the pull request head is stale,
   and one `git lock: waiting for the Git lock` line when another runner holds
   the per-clone Git lock (nothing is written when the lock is free).
-- **Retries** log again with ` (attempt N)`: planning and implementation
-  attempts, documentation rounds, and the integrate, check, push, pull request,
-  wait and merge steps repeated after the target advanced during the merge.
+- **Retries** log again with ` (attempt N)` from the second attempt or round
+  on. Every line of a retried attempt or round carries the suffix: in a
+  planning attempt the `planning`, `planning check` and `planning review`
+  lines; in an implementation attempt the `implementation`, `commit`, `check`
+  and `review` lines; in a documentation round the `documentation`, `commit`
+  (committing the documentation) and `documentation review` lines; and in a
+  publish pass repeated after the target advanced during the merge the
+  `integrate`, `setup`, `check`, `push`, `pull request`, `wait` and `merge`
+  lines.
 - **Resume**: steps already completed in the run state are not logged again.
   The first step line of work continued from the run state starts its message
   with `resuming`; later lines do not.
