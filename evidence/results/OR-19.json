@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "id": "OR-19",
+  "taskHash": "6499ee6cba1f1cb0534c5f44dae38247061c4d0bb18f980e590c51cfb8f36827",
+  "authority": "owner-2026-11-11-outcome-runner-or-18-24",
+  "target": "main",
+  "specification": {
+    "openspec/changes/archive/2026-11-12-dispose-invocation/design.md": "952e9ce5320db84fc6cb9d42eeec005127d36808c60302ec466dab1e7b112791",
+    "openspec/changes/archive/2026-11-12-dispose-invocation/proposal.md": "9c10499496639ed2cea753ea08d478a185af402e4d0713f2db293fd893d33bd7",
+    "openspec/changes/archive/2026-11-12-dispose-invocation/specs/invocation-disposal/spec.md": "79ed16a481707b965ec3b87ed761a887a2091632967161f4b829505e443f9101"
+  },
+  "review": {
+    "reviewer": "claude:0475f11e-dbf2-4307-a9c4-cf70ff5c745a",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "93bba0a36d33399f9de662a373cfb00377a6b252a116e50c9d0ee9bda5d7f13d"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-dispose-invocation/design.md",
+      "hash": "952e9ce5320db84fc6cb9d42eeec005127d36808c60302ec466dab1e7b112791"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-dispose-invocation/proposal.md",
+      "hash": "9c10499496639ed2cea753ea08d478a185af402e4d0713f2db293fd893d33bd7"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-dispose-invocation/specs/invocation-disposal/spec.md",
+      "hash": "79ed16a481707b965ec3b87ed761a887a2091632967161f4b829505e443f9101"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-dispose-invocation/tasks.md",
+      "hash": "ba47caf30530bf4ebde43caa29757b92e6dcf5349a298fd52d25fd362116ef3f"
+    },
+    {
+      "path": "openspec/specs/invocation-disposal/spec.md",
+      "hash": "9132148a8457d4c7490dcbf167cd838e7e0a674e8d82174034c86abfea2aa0be"
+    },
+    {
+      "path": "src/claims.ts",
+      "hash": "2ef4715d1ed8b0c267e2c4ba5583ffc314fd7b784cdda1c4e6c2f26f3e06bbac"
+    },
+    {
+      "path": "src/cli.ts",
+      "hash": "a12568cf9c25e284ac970987bdf110556a198517176ae6cb9d114d8982ebaadb"
+    },
+    {
+      "path": "src/dispose.ts",
+      "hash": "d8ced10cea97ff78e1cbc8b76fb5a56d61c4f634ad1ed9e9391be37200b50055"
+    },
+    {
+      "path": "src/run-store.ts",
+      "hash": "7b2a981d9565fa52ab4887a221122cda268851c2e1adf36cfdbfb5c73598b712"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "f981d89d5a78f8a58f413c35762ae3d5d58ef049f37d77c8d47c920c74a5bcd7"
+    },
+    {
+      "path": "test/dispose.test.ts",
+      "hash": "9a6c730bdd56220eb48b320c7e8199cc8d734ea0e0aec2112a312968f62e682e"
+    }
+  ],
+  "head": "78c1f370b0febf6bac28815cf9118649ab7cf337",
+  "base": "973d9f995d86183e92a23088b09ffc7a4d346e49"
+}

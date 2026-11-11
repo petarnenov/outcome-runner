@@ -199,12 +199,15 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
 | 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked, a foreign claim or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)) |
-| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `dependencies-outside-invocation`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
+| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
 
 After an interruption, run the **same command with the same file** from the same
 branch to resume. Do not delete the state under `~/.local/state/outcome-runner/`.
 The runner also creates a `work-queue-claims-<target>` branch. It is never
-merged; keep it while work is unfinished.
+merged; keep it while work is unfinished. When you no longer want an invocation,
+end it with `outcome-runner dispose <invocation file>` instead of resuming it;
+see [Disposing of an invocation](#disposing-of-an-invocation). Never edit the
+claims branch or the ownership files by hand.
 
 ## Target branch
 
@@ -565,9 +568,10 @@ clone and invocation under `$XDG_STATE_HOME/outcome-runner` (default
 `stateDirectory`, so one file serves every machine and every repository. Tasks
 claimed by another run, or overlapping its scopes, are skipped until accepted. A
 run with only claimed work left returns incomplete; restart it later with the
-same configuration. Claims are never taken over automatically. After confirming
-that a runner stopped and will not resume, delete its claim file on the claims
-branch in a normal commit and push.
+same configuration. Claims are never taken over automatically. When the owner of
+an invocation no longer wants it, release its claims with
+`outcome-runner dispose` on the machine and clone that ran it; see
+[Disposing of an invocation](#disposing-of-an-invocation).
 
 ### Worktrees and cleanup
 
@@ -635,6 +639,7 @@ security decisions.
 cd /path/to/repository
 outcome-runner hash path/to/queue.json
 outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>] [--no-mascot]
+outcome-runner dispose /path/to/invocation.json [--remove-work]
 ```
 
 Every start first resolves the [target branch](#target-branch), then runs the
@@ -717,15 +722,18 @@ on restart without changing saved state or ownership. A
 restart with changed settings or legacy state without this identity is refused;
 finish that invocation using its original runner and configuration. Do not erase
 state or ownership to migrate active work. Start a new invocation only once the
-previous work is reconciled and accepted or explicitly disposed under authority.
+previous work is reconciled and accepted or explicitly disposed under authority
+with `outcome-runner dispose` (see
+[Disposing of an invocation](#disposing-of-an-invocation)).
 Claude uses only a loopback private MCP broker, with native tools, ambient MCP,
 custom plugins, skills and hooks disabled. CLI output and bounded failure details
 remain private. Bundled infrastructure plugin metadata is allowlisted and does
 not grant tools. Global harness settings are never rewritten.
 
 Restart with the same configuration and state directory. Do not delete ownership
-or state files to evade unfinished work. Private worker output and reports stay
-in state. A worker session ending does not stop the controller.
+or state files to evade unfinished work; dispose of the invocation instead.
+Private worker output and reports stay in state. A worker session ending does not
+stop the controller.
 
 `maxAccepted` counts only tasks of the invocation that were newly accepted during
 the durable invocation: tasks whose acceptance this invocation recorded, and
@@ -789,7 +797,7 @@ invocation status the runner reached, written before the process exits:
 |---|---|
 | `starting` | The state was just created; the run has not reached its first task selection |
 | `running` | Written after the leftover sweep, before the first task is selected; a run that ends with an error after that keeps it |
-| `released` | The ownership was released: every task accepted without a blocked task, or the limit reached with no blocked task and no in-progress work, even when unstarted `max-accepted` tasks remain |
+| `released` | The ownership was released: every task accepted without a blocked task, or the limit reached with no blocked task and no in-progress work, even when unstarted `max-accepted` tasks remain, or the invocation was [disposed](#disposing-of-an-invocation) (then `state.json` also has a `disposed` record) |
 | `blocked` | A `limit-reached`, `incomplete` or `cancelled` result keeps a blocked task of the invocation, including a merged task whose acceptance recording failed |
 | `completed` | A `limit-reached` result keeps in-progress work and has no blocked task |
 | `incomplete` | Any other `incomplete` or `cancelled` result, for example waiting for a foreign claim |
@@ -800,6 +808,94 @@ run. Unstarted tasks explained as `max-accepted` are not in-progress work. A
 `limit-reached` run therefore exits 0 with `status` `released` when nothing else
 is held, `completed` when it keeps in-progress work, and `blocked` when it keeps
 a blocked task, so `state.json` never hides a block.
+
+## Disposing of an invocation
+
+Dispose of an invocation when its owner no longer wants it: a task stays
+blocked, an experiment is abandoned or the plan changed. Until then its claims
+make other invocations wait (`waiting-for-claim`), its ownership stays held and
+its `state.json` keeps saying `blocked` or `incomplete`. One command ends it:
+
+```sh
+cd /path/to/project
+git switch main
+outcome-runner dispose ~/invocations/my-project-1.json
+outcome-runner dispose ~/invocations/my-project-1.json --remove-work
+```
+
+Run it like the run itself: on the machine and in the clone that ran the
+invocation, from inside the repository, on the target branch, with the same
+invocation file. It resolves the same repository root, target and state
+directory as a run. `--remove-work` is its only flag and may appear once; any
+other argument is refused with exit code 4. Dispose plays no mascot and appends
+no [run statistics](#run-statistics-ledger) record.
+
+Dispose first checks that the state of that invocation exists: a `state.json` of
+the same invocation name, repository and target. Otherwise it is refused with
+exit code 4 and reason `unknown-invocation`, before any file, directory or lock
+is created. While a process of the invocation is running it is refused with exit
+code 4 and reason `invocation-running` and changes nothing; stop the run first.
+Then it:
+
+1. records the unaccepted work of the invocation (its current and blocked
+   tasks) in `state.json` under `disposed` and sets `status` to `released`;
+2. removes the invocation's own claims of unaccepted tasks from
+   `work-queue-claims-<target>` in **one commit** named
+   `chore(<commitScope>): release claims of invocation <name>`, pushed without
+   force (a moved claims branch is pulled again and retried);
+3. with `--remove-work`, removes the worktrees, local branches and remote
+   branches of the unaccepted tasks;
+4. marks the invocation's ownership file released.
+
+**Untouched.** Accepted tasks, their claims, receipts and `completed` entries and
+their merged Pull Requests are never changed. Claims of other invocations, the
+ownership files and states of other invocations, and anything of another
+repository are never touched.
+
+**Work.** By default the worktrees (`<primary>-outcomes/<operation>`), local
+branches and remote branches of the unaccepted tasks are **kept** and listed, so
+finished work can still be inspected. With `--remove-work` they are removed; a
+worktree is removed only when it lies below `<primary>-outcomes`. Each step is
+tried on its own, and a step that fails is listed as `failed`.
+
+**Pull Requests.** Open Pull Requests of the unaccepted tasks are listed and
+**never merged**. Removing a remote branch with `--remove-work` may let the forge
+close its open Pull Request. When the host cannot be asked, a Pull Request
+recorded in the state is listed with `state` `unknown`.
+
+Dispose prints one JSON line on stdout and exits with code 0:
+
+```json
+{"status":"disposed","invocation":"my-project-1","releasedClaims":["TASK-1"],"ownership":"released","work":[{"id":"TASK-1","worktree":{"path":"/path/to/project-outcomes/3f2a...","state":"kept"},"localBranch":{"name":"outcome/TASK-1-3f2a9c1b0d4e","state":"kept"},"remoteBranch":{"name":"outcome/TASK-1-3f2a9c1b0d4e","state":"kept"}}],"openPullRequests":[{"id":"TASK-1","number":12,"url":"https://github.com/OWNER/REPOSITORY/pull/12","branch":"outcome/TASK-1-3f2a9c1b0d4e","state":"OPEN"}]}
+```
+
+| Field | Meaning |
+|---|---|
+| `status` | `disposed`, or `nothing-to-release` when no claim was released, the ownership file was not changed and `state.json` was not written |
+| `invocation` | The invocation name |
+| `releasedClaims` | Ids of the claims removed from the claims branch |
+| `ownership` | `released`, `already-released`, or `absent` when the invocation has no ownership file |
+| `work` | Per unaccepted task, sorted by id: `worktree` (`path` and `state`; omitted when the path is unknown), `localBranch` and `remoteBranch` (`name` and `state`); `state` is `kept`, `removed`, `absent` or `failed` |
+| `openPullRequests` | Per open Pull Request, sorted by id: `id`, `number`, `url` (when known), `branch` and `state` (`OPEN`, or `unknown` when the host could not be asked) |
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Disposed, or nothing was left to release |
+| 4 | Refused or failed; the `reason` is `unknown-invocation`, `invocation-running`, a [target branch](#target-branch) refusal (`detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`) or `startup-or-run-failed` (for example an invalid argument or an unreadable invocation file), with a private `diagnostics` file |
+
+Running dispose twice is safe: the second run reports `nothing-to-release`,
+leaves `state.json` and the claims branch unchanged, and lists the kept work
+again (run it with `--remove-work` to remove that work later). A fully accepted
+invocation has nothing to dispose; its `state.json` stays byte for byte
+unchanged.
+
+A disposed invocation is never resumed, so its kept work is never picked up
+without a claim: running the same invocation file again is refused with exit
+code 4 and reason `invocation-disposed` before any ownership, claim or worktree
+is touched. Start further work with a **new invocation name**.
+
+This command replaces every manual edit of ownership files beside the checkout
+or of claim files on the claims branch; do not edit either by hand.
 
 ## Completion summaries
 
@@ -934,8 +1030,8 @@ Each runner execution appends one compact JSON object and newline to
 `$XDG_STATE_HOME/outcome-runner/runs.jsonl`. The default is
 `~/.local/state/outcome-runner/runs.jsonl`; unset, empty or relative
 `XDG_STATE_HOME` uses that default. The hash command never creates a ledger,
-even when hashing fails. A resumed invocation is a new execution with a new
-`runId`.
+even when hashing fails, and neither does the dispose command. A resumed
+invocation is a new execution with a new `runId`.
 
 Missing directories are created with mode 0700 and the ledger is created or
 secured with mode 0600. Prior bytes are preserved. Each complete record uses
@@ -1039,8 +1135,9 @@ Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
 `failureReason`: `openspec-missing`, `openspec-not-initialized`,
 `openspec-layout-created`, `harness-unavailable`, `test-framework-missing`,
 `test-framework-analysis-failed`, `test-framework-prepared` or
-`startup-or-run-failed` (target refusals, `invocation-running` and
-`dependencies-outside-invocation` are recorded as `startup-or-run-failed`).
+`startup-or-run-failed` (target refusals, `invocation-running`,
+`invocation-disposed` and `dependencies-outside-invocation` are recorded as
+`startup-or-run-failed`).
 Blocked tasks use safe `blockingReason` codes
 `operation-incomplete` or `cancelled`. SIGINT and SIGTERM are handled
 during startup and work through one guarded finalizer; SIGKILL, power loss and
@@ -1160,7 +1257,7 @@ mood are in [mascot/README.md](mascot/README.md).
   before the cancelled result is written.
 - A failing mascot never changes the result line, the exit code, the run state
   or the statistics ledger.
-- The `hash` command shows no mascot.
+- The `hash` and `dispose` commands show no mascot.
 
 Turn the mascot off with the flag `--no-mascot`, which may appear once in any
 order with the other flags:
@@ -1209,7 +1306,9 @@ worktree cleanup are tested with Git fixtures (a bare origin and clones),
 scripted pull request hosts and child processes. The dependency check, the
 unfinished reasons and the invocation status are tested with scripted adapters,
 the scripted pull request host and Git fixtures with per-task dependencies and
-scopes. The `live:*` scripts exercise a real
+scopes. The dispose command is tested with Git fixtures, scripted adapters and
+scripted pull request hosts, through `disposeInvocation` and the exported
+`dispose` entry point with a temporary `XDG_STATE_HOME`. The `live:*` scripts exercise a real
 harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
 Step lines are captured through `RunOptions.steps`.
 
