@@ -464,7 +464,7 @@
       "criteria": [
         "Release runs triggered by pushes to main never run at the same time; a queued run starts after the previous one finishes.",
         "When the release push is rejected because main advanced, the workflow fetches, recomputes the version from the new main and retries a bounded number of times, without creating a duplicate tag or changelog entry.",
-        "Two pull requests merged within a few minutes produce two consecutive releases or one release containing both, and no failed run.",
+        "Tests of the workflow definition and the release scripts with Git fixtures show that two pull requests merged within a few minutes produce two consecutive releases or one release containing both, and no failed push. All criteria are verified locally with these tests; observing hosted GitHub Actions runs is not required and is not part of the evidence.",
         "The release scripts have tests for recomputing after main advanced and for not duplicating an existing tag; npm test passes.",
         "docs describe the release behaviour for close merges."
       ]
