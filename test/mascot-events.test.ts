@@ -53,6 +53,12 @@ test('D: unknown statuses give no mascot and empty blockers count as none', () =
 });
 
 /**
+ * The invocation status written to state.json (`store.update({ status: 'running' })`) is not a run result or task
+ * event, so those writes are removed before the status literals are collected.
+ */
+const withoutStateStatus = (source: string): string => source.replaceAll(/store\.update\(\{ status: '[a-z-]+' \}\)/gu, '');
+
+/**
  * Collects every single-quoted literal in the value expression of each `status:` property. A type member such as
  * `status: string; id: string; grade?: TaskCompletion['grade']` ends at its `;`, so only the value part is read.
  */
@@ -71,7 +77,7 @@ const unmapped = (literals: Set<string>) =>
 
 test('C: every status literal the runner and CLI can produce has exactly one mood', () => {
   const sources = ['src/runner.ts', 'src/cli.ts'].map(path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'));
-  const literals = new Set(sources.flatMap(source => [...statusLiterals(source)]));
+  const literals = new Set(sources.flatMap(source => [...statusLiterals(withoutStateStatus(source))]));
   // The ternary `config.maxAccepted ? 'incomplete' : 'exhausted'` contributes both branches.
   for (const expected of ['exhausted', 'incomplete', 'limit-reached', 'cancelled', 'unavailable', 'accepted', 'blocked', 'recorded']) {
     assert.ok(literals.has(expected), expected);
@@ -80,6 +86,9 @@ test('C: every status literal the runner and CLI can produce has exactly one moo
   // A new literal without a mood, plain or inside a conditional, would be reported.
   assert.deepEqual(unmapped(statusLiterals("return { status: 'paused', x };")), ['paused']);
   assert.deepEqual(unmapped(statusLiterals("return { status: ready ? 'exhausted' : 'waiting', x };")), ['waiting']);
+  // Only the state.json write itself is removed; a result literal beside it is still collected.
+  assert.deepEqual([...statusLiterals(withoutStateStatus("store.update({ status: 'running' }); return { status: 'paused' };"))],
+    ['paused']);
   for (const status of tasks) {
     assert.ok(Object.hasOwn(TASK_EVENT_MOODS, status), status);
     assert.ok(taskMascot({ status, id: 'A' }));
