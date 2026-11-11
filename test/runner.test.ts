@@ -19,6 +19,7 @@ import type { RunEvent, RunOptions } from '../src/runner.ts';
 import { ClaimLedger } from '../src/claims.ts';
 import { RunStore } from '../src/run-store.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolContext, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
+import { preparedTestFramework } from './support/prepared-test-framework.ts';
 
 // Scripted runs pass a scripted OpenSpec preflight so no test runs the openspec binary;
 // test/openspec-preflight.test.ts covers the real checks.
@@ -27,10 +28,14 @@ const passingOpenspec: RunOptions['openspec'] = { probe: () => ({ status: 0 }), 
 // test/harness-selection.test.ts covers the availability check and the prompts.
 const passingSelection: RunOptions['selection'] = { interactive: false,
   probe: harness => ({ harness, available: true, version: 'scripted' }) };
+// Scripted runs report a prepared test framework, so the scripted workers never serve the analysis session;
+// test/test-framework-preflight.test.ts covers the analysis, setup and ordering.
 const runQueue: typeof runQueueWithPreflight = (config, options = {}) =>
-  runQueueWithPreflight(config, { openspec: passingOpenspec, selection: passingSelection, mergePolling: { delay: async () => {} }, ...options });
+  runQueueWithPreflight(config, { openspec: passingOpenspec, selection: passingSelection, testFramework: preparedTestFramework,
+    mergePolling: { delay: async () => {} }, ...options });
 const withPassingOpenspec = (portable: typeof runQueueWithPreflight): typeof runQueueWithPreflight =>
-  (config, options = {}) => portable(config, { openspec: passingOpenspec, selection: passingSelection, ...options });
+  (config, options = {}) => portable(config, { openspec: passingOpenspec, selection: passingSelection,
+    testFramework: preparedTestFramework, ...options });
 
 interface FixtureHost {
   find(branch: string): PullRequest | null;

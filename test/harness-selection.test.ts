@@ -18,6 +18,7 @@ import { HarnessUnavailableError, codexDefaultModel, defaultEffort, defaultSelec
   probeHarness, recordedSelection, selectHarness } from '../src/harness-selection.ts';
 import type { Availability, Selection, SelectionDeps } from '../src/harness-selection.ts';
 import type { HarnessAdapter, HarnessOptions, WorkerReply } from '../src/harness-adapter.ts';
+import { preparedTestFramework } from './support/prepared-test-framework.ts';
 
 const ready = (harness: Harness): Availability => ({ harness, available: true,
   version: harness === 'claude' ? '2.1.330 (Claude Code)' : 'codex-cli 0.170.0' });
@@ -271,8 +272,9 @@ test('the recorded selection is read only from a complete state identity', t => 
   assert.equal(existsSync(join(directory, 'lock.sqlite')), false);
 });
 
-// Runner integration: a scripted OpenSpec preflight, scripted selection and a worker that returns no report,
-// so each run claims the task, records its identity and stops incomplete without a real harness.
+// Runner integration: a scripted OpenSpec preflight, scripted selection, a prepared test framework analysis and a
+// worker that returns no report, so each run claims the task, records its identity and stops incomplete without a
+// real harness.
 const passingOpenspec: RunOptions['openspec'] = { probe: () => ({ status: 0 }), configPresent: () => true };
 const host: PullRequestHost = { find: () => null, create: () => null, merge: () => {} };
 
@@ -297,7 +299,7 @@ function fixture(t: TestContext) {
     async startAction(prompt) { prompts.push(prompt); return { status: 'worker-returned', threadId: 'selection', events: [], text: '' } as WorkerReply; } });
   const state = () => JSON.parse(readFileSync(join(config.stateDirectory, 'state.json'), 'utf8'));
   const run = (candidate: RunConfig, selection: Partial<SelectionDeps>) =>
-    runQueue(candidate, { host, createAdapter, openspec: passingOpenspec, selection });
+    runQueue(candidate, { host, createAdapter, openspec: passingOpenspec, selection, testFramework: preparedTestFramework });
   return { directory, root, config, prompts, state, run };
 }
 
@@ -407,7 +409,7 @@ test('CLI: default answers keep stdout to JSON lines; an unavailable harness exi
   assert.equal(await main(path, (config, runOptions) => runQueue(config, { ...runOptions, host, openspec: passingOpenspec,
     createAdapter: () => ({ probe: () => ({ status: 'interface-ready' }), close() {},
       async startAction() { return { status: 'worker-returned', threadId: 'cli', events: [], text: 'private' } as WorkerReply; } }),
-    selection: deps }), line => output.push(line), options), 3);
+    selection: deps, testFramework: preparedTestFramework }), line => output.push(line), options), 3);
   assert.ok(output.length >= 2);
   for (const line of output) assert.doesNotThrow(() => JSON.parse(line));
   assert.ok(!output.join('').includes('available ('));

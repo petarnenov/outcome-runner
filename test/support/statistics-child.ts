@@ -2,6 +2,7 @@ import { main } from '../../src/cli.ts';
 import { runQueue } from '../../src/runner.ts';
 import type { RunOptions } from '../../src/runner.ts';
 import type { RunConfig } from '../../src/model.ts';
+import { preparedTestFramework } from './prepared-test-framework.ts';
 
 const [path, root, phase] = process.argv.slice(2);
 const signalsBefore = ['SIGINT', 'SIGTERM'].map(signal => process.listenerCount(signal));
@@ -20,6 +21,7 @@ try {
     selection: { interactive: phase === 'selection', recorded: () => null,
       probe: harness => ({ harness, available: true, version: 'scripted-child' }), say: () => {},
       ask: async () => { ready(); return new Promise<string>(() => {}); } },
+    testFramework: preparedTestFramework,
     createAdapter: () => ({
       probe: () => ({ status: 'interface-ready' }),
       startAction: async () => {

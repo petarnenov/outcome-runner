@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { runQueue } from '../../src/runner.ts';
 import type { PullRequestHost } from '../../src/runner.ts';
+import { preparedTestFramework } from './prepared-test-framework.ts';
 
 interface PendingRequest { resolve: (value: unknown) => void; reject: (reason: unknown) => void }
 interface HostReply { id: number; error?: string; result?: unknown }
@@ -23,6 +24,8 @@ try {
       (...args: unknown[]) => request(method, args)])) as unknown as PullRequestHost,
     // The fixture is initialized on origin; a scripted preflight keeps the openspec binary out of the check.
     openspec: { probe: () => ({ status: 0 }), configPresent: () => true },
+    // The fixture has no coverage-enforcing framework; the restart test exercises the work, not the analysis.
+    testFramework: preparedTestFramework,
     afterEffect: async operation => {
       if (operation === process.argv[3]) {
         process.send!({ type: 'boundary', operation }); await new Promise(() => {});
