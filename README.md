@@ -522,12 +522,18 @@ branch creation and deletion, task branch pushes, claims ledger commits and
 pushes) are serialized between the runners of one clone by a per-clone Git lock.
 It is held only for one group of Git operations, never while a worker session, a
 check, a prompt or an install command runs; a runner waits for it up to 60
-seconds (then the task is blocked, or startup fails, with
-`Git lock wait exceeded 60 seconds`), and the operating system releases it when
-its holder exits or crashes. Runner Git commands run with `-c gc.auto=0`:
-automatic garbage collection is turned off for them, so it cannot take ref lock
-files while another runner works. Run `git gc` or `git maintenance run`
-yourself, for example while no runner is active.
+seconds, and the operating system releases it when its holder exits or crashes.
+A longer wait fails with `Git lock wait exceeded 60 seconds`. During a task
+stage (worktree add, task branch push) this blocks the task. During the
+post-merge cleanup or the leftover sweep on start it is recorded as a cleanup
+failure: every cleanup step is reported as failed, in `cleanupFailed` of the
+`accepted` event after a merge and in the run state for the sweep, and neither
+the task nor the run fails. Elsewhere (startup preflights, the target refresh
+before each task selection, claims ledger pull or claim) it ends the run with
+exit code 4 and reason `startup-or-run-failed`. Runner Git commands run with
+`-c gc.auto=0`: automatic garbage collection is turned off for them, so it
+cannot take ref lock files while another runner works. Run `git gc` or
+`git maintenance run` yourself, for example while no runner is active.
 
 Across runners and machines the repository is the allocator: before taking a
 task the runner pulls the target and the `work-queue-claims-<target>` branch,
