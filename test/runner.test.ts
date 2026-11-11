@@ -496,6 +496,25 @@ test('run_checks answers compactly and bounds a failing check', async t => {
   assert.equal(result.status, 'incomplete'); assert.ok(observed);
 });
 
+test('run_checks shows a failing check its standard output and its notices', async t => {
+  const f = fixture(t); let observed = false;
+  const failing = { command: 'node', args: ['-e',
+    "process.stdout.write('not ok 1 - broken test'); process.stderr.write('npm notice run'); process.exit(1)", '{coverage}'] };
+  const result = await runQueue({ ...f.config, leaves: ['A'], project: { ...f.config.project, checks: [failing] } }, { host: f.host,
+    createAdapter: options => {
+      const inner = scripted(options as ScriptedOptions);
+      return { ...inner, async startAction(prompt: string) {
+        if (prompt.includes('Implement all approved')) {
+          await assert.rejects(options.handleTool('backlog_tool', { operation: 'run_checks', input: {} as BrokerInput }, { threadId: 'test' }),
+            (error: Error) => error.message.includes('not ok 1 - broken test') && error.message.includes('npm notice run'));
+          observed = true;
+        }
+        return inner.startAction(prompt);
+      } };
+    } });
+  assert.equal(result.status, 'incomplete'); assert.ok(observed);
+});
+
 test('run_checks reports passing checks without their output', async t => {
   const f = fixture(t); let observed = false;
   await runQueue({ ...f.config, leaves: ['A'], maxAccepted: 1 }, { host: f.host,
