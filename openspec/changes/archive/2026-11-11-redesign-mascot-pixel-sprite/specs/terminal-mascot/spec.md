@@ -35,6 +35,16 @@ Here . SHALL be empty, B SHALL be body, 0 SHALL mark the left eye slot and 1 SHA
 - **THEN** it contains exactly four lines
 - **AND** each line, including leading offsets and decorations, has at most fourteen terminal columns
 
+#### Scenario: Size limits
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 limit of 7 lines by 20 columns is replaced by the four-line, fourteen-column bound of scenario "Frame bounds"
+
+#### Scenario: Block characters
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 block-character body is replaced by the half-block pixel sprite of scenario "Exact base geometry and leg poses"
+
 ### Requirement: Eight moods
 
 The module SHALL retain exactly happy, angry, celebrating, content, sleepy, sad, startled and dizzy. It SHALL use the following ANSI 256 body colours:
@@ -127,6 +137,21 @@ Unspecified offsets SHALL be zero and unspecified extras SHALL be absent. For ce
 - **THEN** every B pixel uses that mood's listed ANSI 256 colour
 - **AND** eyes, cheeks, tears and decorations use their independently specified colours
 
+#### Scenario: Mood colours
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 SGR colour names are replaced by the ANSI 256 body colours of scenario "Mood palette"
+
+#### Scenario: Distinct faces
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 distinct eyes and mouths are replaced by the eye patterns of scenario "Eye patterns and mirrors" and the frame sequences of the mood scenarios
+
+#### Scenario: Celebrating sparkles
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 celebrating sparkles are replaced by scenario "Celebrating sequence and decoration colours"
+
 ### Requirement: Output conditions
 
 playMascot SHALL default to process.stderr and SHALL preserve injected stream, TTY detector, environment, frame timer and abort signal options. It SHALL produce no output for a non-TTY stream, OUTCOME_RUNNER_MASCOT=0, an unknown mood or an already aborted signal.
@@ -166,6 +191,26 @@ With TERM=dumb the module SHALL print only the last frame and caption with no cu
 - **THEN** output is precisely that mode's last four-line frame followed by the sanitized caption on its own line
 - **AND** no cursor-control sequences or waits occur
 
+#### Scenario: Non-TTY stream
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 non-TTY gate is kept and verified by scenario "Gating and stderr"
+
+#### Scenario: Disabled by environment
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 OUTCOME_RUNNER_MASCOT=0 gate is kept and verified by scenario "Gating and stderr"
+
+#### Scenario: NO_COLOR
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 same-glyph NO_COLOR output is replaced by scenario "NO_COLOR conversion"
+
+#### Scenario: Empty NO_COLOR
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 empty NO_COLOR case is replaced by scenario "NO_COLOR conversion", which covers the empty string
+
 ### Requirement: Mascot tests
 
 mascot/mascot.test.ts SHALL use in-memory streams and fake frame timers without real sleeps. It SHALL verify literal sprite rows, both leg poses, every eye pattern and its mirror, cheeks, tears, every mood's full frame sequence and palette, four half-block cases and colour channels, NO_COLOR occupancy rendering and every frame's four-line/fourteen-column bound.
@@ -199,6 +244,11 @@ Tests SHALL retain the unchanged OR-10 contracts: exactly one runtime export pla
 - **WHEN** npm run typecheck and npm test run after specification binding and implementation
 - **THEN** both pass with mascot tests included and the existing 85% line, branch and function coverage thresholds preserved
 
+#### Scenario: Sleep-free tests
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 sleep-free requirement is kept and verified by scenarios "Exact art regression coverage" and "Lifecycle regressions"
+
 ### Requirement: Mascot documentation
 
 mascot/README.md SHALL replace its previews with the NO_COLOR last frame of every mood, state that the design comes from the owner's reference sprite approved on 2026-11-11, describe the 11 by 8 pixel / 11 by 4 text-line sprite and four-line/fourteen-column frame limit, and retain accurate public function and option documentation.
@@ -209,3 +259,8 @@ mascot/README.md SHALL replace its previews with the NO_COLOR last frame of ever
 - **THEN** it contains each of the eight moods' exact last-frame previews, including final offsets and decorations
 - **AND** it credits the owner's reference sprite and documents the updated dimensions and NO_COLOR behaviour
 - **AND** playMascot and every unchanged option remain documented
+
+#### Scenario: README preview
+
+- **WHEN** this OR-10 scenario is read after OR-15
+- **THEN** the OR-10 README preview is replaced by scenario "README previews and provenance"
