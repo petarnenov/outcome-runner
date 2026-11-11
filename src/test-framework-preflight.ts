@@ -293,8 +293,10 @@ async function analysisSession(config: RunConfig, tree: string, files: string[],
   return recorded;
 }
 
-/** Code points HFS+ ignores in file names, so git treats names containing them as the unmarked name. */
-const IGNORABLE = /[‌-‏‪-‮⁪-⁯﻿]/gu;
+/** Code point ranges HFS+ ignores in file names, so git treats names containing them as the unmarked name. */
+const IGNORABLE_RANGES = [[0x200c, 0x200f], [0x202a, 0x202e], [0x206a, 0x206f], [0xfeff, 0xfeff]];
+const IGNORABLE = new RegExp(`[${IGNORABLE_RANGES.map(([from, to]) =>
+  `${String.fromCodePoint(from)}-${String.fromCodePoint(to)}`).join('')}]`, 'gu');
 /**
  * Folds one path component the way case-insensitive filesystems compare it: Unicode NFC, without HFS+ ignorable
  * code points, lower case, and without the trailing dots and spaces that Windows drops.

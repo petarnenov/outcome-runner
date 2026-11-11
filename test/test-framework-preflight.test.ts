@@ -383,9 +383,10 @@ test('C: a file change outside the allowed paths refuses the recommendation with
   const config = configFor(root);
   const refused = ['../outside.txt', '/etc/passwd', '.git/config', 'sub/.git/hooks/pre-commit', 'planning/outcomes.json',
     'evidence/results/OR-1.json', 'openspec/changes/x/proposal.md', 'openspec/changes', 'link/escape.txt', 'gitlink/config',
-    // Case and other variants that case-insensitive filesystems (macOS, Windows) treat as .git.
+    // Case and other variants that case-insensitive filesystems (macOS, Windows) treat as .git, including a name
+    // with the HFS+ ignorable zero-width non-joiner.
     '.GIT/hooks/pre-commit', '.Git/config', 'sub/.GIT/hooks/pre-commit', '.git./config', '.git /config', 'GIT~1/config',
-    '.g‌it/config',
+    `.g${String.fromCodePoint(0x200c)}it/config`,
     // Case variants of the queue, receipts and OpenSpec changes paths.
     'Planning/outcomes.json', 'PLANNING/OUTCOMES.JSON', 'Evidence/results/OR-1.json', 'evidence/Results/OR-1.json',
     'OpenSpec/changes/x/proposal.md', 'openspec/CHANGES',
