@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "id": "OR-8",
+  "taskHash": "d55ee945353b4f390d03b74af661fed9fbe9c2025847a3375c21db9025fe2fee",
+  "authority": "owner-2026-11-10-pr4-alternate",
+  "specification": {
+    "openspec/changes/test-framework-preflight/design.md": "d5c7dc9d088048f6e8970aff8277207a78b2a3dbaf2df5a3eb49f5036acc7457",
+    "openspec/changes/test-framework-preflight/proposal.md": "509bfc0ec329927688c22b07799bbdef18d82076b203971ebbc193bea4431d4f",
+    "openspec/changes/test-framework-preflight/specs/test-framework-preflight/spec.md": "f3e36b3fcab5bc1bedef99142beffd9131a27201727aec34faa0ef6813c7c781"
+  },
+  "review": {
+    "reviewer": "claude:ff163682-2416-4d2f-8230-4039f35c4f36",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "e9af4d7381f75d4401d2df037d3141d145dace1071c300119f8f0a5fe3fa9c78"
+    },
+    {
+      "path": "openspec/changes/test-framework-preflight/design.md",
+      "hash": "d5c7dc9d088048f6e8970aff8277207a78b2a3dbaf2df5a3eb49f5036acc7457"
+    },
+    {
+      "path": "openspec/changes/test-framework-preflight/proposal.md",
+      "hash": "509bfc0ec329927688c22b07799bbdef18d82076b203971ebbc193bea4431d4f"
+    },
+    {
+      "path": "openspec/changes/test-framework-preflight/specs/test-framework-preflight/spec.md",
+      "hash": "f3e36b3fcab5bc1bedef99142beffd9131a27201727aec34faa0ef6813c7c781"
+    },
+    {
+      "path": "openspec/changes/test-framework-preflight/tasks.md",
+      "hash": "669981c2ba1acb028f4a0fdecbcc9dd9179ef0d9619cf5e1dd3150b7871bb185"
+    },
+    {
+      "path": "src/cli.ts",
+      "hash": "ad088d04f74a549163f2967c9110ed6171e6c61fb435c38aa2e20c94aa5b0994"
+    },
+    {
+      "path": "src/openspec-preflight.ts",
+      "hash": "3375ea9f6d782694a61bdb893846831d57f20bc3ba4d12eac9dc9db49e3ffe1b"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "34378e36f51417db4dd70190fc5cb1d7d089b331f84d3899943f0dd5baa12c4e"
+    },
+    {
+      "path": "src/statistics.ts",
+      "hash": "671af5b64d7e0e8d5327c7645a37a0409b050ad275539134ece49001c47979f8"
+    },
+    {
+      "path": "src/test-framework-preflight.ts",
+      "hash": "03b4c47340f4c99ad15fa4836cd41c5f449d04a17fdf006f626e1f74573a03b5"
+    },
+    {
+      "path": "test/harness-selection.test.ts",
+      "hash": "e08e29f617662a6e0f093ddfe7f0b10f2fda96889a4854a83c8d1e789931aace"
+    },
+    {
+      "path": "test/runner.test.ts",
+      "hash": "e7e9b24818cc466984eb80a5b195c28aadc2f30d6d35939fa5a6c621035e4eb1"
+    },
+    {
+      "path": "test/support/prepared-test-framework.ts",
+      "hash": "9271a14ae22e88a35d4213af8af2d09c965a78366f498ea782d4bdc28a7c90bf"
+    },
+    {
+      "path": "test/support/statistics-child.ts",
+      "hash": "82633c4f421b4438e3b571efc5147eb5c0d0986bc89fea2b1918f5d89f4b433c"
+    },
+    {
+      "path": "test/support/work-queue-child.ts",
+      "hash": "1cd56766d46f5153df3c6fb4d2a55652ecf2b82679e7718fb60574968b80ffdd"
+    },
+    {
+      "path": "test/test-framework-preflight.test.ts",
+      "hash": "cef44211d77ae177b6ab453ff2e83a66dec16d3de5088b41f8029dbf9a6bdb3b"
+    },
+    {
+      "path": "test/test-grading.test.ts",
+      "hash": "35138031f3edeb916dfb577ed3a8abe9eefcf2c114423dab89bf596b0726d8a6"
+    }
+  ],
+  "head": "2e69fb7e81623397baca83582e59ee835fd52952",
+  "base": "45ece4bbbd7d62599b12b3bd0f7e81efdd8e61ac"
+}

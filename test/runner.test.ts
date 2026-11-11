@@ -19,6 +19,8 @@ import type { RunEvent, RunOptions } from '../src/runner.ts';
 import { ClaimLedger } from '../src/claims.ts';
 import { RunStore } from '../src/run-store.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolContext, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
+import { preparedTestFramework } from './support/prepared-test-framework.ts';
+import { separateArchive } from './support/scripted-archive.ts';
 
 // Scripted runs pass a scripted OpenSpec preflight so no test runs the openspec binary;
 // test/openspec-preflight.test.ts covers the real checks.
@@ -27,10 +29,16 @@ const passingOpenspec: RunOptions['openspec'] = { probe: () => ({ status: 0 }), 
 // test/harness-selection.test.ts covers the availability check and the prompts.
 const passingSelection: RunOptions['selection'] = { interactive: false,
   probe: harness => ({ harness, available: true, version: 'scripted' }) };
+// Scripted runs report a prepared test framework, so the scripted workers never serve the analysis session;
+// test/test-framework-preflight.test.ts covers the analysis, setup and ordering.
+// Scripted runs also archive through a scripted command, so no test runs openspec archive;
+// test/document-archive.test.ts covers the archive stage.
 const runQueue: typeof runQueueWithPreflight = (config, options = {}) =>
-  runQueueWithPreflight(config, { openspec: passingOpenspec, selection: passingSelection, mergePolling: { delay: async () => {} }, ...options });
+  runQueueWithPreflight(config, { openspec: passingOpenspec, selection: passingSelection, testFramework: preparedTestFramework,
+    mergePolling: { delay: async () => {} }, runCommand: separateArchive(), ...options });
 const withPassingOpenspec = (portable: typeof runQueueWithPreflight): typeof runQueueWithPreflight =>
-  (config, options = {}) => portable(config, { openspec: passingOpenspec, selection: passingSelection, ...options });
+  (config, options = {}) => portable(config, { openspec: passingOpenspec, selection: passingSelection,
+    testFramework: preparedTestFramework, runCommand: separateArchive(), ...options });
 
 interface FixtureHost {
   find(branch: string): PullRequest | null;
@@ -1237,11 +1245,13 @@ test('C: ledger records accepted and blocked work with durable repair metrics an
   assert.equal(accepted.finalChecks.length, f.project.checks.length);
   assert.ok(accepted.finalChecks.every(check => check.outcome === 'passed' && !('output' in check)));
   assert.deepEqual(accepted.pr, { number: 1, url: 'https://example.org/pull/1' });
-  assert.deepEqual(accepted.tokenUsage, { inputTokens: 36, outputTokens: 45, totalTokens: 81 });
+  // Eleven sessions: investigation, two plans, two planning reviews, two works, two implementation reviews,
+  // one documentation session and one documentation review.
+  assert.deepEqual(accepted.tokenUsage, { inputTokens: 44, outputTokens: 55, totalTokens: 99 });
   assert.equal(blocked.lastStage, 'investigate'); assert.equal(blocked.blockingReason, 'operation-incomplete');
   assert.equal(blocked.durationSeconds, null); assert.equal(blocked.complexityGrade, null); assert.equal(blocked.completionSummary, null);
   assert.equal(blocked.workerSessions.investigate, 1); assert.equal(state.blocked.D.work.sessions, undefined);
-  assert.deepEqual(record.tokenUsage, { inputTokens: 40, outputTokens: 50, totalTokens: 90 });
+  assert.deepEqual(record.tokenUsage, { inputTokens: 48, outputTokens: 60, totalTokens: 108 });
   assert.ok(!JSON.stringify(record).includes('SECRET_')); assert.ok(!JSON.stringify(record).includes('Private text'));
   assert.equal(stdout.at(-1)!.status, 'incomplete');
 });
@@ -1250,8 +1260,9 @@ test('C: final gate failure persists the actual failed command without private o
   const f = fixture(t); const statistics = new Statistics();
   const counter = join(f.base, 'check-count');
   const privateOutput = join(f.base, 'private-output'); writeFileSync(privateOutput, 'SECRET_CHECK_OUTPUT');
+  // The check passes in the work session, after it and after documentation, then fails in the final gate.
   const script = "const f=require('node:fs'),p=process.argv[1];const n=f.existsSync(p)?Number(f.readFileSync(p)):0;" +
-    "f.writeFileSync(p,String(n+1));if(n>=2){console.log(f.readFileSync(process.argv[2],'utf8'));process.exit(1)}";
+    "f.writeFileSync(p,String(n+1));if(n>=3){console.log(f.readFileSync(process.argv[2],'utf8'));process.exit(1)}";
   f.project.checks.push({ command: 'node', args: ['-e', script, counter, privateOutput] });
   const result = await runQueue({ ...f.config, leaves: ['A'] }, { statistics, host: f.host, createAdapter: scripted });
   assert.equal(result.status, 'incomplete'); const record = statistics.finish('incomplete', 3);
@@ -1342,7 +1353,8 @@ test('B: resumed execution preserves selection provenance, original claim durati
   assert.deepEqual(rows[1].tasks[0].workerSessions, rows[0].tasks[0].workerSessions);
   assert.deepEqual(rows[1].tasks[0].planningFindingsPerRound, [0]);
   assert.deepEqual(rows[1].tasks[0].implementationFindingsPerRound, [0]);
-  assert.deepEqual(rows[0].tokenUsage, { inputTokens: 10, outputTokens: 15, totalTokens: 25 });
+  // Seven sessions run before the interruption, including the documentation session and its review.
+  assert.deepEqual(rows[0].tokenUsage, { inputTokens: 14, outputTokens: 21, totalTokens: 35 });
   assert.equal(rows[1].tokenUsage, null); assert.equal(rows[1].tasks[0].tokenUsage, null);
   assert.deepEqual(rows[1].tasks[0].finalChecks, last.completed.A.finalChecks.map(
     ({ command, args, outcome }: CheckRecord) => ({ command, args, outcome })));

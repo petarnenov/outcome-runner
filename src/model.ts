@@ -27,7 +27,14 @@ export interface Project {
   checks: CommandSpec[];
   planningCheck: CommandSpec;
   setup?: CommandSpec[];
+  /** Archives the OpenSpec change in the worktree; `{change}` is replaced by the task change name. */
+  archive?: CommandSpec;
 }
+
+/** The archive command used when a project does not configure one. */
+export const DEFAULT_ARCHIVE: CommandSpec = Object.freeze({
+  command: 'openspec', args: Object.freeze(['archive', '{change}', '--yes']) as string[] });
+export const archiveCommand = (project: Pick<Project, 'archive'>): CommandSpec => project.archive ?? DEFAULT_ARCHIVE;
 
 export interface Authority {
   reference: string;
@@ -60,8 +67,9 @@ export interface ResolvedRunConfig extends RunConfig {
   coverage: number;
 }
 
-export type Stage = 'claim' | 'investigate' | 'plan' | 'work' | 'receipt' | 'publish' | 'pr' | 'merge';
-export type Purpose = 'investigate' | 'plan' | 'work' | 'review';
+export type Stage = 'claim' | 'investigate' | 'plan' | 'work' | 'document' | 'document-review' | 'final-checks' |
+  'archive' | 'receipt' | 'publish' | 'pr' | 'merge';
+export type Purpose = 'investigate' | 'plan' | 'work' | 'review' | 'document' | 'document-review';
 
 export interface CheckRecord extends CommandSpec { outcome: string; output?: string }
 
@@ -95,6 +103,12 @@ export interface WorkerSession {
   privateText: string;
 }
 
+/** Documentation stage result: the commit it started from, updated files and out-of-scope findings. */
+export interface DocumentationRecord { base: string; files: string[]; outsideScope: string[] }
+
+/** Archive stage result: the archived change directory and the specification files the archive wrote. */
+export interface ArchiveRecord { directory: string; specs: string[]; head: string }
+
 export interface Work extends Task {
   taskHash: string;
   operation: string;
@@ -111,6 +125,10 @@ export interface Work extends Task {
   planningReviews?: ReviewRecord[];
   reviews?: ReviewRecord[];
   review?: ReviewRecord;
+  documentation?: DocumentationRecord;
+  documentationReviews?: ReviewRecord[];
+  documentationChecks?: CheckRecord[];
+  archive?: ArchiveRecord;
   session?: SessionHandle & { purpose: Purpose };
   sessions?: WorkerSession[];
   sessionStarts?: Partial<Record<Purpose, number>>;
@@ -139,6 +157,15 @@ export function safePath(path: string): string {
   return path;
 }
 export const within = (path: string, scope: string): boolean => path === scope || path.startsWith(`${scope}/`);
+/** A documentation file is a README file, a Markdown file, or any file under a docs or doc directory. */
+export function isDocumentation(path: string): boolean {
+  const parts = path.split('/'); const name = parts.at(-1) ?? '';
+  return /^readme(?:\.|$)/iu.test(name) || /\.mdx?$/iu.test(name) ||
+    parts.slice(0, -1).some(part => part === 'docs' || part === 'doc');
+}
+/** The directory beside the changes directory that receives the archived specification updates. */
+export const specsDirectory = (changes: string): string =>
+  changes.includes('/') ? changes.replace(/[^/]+$/u, 'specs') : 'specs';
 export function validateQueue(candidate: unknown, project?: Project): Queue {
   const queue = candidate as Queue;
   const protectedPaths = project ? [project.queue, project.receipts, project.changes] : [];
@@ -201,7 +228,7 @@ export function validateConfig<T extends RunConfig>(config: T): T {
   if (!Array.isArray(project.checks) || !project.planningCheck) {
     throw new Error('Planning and result checks are mandatory');
   }
-  for (const check of [...project.checks, project.planningCheck, ...(project.setup ?? [])]) {
+  for (const check of [...project.checks, project.planningCheck, ...(project.setup ?? []), archiveCommand(project)]) {
     if (!check || typeof check.command !== 'string' || !check.command ||
         !Array.isArray(check.args) || check.args.some(arg => typeof arg !== 'string')) {
       throw new Error('Commands must be fixed executable and argument arrays');

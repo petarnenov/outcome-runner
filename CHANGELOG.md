@@ -1,3 +1,38 @@
+## 0.12.0 - 2026-11-11
+
+### Features
+
+- implement OR-14 (32c0e29)
+- implement OR-14 (fd2dd80)
+- implement OR-14 (73dbf52)
+- implement OR-14 (a224734)
+
+## 0.11.1 - 2026-11-11
+
+### Fixes
+
+- let workers delete files inside their write scope (1559662)
+
+## 0.11.0 - 2026-11-11
+
+### Features
+
+- implement OR-11 (a17cb73)
+- implement OR-11 (36180f2)
+- implement OR-11 (7aa488b)
+- implement OR-11 (9c51445)
+- implement OR-11 (a2e8eb3)
+
+## 0.10.0 - 2026-11-11
+
+### Features
+
+- implement OR-8 (2e69fb7)
+- implement OR-8 (603da3c)
+- implement OR-8 (8ab4be2)
+- implement OR-8 (5da3526)
+- implement OR-8 (8b178ee)
+
 ## 0.9.0 - 2026-11-11
 
 ### Features

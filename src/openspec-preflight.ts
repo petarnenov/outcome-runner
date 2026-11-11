@@ -12,13 +12,15 @@ export const OPENSPEC_INSTALL: readonly string[] = ['npm', 'install', '-g', '@fi
 export const OPENSPEC_CONFIG = 'openspec/config.yaml';
 export const OPENSPEC_CONFIG_CONTENT = 'schema: spec-driven\n';
 
-/** A startup refusal whose `reason` is reported in the CLI's diagnostics output. */
+/** A startup refusal whose `reason` (and optional private `details`) is reported in the CLI's diagnostics output. */
 export class PreflightError extends Error {
   reason: string;
-  constructor(reason: string, message: string) {
+  details?: unknown;
+  constructor(reason: string, message: string, details?: unknown) {
     super(message);
     this.name = 'PreflightError';
     this.reason = reason;
+    if (details !== undefined) this.details = details;
   }
 }
 

@@ -6,7 +6,8 @@ import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay, setImmediate as yieldLoop } from 'node:timers/promises';
-import { hash, digest, within, safePath, validateConfig, validateQueue } from './model.ts';
+import { hash, digest, within, safePath, validateConfig, validateQueue, archiveCommand, isDocumentation,
+  specsDirectory } from './model.ts';
 import type { CheckRecord, CommandSpec, PullRequest, Purpose, Queue, ReviewRecord, RunConfig, Task, Work,
   WorkerReport, TaskCompletion } from './model.ts';
 import { command, git, gitPage, fileAt, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS, MERGE_STATE_POLL_MS } from './git.ts';
@@ -20,6 +21,8 @@ import { selectHarness } from './harness-selection.ts';
 import type { SelectionDeps } from './harness-selection.ts';
 import { openspecPreflight } from './openspec-preflight.ts';
 import type { PreflightDeps } from './openspec-preflight.ts';
+import { testFrameworkPreflight } from './test-framework-preflight.ts';
+import type { TestFrameworkDeps } from './test-framework-preflight.ts';
 import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions } from './test-grading.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
@@ -41,6 +44,9 @@ export interface RunResult {
   claimedElsewhere?: Record<string, { host?: string }>;
 }
 
+/** Runs one program with an argument array and no shell in `cwd`; throws on a nonzero exit. */
+export type CommandRunner = (cwd: string, program: string, args: string[]) => string;
+
 export interface RunOptions {
   statistics?: Statistics;
   signal?: AbortSignal;
@@ -49,11 +55,16 @@ export interface RunOptions {
   host?: PullRequestHost;
   createAdapter?: (options: HarnessOptions) => HarnessAdapter;
   afterEffect?: (operation: string, subject: Work | PullRequest | null) => Promise<void>;
-  report?: (event: RunEvent) => void;
+  /** Reports a task event; `detail` is private (for example the blocked reason) and is never serialized. */
+  report?: (event: RunEvent, detail?: { reason?: string }) => void;
   /** Injectable effects of the OpenSpec preflight; omitted fields use the real process, TTY and filesystem. */
   openspec?: Partial<PreflightDeps>;
   /** Injectable prompts, harness probes, Codex reader and recorded state of the harness selection. */
   selection?: Partial<SelectionDeps>;
+  /** Injectable session, worktree, prompts, installs, writes and snapshots of the test framework preflight. */
+  testFramework?: Partial<TestFrameworkDeps>;
+  /** Injectable runner of the archive command; the default executes the program without a shell. */
+  runCommand?: CommandRunner;
 }
 
 interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
@@ -70,6 +81,36 @@ const checkRecords = (rows: CheckRecord[]) => rows.map(({ command, args, outcome
 const reviewRecord = ({ reviewer, outcome }: ReviewRecord) => ({ reviewer, outcome });
 const scopesOverlap = (first: string[], second: string[]): boolean => first.some(path =>
   second.some(other => within(path, other) || within(other, path)));
+const DOCUMENTATION_ROUNDS = 4;
+
+/** Paths a result manifest may contain: the task scopes and, after the archive, the archived change and its spec files. */
+export function manifestScopes(work: Pick<Work, 'scopes' | 'directory' | 'archive'>): string[] {
+  return work.archive ? [...work.scopes, work.archive.directory, ...work.archive.specs] : [...work.scopes, work.directory];
+}
+
+/** Manifest paths outside the allowed set; any such path blocks the task. */
+export const outsideManifest = (paths: string[], work: Pick<Work, 'scopes' | 'directory' | 'archive'>): string[] =>
+  paths.filter(path => !manifestScopes(work).some(scope => within(path, scope)));
+
+/** Moves every bound path below `directory` to the same relative path below `archived`. */
+export function rekeyBinding(specification: Record<string, string>, directory: string, archived: string): Record<string, string> {
+  return Object.fromEntries(Object.entries(specification).map(([path, value]) =>
+    [within(path, directory) ? `${archived}${path.slice(directory.length)}` : path, value]));
+}
+
+/** The pull request body; it lists only public evidence, the updated documentation and the archived change. */
+export function pullRequestBody(work: Work, authority: string): string {
+  const list = (items: string[]) => items.length ? items.map(item => `- ${item}`).join('\n') : '- none';
+  const outside = work.documentation?.outsideScope ?? [];
+  return `Outcome: ${work.id}\nOpenSpec change: ${work.change}\n` +
+    `Authority: ${authority}\nTested head: ${work.head}\nTarget: ${work.testedTarget}\n` +
+    `Checks: ${JSON.stringify(checkRecords(work.finalChecks ?? []))}\n` +
+    `Reviews: ${JSON.stringify((work.reviews ?? []).map(reviewRecord))}\n` +
+    `Documentation reviews: ${JSON.stringify((work.documentationReviews ?? []).map(reviewRecord))}\n` +
+    `Documentation updated:\n${list(work.documentation?.files ?? [])}\n` +
+    `Archived change: ${work.archive?.directory ?? 'none'}\n` +
+    (outside.length ? `Documentation outside scope:\n${list(outside)}\n` : '');
+}
 
 const reportTool: ToolDefinition = { type: 'function', name: 'outcome_report',
   description: 'Return a private structured result to the automatic controller.',
@@ -106,7 +147,7 @@ export function packet(root: string, directory: string): Record<string, string> 
 
 export async function runQueue(requested: RunConfig, options: RunOptions = {}): Promise<RunResult> {
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
-  // the lock, claims and worktrees.
+  // the test framework analysis, the lock, claims and worktrees.
   const statistics = options.statistics;
   const signal = options.signal;
   await cancellable(openspecPreflight(requested, { ...options.openspec, signal }), signal);
@@ -126,8 +167,10 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     cwd => codexSelection(cwd, undefined, signal)), signal);
   validateConfig(config);
   statistics?.resolved(config, sources, harnessVersion);
-  const { afterEffect = async () => {}, report = () => {}, now = Date.now } = options;
+  const { afterEffect = async () => {}, report = () => {}, now = Date.now, runCommand = command } = options;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
+  // One read-only analysis of origin/<target> with the resolved harness, model and effort precedes the lock and claims.
+  await cancellable(testFrameworkPreflight(config, { createAdapter, signal, ...options.testFramework }), signal);
   const root = realpathSync(config.root); const project = config.project;
   const primary = dirname(resolve(root, git(root, 'rev-parse', '--git-common-dir')));
   let stateAncestor = resolve(config.stateDirectory); const missing: string[] = [];
@@ -203,7 +246,9 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     const assertWork = (work: Work): boolean => {
       const { queue } = refresh(); authorized(queue, work.id);
       if (git(work.path, 'branch', '--show-current') !== work.branch) throw new Error('Work branch changed');
-      if (work.specification && hash(packet(work.path, work.directory)) !== hash(work.specification)) {
+      // After the archive the binding follows the files, so integrity checks read the archived change.
+      const directory = work.archive?.directory ?? work.directory;
+      if (work.specification && hash(packet(work.path, directory)) !== hash(work.specification)) {
         throw new Error('Exact specification changed after authorization');
       }
       return true;
@@ -233,10 +278,23 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         git(work.path, 'commit', '-m', `feat(${project.commitScope ?? 'work-queue'}): implement ${work.id}${project.commitSuffix ?? ''}`);
       }
     };
+    // Only documentation files inside the task scopes enter the documentation commit.
+    const commitDocumentation = (work: Work): void => {
+      const changed = git(work.path, 'ls-files', '-z', '--modified', '--deleted', '--others', '--exclude-standard', '--',
+        ...work.scopes).split('\0').filter(Boolean);
+      const files = [...new Set(changed)].filter(isDocumentation);
+      if (files.length) git(work.path, 'add', '-A', '--', ...files);
+      if (git(work.path, 'diff', '--cached', '--name-only')) {
+        git(work.path, 'commit', '-m', commitSubject('docs', `document ${work.id}`));
+      }
+    };
     const integrateTarget = (work: Work, target: string): void => {
       if (git(work.path, 'merge-base', target, 'HEAD') === target) return;
       const changed = git(work.path, 'diff', '--name-only', work.base, target).split('\n').filter(Boolean);
-      if (scopesOverlap(changed, [...work.scopes, work.directory])) throw new Error('Target changed outcome scope');
+      const archive = activeWork().archive;
+      // The archived change and the specification files written by the archive belong to the task like its scopes.
+      const guarded = [...work.scopes, work.directory, ...(archive ? [archive.directory, ...archive.specs] : [])];
+      if (scopesOverlap(changed, guarded)) throw new Error('Target changed outcome scope');
       git(work.path, 'merge', '--no-edit', '-m', commitSubject('chore', `integrate ${project.target} into ${work.id}`), target);
       checks(work, project.setup ?? []);
     };
@@ -260,9 +318,10 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       const files = git(work.path, 'ls-files', '-z').split('\0').filter(Boolean);
       const instructionPaths = [...new Set(['AGENTS.md', ...[...work.scopes, work.directory].flatMap(path =>
         path.split('/').map((_, index, parts) => `${parts.slice(0, index + 1).join('/')}/AGENTS.md`))])];
+      // A documentation session writes inside the task scopes, and only documentation files there.
       const writable = purpose === 'plan' ? [work.directory] : purpose === 'work' ?
         [...work.scopes, `${work.directory}/tasks.md`, `${work.directory}/compliance.md`,
-          `${work.directory}/verification.md`] : [];
+          `${work.directory}/verification.md`] : purpose === 'document' ? [...work.scopes] : [];
       const broker = new CodexFiles({ root: work.path,
         scopes: [...files.map(path => ({ path, mode: 'read' })),
           ...instructionPaths.map(path => ({ path, mode: 'read' })), ...work.scopes.map(path => ({ path, mode: 'read' })),
@@ -287,7 +346,13 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             return readContext(work, files, input.input ?? {});
           }
           if (name === brokerTool.name) {
-            try { return await broker.call(name, input); }
+            try {
+              if (purpose === 'document' && ['write_file', 'delete_file'].includes(input.operation ?? '') &&
+                  !isDocumentation(String(input.input?.path ?? ''))) {
+                throw new Error('Documentation sessions write only documentation files inside the task scopes');
+              }
+              return await broker.call(name, input);
+            }
             catch (error) { save({ lastToolError: { purpose, input, message: (error as Error).message } }); throw error; }
           }
           if (name === reportTool.name) save({ lastReportAttempt: { purpose, input } });
@@ -304,14 +369,15 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       try {
         if (adapter.probe().status !== 'interface-ready') throw new Error('Selected harness interface unavailable');
       const starts = activeWork().sessionStarts ?? Object.fromEntries(
-        (['investigate', 'plan', 'work', 'review'] as const).map(key =>
+        (['investigate', 'plan', 'work', 'review', 'document', 'document-review'] as const).map(key =>
           [key, (activeWork().sessions ?? []).filter(session => session.purpose === key).length]));
       save({ sessionStarts: { ...starts, [purpose]: (starts[purpose] ?? 0) + 1 } });
       usage = statistics?.session(work.id);
 
         const reply = await cancellable(adapter.startAction('OFF. Never ask a person anything. All output is private. ' +
-          'Use only backlog_tool operations read_file/write_file/context/run_checks and outcome_report. ' +
-          'Read files with input {path,offset}; write with {path,content,expectedHash} from the read result. ' +
+          'Use only backlog_tool operations read_file/write_file/delete_file/context/run_checks and outcome_report. ' +
+          'Read files with input {path,offset}; write with {path,content,expectedHash} from the read result; ' +
+          'delete a file with {path,expectedHash} from the read result. ' +
           'A read returns one page: repeat it with nextOffset until nextOffset is null. hash covers the whole file. ' +
           'context takes input {section,offset} and pages the same way. section is paths (default, with history), ' +
           'diff, findings or checks. ' +
@@ -506,22 +572,110 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
               implementationReviewTestInstructions(config.coverage), true);
             save({ reviews: [...(activeWork().reviews ?? []), review] });
             if (review.outcome === 'accepted' && !review.findings.length) {
-              save({ review: { ...review, accepted: true }, stage: 'receipt', findings: [] }); passed = true; break;
+              // The documentation stage starts from the reviewed head; its record lists what it later updates.
+              save({ review: { ...review, accepted: true }, stage: 'document', findings: [],
+                documentation: { base: git(work.path, 'rev-parse', 'HEAD'), files: [], outsideScope: [] } });
+              passed = true; break;
             }
             save({ findings: review.findings });
           }
           if (!passed) throw new Error('Implementation checks or review remain unresolved');
         }
+        // Each documentation round persists its stage before the next session, so a restart in document-review
+        // reviews the recorded documentation instead of writing it again.
+        while (['document', 'document-review'].includes(activeWork().stage)) {
+          if (activeWork().stage === 'document') {
+            if ((activeWork().documentationReviews ?? []).length >= DOCUMENTATION_ROUNDS) {
+              throw new Error('Documentation review remains unresolved');
+            }
+            const documented = await session(activeWork(), 'document', prompt +
+              'Update the documentation inside the task scopes so that it matches the implemented behaviour and every ' +
+              'criterion. Documentation files are README files, Markdown files (.md, .mdx) and files under docs or doc ' +
+              `directories. Write only documentation files inside the task scopes ${JSON.stringify(work.scopes)}; ` +
+              'writes to product code, tests, OpenSpec files or paths outside the scopes are refused. ' +
+              'Report in findings only documentation outside the task scopes that needs changes, one file and reason ' +
+              'per finding, and call outcome_report with outcome ready. ' +
+              'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
+            await cancellable(afterEffect('documentation', activeWork()), signal);
+            assertWork(activeWork()); commitDocumentation(work);
+            const record = activeWork().documentation ?? { base: work.base, files: [], outsideScope: [] };
+            const files = git(work.path, 'diff', '--name-only', record.base, 'HEAD').split('\n').filter(path =>
+              path && isDocumentation(path) && work.scopes.some(scope => within(path, scope)));
+            save({ documentation: { ...record, files, outsideScope: [...new Set(documented.findings)] },
+              stage: 'document-review' });
+          }
+          if (activeWork().stage === 'document-review') {
+            const review = await session(activeWork(), 'document-review', prompt +
+              'Review the documentation changes independently against the implementation, every criterion and the ' +
+              'task scope. Documentation may change only README files, Markdown files and docs or doc directories ' +
+              'inside the task scopes. Read files and context; the diff section shows all task changes. ' +
+              'Report accepted only with zero findings; otherwise changes-required with concrete findings.');
+            const reviews = [...(activeWork().documentationReviews ?? []), review];
+            if (review.outcome === 'accepted' && !review.findings.length) {
+              save({ documentationReviews: reviews, stage: 'final-checks', findings: [] });
+            } else {
+              save({ documentationReviews: reviews, findings: review.findings, stage: 'document' });
+            }
+          }
+        }
+        if (activeWork().stage === 'final-checks') {
+          assertWork(activeWork());
+          save({ documentationChecks: runProductChecks(work), stage: 'archive' });
+        }
+        if (activeWork().stage === 'archive') {
+          const now = activeWork();
+          const original = join(work.path, work.directory);
+          const archiveParent = `${project.changes}/archive`;
+          const pattern = new RegExp(`^\\d{4}-\\d{2}-\\d{2}-${work.change}$`, 'u');
+          const archived = () => existsSync(join(work.path, archiveParent)) ? readdirSync(join(work.path, archiveParent))
+            .filter(name => pattern.test(name)).map(name => `${archiveParent}/${name}`) : [];
+          // A change directory that is already gone was archived before a restart; the command never runs twice.
+          if (existsSync(original)) {
+            assertWork(now);
+            if (archived().length) throw new Error('Archived change directory already exists');
+            const definition = archiveCommand(project);
+            const args = definition.args.map(arg => arg.replaceAll('{change}', work.change));
+            try { runCommand(work.path, definition.command, args); }
+            catch (error) { throw new Error(`Archive command failed: ${failureDetail(error)}`); }
+          }
+          const found = archived();
+          if (existsSync(original) || found.length !== 1) throw new Error('Archive did not relocate the change directory');
+          const directory = found[0];
+          const specification = rekeyBinding(now.specification ?? {}, work.directory, directory);
+          for (const [path, expected] of Object.entries(specification)) {
+            const file = join(work.path, path);
+            if (!existsSync(file) || lstatSync(file).isSymbolicLink() || digest(readFileSync(file)) !== expected) {
+              throw new Error('Archived specification differs from binding');
+            }
+          }
+          let archivedPacket: Record<string, string> | undefined;
+          try { archivedPacket = packet(work.path, directory); } catch { archivedPacket = undefined; }
+          if (!archivedPacket || hash(archivedPacket) !== hash(specification)) {
+            throw new Error('Archived specification differs from binding');
+          }
+          const specs = specsDirectory(project.changes);
+          const paths = [work.directory, directory, specs].filter(path =>
+            existsSync(join(work.path, path)) || git(work.path, 'ls-files', '--', path));
+          if (paths.length) git(work.path, 'add', '-A', '--', ...paths);
+          if (git(work.path, 'diff', '--cached', '--name-only')) {
+            git(work.path, 'commit', '-m', commitSubject('docs', `archive ${work.change} for ${work.id}`));
+          }
+          const written = git(work.path, 'diff', '--name-only', work.base, 'HEAD', '--', specs).split('\n').filter(Boolean);
+          save({ archive: { directory, specs: written, head: git(work.path, 'rev-parse', 'HEAD') }, specification,
+            stage: 'receipt' });
+          await cancellable(afterEffect('archive', activeWork()), signal);
+        }
         if (activeWork().stage === 'receipt') {
           const now = activeWork(); assertWork(now);
           const paths = git(work.path, 'diff', '--name-only', work.base, 'HEAD').split('\n').filter(Boolean);
-          if (!paths.length || paths.some(path => ![...work.scopes, work.directory].some(scope => within(path, scope)))) {
+          if (!paths.length || outsideManifest(paths, now).length) {
             throw new Error('Empty or out-of-scope result manifest');
           }
           const manifest = paths.map(path => ({ path, hash: digest(readFileSync(join(work.path, path))) }));
           const receipt = { version: 1, id: work.id, taskHash: work.taskHash,
             authority: config.authority.reference, specification: now.specification,
-            review: { ...reviewRecord(now.review!), accepted: true }, checks: checkRecords(now.checks!), manifest,
+            review: { ...reviewRecord(now.review!), accepted: true },
+            checks: checkRecords(now.documentationChecks ?? now.checks!), manifest,
             head: git(work.path, 'rev-parse', 'HEAD'), base: work.base };
           const path = join(work.path, receiptPath(work.id)); mkdirSync(dirname(path), { recursive: true });
           writeFileSync(path, JSON.stringify(receipt, null, 2) + '\n');
@@ -542,10 +696,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         if (activeWork().stage === 'pr') {
           const now = activeWork();
           const body = join(store.directory, `${work.id}-pr.md`);
-          writeFileSync(body, `Outcome: ${work.id}\nOpenSpec change: ${work.change}\n` +
-            `Authority: ${config.authority.reference}\nTested head: ${now.head}\nTarget: ${now.testedTarget}\n` +
-            `Checks: ${JSON.stringify(checkRecords(now.finalChecks!))}\n` +
-            `Reviews: ${JSON.stringify(now.reviews!.map(reviewRecord))}\n`);
+          writeFileSync(body, pullRequestBody(now, config.authority.reference));
           let pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
           if (pr) rememberPr(pr);
           if (!pr) {
@@ -591,7 +742,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         if ((error as InterruptedFailure).interrupted) throw error;
         store.update({ blocked: { ...store.state.blocked, [work.id]: {
           reason: (error as Error).message, work: activeWork() } }, current: null });
-        report({ status: 'blocked', id: work.id });
+        // The reason reaches only the stderr mascot caption; the serialized event stays unchanged.
+        report({ status: 'blocked', id: work.id }, { reason: (error as Error).message });
       }
     }
   } finally {
