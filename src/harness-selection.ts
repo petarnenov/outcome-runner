@@ -1,3 +1,5 @@
+import { cancellable } from './statistics.ts';
+import type { Sources } from './statistics.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isatty } from 'node:tty';
@@ -15,7 +17,7 @@ export type Availability =
   { harness: Harness; available: true; version: string } |
   { harness: Harness; available: false; reason: string; version?: string };
 
-export interface Selection { harness: Harness; model: string; effort: string; coverage: number }
+export interface Selection { harness: Harness; model: string; effort: string; coverage: number; statisticsSources?: Sources }
 
 export interface SelectionDeps {
   /** True only when both stdin and stderr are TTYs, as in the OpenSpec preflight. */
@@ -29,6 +31,9 @@ export interface SelectionDeps {
   /** Reads Codex defaults and catalog; called at most once per start and only for Codex. */
   readCodex: (cwd: string) => Promise<CodexSelection>;
   /** Returns the selection recorded in an existing invocation state, or null. */
+  signal?: AbortSignal;
+  sources?: Sources;
+  onResolved?: (config: RunConfig, sources: Sources, version?: string) => void;
   recorded: (stateDirectory: string) => Partial<Selection> | null;
 }
 
@@ -75,11 +80,13 @@ export function recordedSelection(stateDirectory: string): Partial<Selection> | 
   const file = join(stateDirectory, 'state.json');
   if (!existsSync(file)) return null;
   try {
-    const identity = JSON.parse(readFileSync(file, 'utf8'))?.identity ?? {};
+    const state = JSON.parse(readFileSync(file, 'utf8'));
+    const identity = state?.identity ?? {};
     const { harness, model, effort, coverage } = identity as Record<string, unknown>;
     if (typeof harness !== 'string' || typeof model !== 'string' || typeof effort !== 'string' ||
         typeof coverage !== 'number') return null;
-    return { harness: harness as Harness, model, effort, coverage };
+    return { harness: harness as Harness, model, effort, coverage,
+      ...(state.statisticsSources ? { statisticsSources: state.statisticsSources } : {}) };
   } catch {
     // Advisory only: the run store still decides whether the state is compatible.
     return null;
@@ -89,7 +96,7 @@ export function recordedSelection(stateDirectory: string): Partial<Selection> | 
 export function defaultSelectionDeps(): SelectionDeps {
   return {
     interactive: isInteractive({ isTTY: isatty(0) }, { isTTY: isatty(2) }),
-    ask: promptOn(process.stdin, process.stderr),
+    ask: question => promptOn(process.stdin, process.stderr)(question),
     say: text => { process.stderr.write(text); },
     probe: probeHarness,
     readCodex: codexSelection,
@@ -123,22 +130,34 @@ export function defaultEffort(efforts: readonly string[], model: string, codex?:
  */
 export async function selectHarness(config: RunConfig, overrides: Partial<SelectionDeps> = {}): Promise<SelectionResult> {
   const deps: SelectionDeps = { ...defaultSelectionDeps(), ...overrides };
+  if (!overrides.ask) deps.ask = question => promptOn(process.stdin, process.stderr, deps.signal)(question);
+  if (!overrides.readCodex) deps.readCodex = cwd => codexSelection(cwd, undefined, deps.signal);
+  deps.signal?.throwIfAborted();
   const statuses = harnesses.map(harness => deps.probe(harness));
   const available = statuses.filter(status => status.available).map(status => status.harness);
   if (deps.interactive) deps.say(statuses.map(status => `${describeAvailability(status)}\n`).join(''));
   const refuse = (prefix: string): never => { throw new HarnessUnavailableError(`${prefix}: ${refusalList(statuses)}`); };
 
   const selected: RunConfig = { ...config };
+  const sources: Sources = { ...deps.sources };
+  for (const key of ['harness', 'model', 'effort', 'coverage', 'maxAccepted', 'leaves'] as const) {
+    sources[key] ??= config[key] !== undefined ? 'invocation-json' : 'default';
+  }
   const recorded = deps.recorded(config.stateDirectory);
   if (recorded) {
+    // Saved provenance is advisory metadata, never part of frozen config identity.
+    Object.assign(sources, recorded.statisticsSources ?? Object.fromEntries(
+      ['harness', 'model', 'effort', 'coverage', 'maxAccepted', 'leaves'].map(key => [key, 'default'])));
     selected.harness ??= recorded.harness; selected.model ??= recorded.model; selected.effort ??= recorded.effort;
     if (selected.coverage === undefined) selected.coverage = recorded.coverage;
   }
   const prompting = deps.interactive && !recorded;
-  const choose = async (label: string, options: readonly string[], preselected: string): Promise<string> => {
+  const choose = async (label: 'Harness' | 'Model' | 'Effort', options: readonly string[], preselected: string): Promise<string> => {
     deps.say(`${label} options: ${options.map((option, index) => `${index + 1}) ${option}`).join('  ')}\n`);
     for (;;) {
-      const answer = (await deps.ask(`${label} [${preselected}]: `)).trim();
+      const answer = (await cancellable(deps.ask(`${label} [${preselected}]: `), deps.signal)).trim();
+      const key = label.toLowerCase() as 'harness' | 'model' | 'effort';
+      sources[key] = answer ? 'interactive-answer' : 'default';
       if (!answer) return preselected;
       if (options.includes(answer)) return answer;
       if (/^\d+$/u.test(answer) && Number(answer) >= 1 && Number(answer) <= options.length) return options[Number(answer) - 1];
@@ -156,7 +175,7 @@ export async function selectHarness(config: RunConfig, overrides: Partial<Select
   if (!harnesses.includes(selected.harness)) return { config: selected };
   if (!available.includes(selected.harness)) refuse(`Harness ${selected.harness} is unavailable`);
 
-  const codex = selected.harness === 'codex' ? await deps.readCodex(config.root) : undefined;
+  const codex = selected.harness === 'codex' ? await cancellable(deps.readCodex(config.root), deps.signal) : undefined;
   const catalog: Catalog = codex ? codex.catalog : claudeCatalog;
   if (prompting && selected.model === undefined) {
     const models = [...catalog.keys()];
@@ -169,7 +188,8 @@ export async function selectHarness(config: RunConfig, overrides: Partial<Select
   }
   if (prompting && selected.coverage === undefined) {
     for (;;) {
-      const answer = (await deps.ask(`Coverage threshold (1-100) [${DEFAULT_COVERAGE}]: `)).trim();
+      const answer = (await cancellable(deps.ask(`Coverage threshold (1-100) [${DEFAULT_COVERAGE}]: `), deps.signal)).trim();
+      sources.coverage = answer ? 'interactive-answer' : 'default';
       if (!answer) { selected.coverage = DEFAULT_COVERAGE; break; }
       if (/^\d+$/u.test(answer) && Number(answer) >= 1 && Number(answer) <= 100) { selected.coverage = Number(answer); break; }
       deps.say('Coverage must be an integer from 1 to 100.\n');
@@ -177,5 +197,7 @@ export async function selectHarness(config: RunConfig, overrides: Partial<Select
   }
   if (!codex) { selected.model ??= defaultSelection.model; selected.effort ??= defaultSelection.effort; }
   if (selected.coverage === undefined) selected.coverage = DEFAULT_COVERAGE;
+  const observed = statuses.find(status => status.harness === selected.harness);
+  deps.onResolved?.(selected, sources, observed?.version);
   return codex ? { config: selected, codex } : { config: selected };
 }

@@ -70,6 +70,7 @@ export type SpawnProcess = (command: string, args: string[],
   options: SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioPipe>) => WorkerProcess;
 
 export interface HarnessOptions {
+  onUsage?: (usage: import('./statistics.ts').TokenUsage | null) => void;
   cwd: string;
   tools: ToolDefinition[];
   handleTool: (name: string, input: ToolInput, context: ToolContext) => Promise<unknown>;

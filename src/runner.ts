@@ -1,3 +1,5 @@
+import { cancellable, tokenUsage } from './statistics.ts';
+import type { Sources, Statistics } from './statistics.ts';
 import { existsSync, mkdirSync, readFileSync, readdirSync, lstatSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { hostname } from 'node:os';
@@ -40,6 +42,8 @@ export interface RunResult {
 }
 
 export interface RunOptions {
+  statistics?: Statistics;
+  signal?: AbortSignal;
   now?: () => number;
   mergePolling?: import('./git.ts').MergePolling;
   host?: PullRequestHost;
@@ -101,11 +105,22 @@ export function packet(root: string, directory: string): Record<string, string> 
 export async function runQueue(requested: RunConfig, options: RunOptions = {}): Promise<RunResult> {
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
   // the lock, claims and worktrees.
-  await openspecPreflight(requested, options.openspec);
+  const statistics = options.statistics;
+  const signal = options.signal;
+  await cancellable(openspecPreflight(requested, { ...options.openspec, signal }), signal);
   // Selected values enter the configuration before it is hashed, so they are frozen exactly like flags.
   // A Codex selection reads Codex once; resolution reuses that read instead of opening another session.
-  const { config: selected, codex } = await selectHarness(requested, options.selection);
-  const config = await resolveHarness(selected, codex ? async () => codex : codexSelection);
+  let sources: Sources = {}; let harnessVersion: string | undefined;
+  const { config: selected, codex } = await cancellable(selectHarness(requested, {
+    ...options.selection, signal, sources: statistics?.sources,
+    onResolved: (config, resolvedSources, version) => {
+      sources = resolvedSources; harnessVersion = version;
+      statistics?.resolved(config, sources, version);
+    },
+  }), signal);
+  const config = await cancellable(resolveHarness(selected, codex ? async () => codex :
+    cwd => codexSelection(cwd, undefined, signal)), signal);
+  statistics?.resolved(config, sources, harnessVersion);
   validateConfig(config);
   const { afterEffect = async () => {}, report = () => {}, now = Date.now } = options;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
@@ -120,7 +135,10 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   const lock = new DatabaseSync(join(lockRoot, `${hash(primary)}.sqlite`));
   let store!: RunStore; let adapter: HarnessAdapter | null | undefined; let stopped = false;
   const ownershipFile = join(lockRoot, `${hash(primary)}-owner.json`);
-  const stop = () => { stopped = true; adapter?.close(); };
+  const stop = () => { stopped = true; adapter?.close();
+    if (store?.state.current) statistics?.decision(store.state.current, 'blocked', store.state.current, 'cancelled');
+  };
+  signal?.addEventListener('abort', stop, { once: true });
   try {
     lock.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;');
     if (existsSync(ownershipFile)) {
@@ -148,13 +166,21 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       }
     });
     store = new RunStore(config.stateDirectory, { ...config, root, leaves: ids }, { repositoryRoot: root });
+    sources = store.state.statisticsSources ?? sources;
+    if (!store.state.statisticsSources) store.update({ statisticsSources: sources });
+    statistics?.resolved(config, sources, harnessVersion);
+    statistics?.setting('leaves', [...ids], sources.leaves ?? 'default');
     writeFileSync(ownershipFile, JSON.stringify(ownership), { mode: 0o600 });
     const host: PullRequestHost = options.host ?? new GitHubHost(root, project);
     const ledger = new ClaimLedger(root, project.target);
     if (!store.state.claimant) store.update({ claimant: randomUUID() });
     const claimant = store.state.claimant!;
     const commitSubject = (type: string, text: string) => `${type}(${project.commitScope ?? 'work-queue'}): ${text}${project.commitSuffix ?? ''}`;
-    const save = (fields: Partial<Work>) => store.update({ current: { ...store.state.current, ...fields } as Work });
+    const save = (fields: Partial<Work>) => {
+      const result = store.update({ current: { ...store.state.current, ...fields } as Work });
+      statistics?.decision(result.current!, 'blocked', result.current!);
+      return result;
+    };
     const activeWork = () => store.state.current as Work;
     const authorized = (queue: Queue, id: string): Task => {
       const task = queue.tasks.find(item => item.id === id);
@@ -172,13 +198,25 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       }
       return true;
     };
-    const checks = (work: Work, definitions: CommandSpec[]): CheckRecord[] => definitions.map(check => {
-      const args = check.args.map(arg => arg.replaceAll('{change}', work.change)
-        .replaceAll('{target}', project.target).replaceAll('{scope}', work.scopes[0])
-        .replaceAll('{coverage}', String(config.coverage)));
-      const output = command(work.path, check.command, args);
-      return { command: check.command, args, outcome: 'passed', output: output.slice(-16000) };
-    });
+    const checks = (work: Work, definitions: CommandSpec[]): CheckRecord[] => {
+      const rows: CheckRecord[] = [];
+      const finalGate = definitions === project.checks && activeWork()?.stage === 'publish';
+      for (const check of definitions) {
+        const args = check.args.map(arg => arg.replaceAll('{change}', work.change)
+          .replaceAll('{target}', project.target).replaceAll('{scope}', work.scopes[0])
+          .replaceAll('{coverage}', String(config.coverage)));
+        try {
+          const output = command(work.path, check.command, args);
+          rows.push({ command: check.command, args, outcome: 'passed', output: output.slice(-16000) });
+        } catch (error) {
+          rows.push({ command: check.command, args, outcome: 'failed' });
+          if (finalGate) save({ finalChecks: rows });
+          throw error;
+        }
+        if (finalGate) save({ finalChecks: rows });
+      }
+      return rows;
+    };
     const commit = (work: Work): void => {
       git(work.path, 'add', '--', ...work.scopes, work.directory);
       if (git(work.path, 'diff', '--cached', '--name-only')) {
@@ -221,9 +259,16 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           { path: work.directory, mode: 'read' }, ...writable.map(path => ({ path, mode: 'write' }))],
         store, identity: { id: work.id, operation: work.operation, purpose },
         revalidate: async () => assertWork(activeWork()) });
-      adapter = createAdapter({ cwd: work.path, tools: [brokerTool, reportTool],
+      signal?.throwIfAborted();
+      const starts = activeWork().sessionStarts ?? Object.fromEntries(
+        (['investigate', 'plan', 'work', 'review'] as const).map(key =>
+          [key, (activeWork().sessions ?? []).filter(session => session.purpose === key).length]));
+      save({ sessionStarts: { ...starts, [purpose]: (starts[purpose] ?? 0) + 1 } });
+      const usage = statistics?.session(work.id);
+      adapter = createAdapter({ cwd: work.path, tools: [brokerTool, reportTool], onUsage: usage,
         onHandle: handle => save({ session: { purpose, ...handle } }),
         handleTool: async (name, input) => {
+          signal?.throwIfAborted();
           if (name === brokerTool.name && input.operation === 'run_checks') {
             if (!['work', 'review'].includes(purpose) || !activeWork().specification) {
               throw new Error('Product checks require a bound specification');
@@ -252,7 +297,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         } });
       try {
         if (adapter.probe().status !== 'interface-ready') throw new Error('Selected harness interface unavailable');
-        const reply = await adapter.startAction('OFF. Never ask a person anything. All output is private. ' +
+        const reply = await cancellable(adapter.startAction('OFF. Never ask a person anything. All output is private. ' +
           'Use only backlog_tool operations read_file/write_file/context/run_checks and outcome_report. ' +
           'Read files with input {path,offset}; write with {path,content,expectedHash} from the read result. ' +
           'A read returns one page: repeat it with nextOffset until nextOffset is null. hash covers the whole file. ' +
@@ -261,18 +306,22 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           'run_checks takes input {} and runs only frozen project checks after specification binding; ' +
           'read their output through the checks section. ' +
           'Read applicable AGENTS.md. Report blockers privately. No shell or approval tools.\n' +
-          `Resolved coverage threshold: ${config.coverage}%.\n` + prompt);
+          `Resolved coverage threshold: ${config.coverage}%.\n` + prompt), signal);
+        for (const event of reply.events) {
+          if (event.type === 'token-usage') usage?.(tokenUsage(event));
+        }
         save({ sessions: [...(activeWork().sessions ?? []), {
           purpose, threadId: reply.threadId, events: reply.events, privateText: reply.text }] });
         if (!result || result.outcome === 'blocked') throw new Error(`Worker ${purpose} incomplete`);
         return { ...result, reviewer: `${config.harness}:${reply.threadId}` };
       } finally { adapter.close(); adapter = null; }
     };
-    process.once('SIGINT', stop); process.once('SIGTERM', stop);
+    process.on('SIGINT', stop); process.on('SIGTERM', stop);
     const recovery = Object.values(store.state.blocked ?? {}).map(entry => entry.work).filter(Boolean);
     store.update({ blocked: {} });
     for (;;) {
       await yieldLoop();
+      if (signal?.aborted) stopped = true;
       const { target, queue } = refresh();
       const completed = { ...(store.state.completed ?? {}) };
       const done = new Set<string>();
@@ -306,6 +355,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           const finished = { ...current, claimedAt, acceptedAt, completion, acceptedTarget: target };
           store.update({ current: null, completed: { ...completed, [current.id]: finished } });
           completed[current.id] = finished;
+          statistics?.decision(finished, 'accepted', finished);
         } catch (error) {
           store.update({ blocked: { ...store.state.blocked, [current.id]: {
             reason: failureDetail(error), work: current } }, current: null });
@@ -317,6 +367,11 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       }
       const newlyAccepted = Object.keys(completed).filter(id => done.has(id) && !store.state.baselineDone!.includes(id));
       const remaining = ids.filter(id => !done.has(id));
+      for (const task of queue.tasks.filter(task => remaining.includes(task.id))) {
+        if (task.id === store.state.current?.id) statistics?.decision(task, 'blocked', store.state.current);
+        else if (store.state.blocked?.[task.id]) statistics?.decision(task, 'blocked', store.state.blocked[task.id].work);
+        else statistics?.decision(task);
+      }
       if (config.maxAccepted && newlyAccepted.length >= config.maxAccepted) {
         if (!Object.keys(store.state.blocked!).length && !store.state.current && !recovery.length) release();
         return { status: 'limit-reached', ...resultData(newlyAccepted), remaining };
@@ -331,6 +386,11 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         const ledgerSnapshot = ledger.pull();
         const foreignClaims = [...ledgerSnapshot.claims.values()]
           .filter(claim => claim.claimant !== claimant && !done.has(claim.id));
+        for (const candidate of queue.tasks.filter(task => remaining.includes(task.id))) {
+          if (foreignClaims.some(claim => claim.id === candidate.id || scopesOverlap(claim.scopes, candidate.scopes))) {
+            statistics?.decision(candidate, 'claimed-elsewhere');
+          }
+        }
         const task = queue.tasks.filter(task => remaining.includes(task.id) && !store.state.blocked![task.id] &&
           task.dependencies.every(id => done.has(id)) &&
           !foreignClaims.some(claim => claim.id === task.id || scopesOverlap(claim.scopes, task.scopes)) &&
@@ -380,133 +440,4 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           let bound = false;
           for (let attempt = 0; attempt < 4; attempt += 1) {
             // Graded test fragments come from the frozen threshold on every attempt, so replanning repeats them.
-            await session(work, 'plan', prompt + 'Create proposal.md, design.md, tasks.md and specs/<capability>/spec.md. ' +
-              'Use OpenSpec delta headings and WHEN/THEN scenarios. Stay within task scope; do not edit product files. ' +
-              'This session writes only those planning artifacts. Product file writes and run_checks are refused until ' +
-              'the specification is bound, in a later session; that is expected and not a blocker, so do not attempt them. ' +
-              'When the artifacts are written, call outcome_report with outcome ready. ' +
-              planTestInstructions(config.coverage) + ' ' +
-              'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
-            let specification;
-            try {
-              specification = packet(work.path, work.directory);
-              checks(work, [project.planningCheck]);
-            } catch (error) {
-              save({ findings: [failureDetail(error)] }); continue;
-            }
-            const review = await session(work, 'review', prompt +
-              'Review planning artifacts independently against exact source criteria, scope and decisions. ' +
-              'Report accepted only with zero findings; otherwise changes-required with concrete findings. ' +
-              planningReviewTestInstructions(config.coverage));
-            save({ planningReviews: [...(activeWork().planningReviews ?? []), review] });
-            if (review.outcome === 'accepted' && !review.findings.length) {
-              save({ specification, stage: 'work', findings: [] }); bound = true; break;
-            }
-            save({ findings: review.findings });
-          }
-          if (!bound) throw new Error('Planning review remains unresolved');
-        }
-        if (activeWork().stage === 'work') {
-          let passed = false;
-          for (let attempt = 0; attempt < 4; attempt += 1) {
-            await session(activeWork(), 'work', prompt +
-              'Implement all approved OpenSpec scenarios and every test marked (required) within product scope; ' +
-              'write (coverage-only) tests only as the graded test rules below allow. ' +
-              workTestInstructions(config.coverage) + ' Preserve bound specs. ' +
-              'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
-            await afterEffect('implementation', activeWork());
-            assertWork(activeWork()); commit(work);
-            try { save({ checks: checks(work, project.checks) }); }
-            catch (error) { save({ findings: [failureDetail(error)] }); continue; }
-            const review = await session(activeWork(), 'review', prompt +
-              'Review actual implementation independently against every criterion, scope, security and test evidence. ' +
-              'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required. ' +
-              'When reporting accepted, provide completion.summary with two or three English sentences describing what ' +
-              'the whole task changed, and completion.grade for whole-task complexity: A (most complex), B, C, D, ' +
-              'E (easiest). Grade complexity, not correctness, quality or execution speed. ' +
-              implementationReviewTestInstructions(config.coverage), true);
-            save({ reviews: [...(activeWork().reviews ?? []), review] });
-            if (review.outcome === 'accepted' && !review.findings.length) {
-              save({ review: { ...review, accepted: true }, stage: 'receipt', findings: [] }); passed = true; break;
-            }
-            save({ findings: review.findings });
-          }
-          if (!passed) throw new Error('Implementation checks or review remain unresolved');
-        }
-        if (activeWork().stage === 'receipt') {
-          const now = activeWork(); assertWork(now);
-          const paths = git(work.path, 'diff', '--name-only', work.base, 'HEAD').split('\n').filter(Boolean);
-          if (!paths.length || paths.some(path => ![...work.scopes, work.directory].some(scope => within(path, scope)))) {
-            throw new Error('Empty or out-of-scope result manifest');
-          }
-          const manifest = paths.map(path => ({ path, hash: digest(readFileSync(join(work.path, path))) }));
-          const receipt = { version: 1, id: work.id, taskHash: work.taskHash,
-            authority: config.authority.reference, specification: now.specification,
-            review: { ...reviewRecord(now.review!), accepted: true }, checks: checkRecords(now.checks!), manifest,
-            head: git(work.path, 'rev-parse', 'HEAD'), base: work.base };
-          const path = join(work.path, receiptPath(work.id)); mkdirSync(dirname(path), { recursive: true });
-          writeFileSync(path, JSON.stringify(receipt, null, 2) + '\n');
-          git(work.path, 'add', '--', receiptPath(work.id));
-          git(work.path, 'commit', '-m', `docs(${project.commitScope ?? 'work-queue'}): record ${work.id} acceptance evidence${project.commitSuffix ?? ''}`);
-          save({ stage: 'publish' });
-        }
-        if (activeWork().stage === 'publish') {
-          assertWork(activeWork());
-          const targetNow = refresh().target;
-          integrateTarget(work, targetNow);
-          save({ finalChecks: checks(work, project.checks) });
-          if (git(work.path, 'status', '--porcelain')) throw new Error('Final checks changed tracked inputs');
-          const head = git(work.path, 'rev-parse', 'HEAD');
-          git(work.path, 'push', 'origin', `HEAD:refs/heads/${work.branch}`);
-          save({ head, testedTarget: targetNow, stage: 'pr' });
-        }
-        if (activeWork().stage === 'pr') {
-          const now = activeWork();
-          const body = join(store.directory, `${work.id}-pr.md`);
-          writeFileSync(body, `Outcome: ${work.id}\nOpenSpec change: ${work.change}\n` +
-            `Authority: ${config.authority.reference}\nTested head: ${now.head}\nTarget: ${now.testedTarget}\n` +
-            `Checks: ${JSON.stringify(checkRecords(now.finalChecks!))}\n` +
-            `Reviews: ${JSON.stringify(now.reviews!.map(reviewRecord))}\n`);
-          let pr = await host.find(work.branch);
-          if (!pr) { pr = await host.create(now, body); await afterEffect('pr', pr); }
-          if (!pr || pr.state === 'CLOSED') throw new Error('PR unavailable or closed');
-          save({ pr, stage: 'merge' });
-        }
-        if (activeWork().stage === 'merge') {
-          const now = activeWork();
-          const polling = options.mergePolling ?? {};
-          const limit = polling.views ?? MERGE_STATE_VIEWS;
-          for (let view = 1; ; view += 1) {
-            const pr = await host.find(work.branch);
-            if (!pr) throw new Error('Recorded PR missing');
-            if (pr.state === 'MERGED') break;
-            if (pr.state !== 'OPEN') throw new Error('PR unavailable or closed');
-            assertWork(now);
-            if (git(work.path, 'rev-parse', 'HEAD') !== now.head) {
-              throw new Error('Checked head or target changed');
-            }
-            if (refresh().target !== now.testedTarget) { save({ stage: 'publish' }); break; }
-            if (pr.headRefOid === now.head) {
-              await host.merge(pr, now.head!); await afterEffect('merge', pr);
-              break;
-            }
-            assertOriginHead(work.path, work.branch, now.head!);
-            if (view >= limit) throw new Error('Checked head or target changed');
-            await (polling.delay ?? delay)(polling.pollMs ?? MERGE_STATE_POLL_MS);
-          }
-          if (activeWork().stage === 'publish') continue;
-          const targetNow = refresh().target;
-          if (!accepted(targetNow, authorized(refresh().queue, work.id))) throw new Error('Merged result lacks valid receipt');
-        }
-      } catch (error) {
-        if ((error as InterruptedFailure).interrupted) throw error;
-        store.update({ blocked: { ...store.state.blocked, [work.id]: {
-          reason: (error as Error).message, work: activeWork() } }, current: null });
-        report({ status: 'blocked', id: work.id });
-      }
-    }
-  } finally {
-    adapter?.close(); store?.close(); lock.close();
-    process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
-  }
-}
+            await session(work, 'plan', prompt 

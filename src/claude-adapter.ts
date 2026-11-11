@@ -1,3 +1,4 @@
+import { tokenUsage } from './statistics.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createServer } from 'node:http';
@@ -33,6 +34,7 @@ interface ClaudeMessage {
   is_error?: boolean;
   modelUsage?: Record<string, { canonicalModel: string }>;
   result?: string;
+  usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
 }
 
 const minimumVersion = '2.1.321';
@@ -47,6 +49,7 @@ export class ClaudeAdapter implements HarnessAdapter {
   tools: ToolDefinition[];
   handleTool: HarnessOptions['handleTool'];
   onHandle: NonNullable<HarnessOptions['onHandle']>;
+  onUsage?: HarnessOptions['onUsage'];
   executable: string;
   model: string;
   effort: string;
@@ -64,11 +67,12 @@ export class ClaudeAdapter implements HarnessAdapter {
   result!: WorkerReply | null;
   reject?: (reason: unknown) => void;
 
-  constructor({ cwd, tools, handleTool, onHandle = async () => {}, executable = 'claude',
+  constructor({ cwd, tools, handleTool, onHandle = async () => {}, onUsage, executable = 'claude',
     model = defaultSelection.model, effort = defaultSelection.effort, spawnProcess = spawn,
     environment = process.env }: AdapterOptions) {
     assertSelection('claude', claudeCatalog, String(model), String(effort));
     if (!tools.length || new Set(tools.map(tool => tool.name)).size !== tools.length || tools.some(tool => !/^[a-zA-Z0-9_-]+$/u.test(tool.name))) throw new Error('Invalid private tool catalog');
+    this.onUsage = onUsage;
     this.cwd = cwd; this.tools = tools; this.handleTool = handleTool; this.onHandle = onHandle;
     this.executable = executable; this.model = String(model); this.effort = String(effort); this.spawnProcess = spawnProcess;
     this.environment = claudeEnvironment(environment); this.events = []; this.certified = false;
@@ -165,6 +169,11 @@ export class ClaudeAdapter implements HarnessAdapter {
           Object.values(message.modelUsage).some(value => value.canonicalModel !== this.model)) {
         throw new Error('Claude worker did not complete with the pinned model');
       }
+      const usage = tokenUsage({ inputTokens: message.usage?.input_tokens,
+        outputTokens: message.usage?.output_tokens,
+        totalTokens: undefined });
+      this.onUsage?.(usage);
+      if (usage) this.events.push({ type: 'token-usage', ...usage });
       this.result = { status: 'worker-returned', threadId: this.threadId, text: message.result ?? '', events: this.events };
     }
   }

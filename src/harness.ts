@@ -19,16 +19,19 @@ interface EffectiveCodexConfig { config?: { model?: string; model_reasoning_effo
 
 /** Reads Codex defaults and its model catalog over one short, read-only app-server session. */
 export async function codexSelection(cwd: string,
-  create: (options: AdapterOptions) => CodexAdapter = options => new CodexAdapter(options)): Promise<CodexSelection> {
+  create: (options: AdapterOptions) => CodexAdapter = options => new CodexAdapter(options), signal?: AbortSignal): Promise<CodexSelection> {
   const adapter = create({ cwd, tools: [], handleTool: async () => {} });
+  const stop = () => adapter.close();
+  signal?.addEventListener('abort', stop, { once: true });
   try {
+    signal?.throwIfAborted();
     if (adapter.probe().status !== 'interface-ready') throw new Error('Codex selection unavailable');
     await adapter.connect();
     const result = await adapter.rpc<EffectiveCodexConfig>('config/read', { includeLayers: false, cwd });
     const { catalog, defaultModel, defaultEfforts } = await adapter.modelList();
     return { model: result?.config?.model, effort: result?.config?.model_reasoning_effort, catalog,
       ...(defaultModel === undefined ? {} : { defaultModel }), defaultEfforts };
-  } finally { adapter.close(); }
+  } finally { signal?.removeEventListener('abort', stop); adapter.close(); }
 }
 export async function resolveHarness(config: RunConfig,
   readCodex: (cwd: string) => Promise<CodexSelection> = codexSelection): Promise<ResolvedRunConfig> {

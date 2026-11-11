@@ -25,6 +25,7 @@ export class PreflightError extends Error {
 export interface ProcessStatus { status: number | null }
 
 export interface PreflightDeps {
+  signal?: AbortSignal;
   /** True only when both stdin and stderr are TTYs. */
   interactive: boolean;
   /** Asks one question on stderr and resolves with the answer line ('' when stdin closes). */
@@ -47,10 +48,13 @@ interface TtyStream { isTTY?: boolean }
 export const isInteractive = (stdin: TtyStream, stderr: TtyStream): boolean => Boolean(stdin.isTTY && stderr.isTTY);
 
 /** Prompts on `output` and reads one line from `input`; a closed input answers ''. */
-export function promptOn(input: Readable, output: Writable): (question: string) => Promise<string> {
+export function promptOn(input: Readable, output: Writable, signal?: AbortSignal): (question: string) => Promise<string> {
   return question => new Promise<string>(resolve => {
     const reader = createInterface({ input, terminal: false });
-    reader.once('close', () => resolve(''));
+    const cancel = () => reader.close();
+    reader.once('close', () => { signal?.removeEventListener('abort', cancel); resolve(''); });
+    signal?.addEventListener('abort', cancel, { once: true });
+    if (signal?.aborted) { reader.close(); return; }
     output.write(question);
     reader.once('line', line => { resolve(line); reader.close(); });
   });
@@ -96,6 +100,10 @@ const accepted = (answer: string): boolean => ['y', 'yes'].includes(answer.trim(
  */
 export async function openspecPreflight(config: RunConfig, overrides: Partial<PreflightDeps> = {}): Promise<void> {
   const deps: PreflightDeps = { ...defaultPreflightDeps(), ...overrides };
+  if (!overrides.ask) deps.ask = question => promptOn(process.stdin, process.stderr, deps.signal)(question);
+  const ask = deps.ask;
+  deps.ask = async question => { const answer = await ask(question); deps.signal?.throwIfAborted(); return answer; };
+  deps.signal?.throwIfAborted();
   const project = config?.project;
   const target = project?.target;
   if (!config?.root || typeof target !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9/_-]*$/u.test(target) ||
