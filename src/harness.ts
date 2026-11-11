@@ -6,7 +6,15 @@ import type { AdapterOptions, HarnessAdapter, HarnessOptions } from './harness-a
 import { resolveCoverage } from './model.ts';
 import type { Harness, ResolvedRunConfig, RunConfig } from './model.ts';
 
-export interface CodexSelection { model?: string; effort?: string; catalog: Catalog }
+export interface CodexSelection {
+  model?: string;
+  effort?: string;
+  catalog: Catalog;
+  /** The `model/list` entry marked `isDefault`; used only to preselect an interactive answer. */
+  defaultModel?: string;
+  /** Per-model `defaultReasoningEffort` from `model/list`; used only to preselect an interactive answer. */
+  defaultEfforts?: ReadonlyMap<string, string>;
+}
 interface EffectiveCodexConfig { config?: { model?: string; model_reasoning_effort?: string } }
 
 /** Reads Codex defaults and its model catalog over one short, read-only app-server session. */
@@ -17,8 +25,9 @@ export async function codexSelection(cwd: string,
     if (adapter.probe().status !== 'interface-ready') throw new Error('Codex selection unavailable');
     await adapter.connect();
     const result = await adapter.rpc<EffectiveCodexConfig>('config/read', { includeLayers: false, cwd });
-    const catalog = await adapter.models();
-    return { model: result?.config?.model, effort: result?.config?.model_reasoning_effort, catalog };
+    const { catalog, defaultModel, defaultEfforts } = await adapter.modelList();
+    return { model: result?.config?.model, effort: result?.config?.model_reasoning_effort, catalog,
+      ...(defaultModel === undefined ? {} : { defaultModel }), defaultEfforts };
   } finally { adapter.close(); }
 }
 export async function resolveHarness(config: RunConfig,

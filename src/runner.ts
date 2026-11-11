@@ -12,7 +12,9 @@ import { pageOffset, readPage } from './text-page.ts';
 import { RunStore } from './run-store.ts';
 import { ClaimLedger } from './claims.ts';
 import { CodexFiles, brokerTool } from './codex-files.ts';
-import { resolveHarness, createHarness } from './harness.ts';
+import { resolveHarness, createHarness, codexSelection } from './harness.ts';
+import { selectHarness } from './harness-selection.ts';
+import type { SelectionDeps } from './harness-selection.ts';
 import { openspecPreflight } from './openspec-preflight.ts';
 import type { PreflightDeps } from './openspec-preflight.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
@@ -33,6 +35,8 @@ export interface RunOptions {
   report?: (event: RunEvent) => void;
   /** Injectable effects of the OpenSpec preflight; omitted fields use the real process, TTY and filesystem. */
   openspec?: Partial<PreflightDeps>;
+  /** Injectable prompts, harness probes, Codex reader and recorded state of the harness selection. */
+  selection?: Partial<SelectionDeps>;
 }
 
 interface CommandFailure extends Error { stderr?: string | Buffer }
@@ -78,9 +82,13 @@ export function packet(root: string, directory: string): Record<string, string> 
 }
 
 export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
-  // The OpenSpec preflight precedes harness resolution, the lock, claims and worktrees.
+  // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
+  // the lock, claims and worktrees.
   await openspecPreflight(requested, options.openspec);
-  const config = await resolveHarness(requested);
+  // Selected values enter the configuration before it is hashed, so they are frozen exactly like flags.
+  // A Codex selection reads Codex once; resolution reuses that read instead of opening another session.
+  const { config: selected, codex } = await selectHarness(requested, options.selection);
+  const config = await resolveHarness(selected, codex ? async () => codex : codexSelection);
   validateConfig(config);
   const { afterEffect = async () => {}, report = () => {} } = options;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));

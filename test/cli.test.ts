@@ -122,15 +122,16 @@ for (const [name, content] of [['missing', null], ['invalid', '{"version":1,"tas
   });
 }
 
-test('coverage resolves defaults, JSON values and CLI overrides before the runner', async t => {
+test('coverage passes JSON values and CLI overrides to the runner and stays unset when not given', async t => {
   const base = workspace(t); const root = repository(base, 'project');
+  // Unset coverage lets the runner ask for it interactively; non-interactive runs then default to 85.
   for (const [json, args, expected] of [
-    [{}, [], 85],
+    [{}, [], undefined],
     [{ coverage: 90 }, [], 90],
     [{ coverage: 90 }, ['--coverage=95'], 95],
     [{ coverage: 'invalid' }, ['--coverage=92'], 92],
     ...[1, 100].flatMap(coverage => [[{ coverage }, [], coverage], [{}, [`--coverage=${coverage}`], coverage]]),
-  ] as [object, string[], number][]) {
+  ] as [object, string[], number | undefined][]) {
     let received!: RunConfig;
     assert.equal(await main(invocationFile(base, { invocation: 'nightly', ...json }),
       async config => { received = config; return { status: 'exhausted' }; }, () => {}, { cwd: root, args }), 0);
@@ -141,4 +142,11 @@ test('coverage resolves defaults, JSON values and CLI overrides before the runne
     received = config; return { status: 'exhausted' };
   }, () => {}, { cwd: root, args: ['--effort=high', '--coverage=93', '--model=claude-sonnet-5-5', '--harness=claude'] }), 0);
   assert.equal(received.coverage, 93); assert.equal(received.effort, 'high');
+  for (const value of ['0', '101', '85.5', 'abc']) {
+    let ran = false; let output = '';
+    assert.equal(await main(invocationFile(base), async () => { ran = true; return { status: 'exhausted' }; },
+      line => { output += line; }, { cwd: root, args: [`--coverage=${value}`] }), 4);
+    assert.equal(ran, false);
+    rmSync(join(JSON.parse(output).diagnostics, '..'), { recursive: true, force: true });
+  }
 });

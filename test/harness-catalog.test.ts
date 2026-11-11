@@ -6,7 +6,7 @@ import { PassThrough, Writable } from 'node:stream';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertSelection, claudeCatalog, codexCatalog, defaultSelection, harnessCatalog } from '../src/harness-catalog.ts';
+import { assertSelection, claudeCatalog, codexCatalog, codexModels, defaultSelection, harnessCatalog } from '../src/harness-catalog.ts';
 import { CodexAdapter } from '../src/codex-adapter.ts';
 import { codexSelection, resolveHarness } from '../src/harness.ts';
 import { main, parseFlags } from '../src/cli.ts';
@@ -101,6 +101,27 @@ test('Codex catalog refuses malformed pages, entries and repeated cursors', asyn
   assert.deepEqual(sparse.get('gpt-id'), ['low']); assert.deepEqual(sparse.get('gpt-none'), []);
 });
 
+test('Codex model/list defaults record the first visible default model and supported per-model default efforts', async () => {
+  const efforts = (...names: string[]) => names.map(reasoningEffort => ({ reasoningEffort }));
+  const pages = [{ data: [
+    { model: 'gpt-hidden', hidden: true, isDefault: true, defaultReasoningEffort: 'low', supportedReasoningEfforts: efforts('low') },
+    { model: 'gpt-a', isDefault: 'yes', defaultReasoningEffort: 'high', supportedReasoningEfforts: efforts('low', 'high') },
+    { model: 'gpt-b', isDefault: true, defaultReasoningEffort: 'xhigh', supportedReasoningEfforts: efforts('low', 'medium') }],
+  nextCursor: 'next' }, { data: [
+    { model: 'gpt-c', isDefault: true, defaultReasoningEffort: 7, supportedReasoningEfforts: efforts('low') },
+    { model: 'gpt-a', defaultReasoningEffort: 'low', supportedReasoningEfforts: efforts('low', 'minimal') },
+    { model: 'gpt-d', defaultReasoningEffort: '', supportedReasoningEfforts: efforts('low') }], nextCursor: null }];
+  const models = await codexModels(scriptedRpc(params => pages[params.cursor === 'next' ? 1 : 0]).rpc);
+  assert.equal(models.defaultModel, 'gpt-b');
+  assert.deepEqual([...models.defaultEfforts], [['gpt-a', 'high']]);
+  assert.deepEqual(models.catalog.get('gpt-a'), ['low', 'high', 'minimal']);
+  assert.equal(models.catalog.has('gpt-hidden'), false);
+  const plain = await codexModels(scriptedRpc().rpc);
+  assert.equal(plain.defaultModel, undefined); assert.equal('defaultModel' in plain, false);
+  assert.equal(plain.defaultEfforts.size, 0);
+  assert.deepEqual([...plain.catalog], [...await codexCatalog(scriptedRpc().rpc)]);
+});
+
 test('selection names the rejected model or effort', async () => {
   assert.doesNotThrow(() => assertSelection('claude', claudeCatalog, 'claude-haiku-5-5', 'max'));
   assert.throws(() => assertSelection('claude', claudeCatalog, 'claude-opus-4', 'medium'), /"claude-opus-4" is not offered/u);
@@ -129,6 +150,7 @@ test('one Codex app-server session supplies defaults and the catalog and closes 
   assert.deepEqual(methods, ['initialize', 'initialized', 'config/read', 'model/list', 'model/list']);
   assert.equal(selection.model, 'gpt-a'); assert.equal(selection.effort, 'high');
   assert.deepEqual([...selection.catalog.keys()], ['gpt-a', 'gpt-b']);
+  assert.equal(selection.defaultModel, undefined); assert.equal(selection.defaultEfforts?.size, 0);
   const resolved = await resolveHarness({ root: '/project', harness: 'codex' } as RunConfig,
     cwd => codexSelection(cwd, codex.create));
   assert.deepEqual([resolved.model, resolved.effort], ['gpt-a', 'high']);
@@ -141,11 +163,12 @@ test('one Codex app-server session supplies defaults and the catalog and closes 
   assert.equal(invalidDefault.spawns.length, 1); assert.equal(invalidDefault.killed(), 1);
 });
 
-test('Codex models() requires a connected adapter and never spawns', async () => {
+test('Codex models() and modelList() require a connected adapter and never spawn', async () => {
   let spawned = 0;
   const adapter = new CodexAdapter({ cwd: '/project', tools: [], handleTool: async () => {},
     spawnProcess: () => { spawned++; throw new Error('Must not spawn'); } });
   await assert.rejects(adapter.models(), /not connected/u);
+  await assert.rejects(adapter.modelList(), /not connected/u);
   assert.equal(spawned, 0);
 });
 
@@ -179,11 +202,13 @@ test('CLI flags parse in any order, at most once each, and override the invocati
   }
 });
 
-// The OpenSpec preflight runs before harness resolution; it is scripted to pass so the refusal comes from the catalog.
+// The OpenSpec preflight and harness availability run before harness resolution; both are scripted to pass,
+// non-interactively, so the refusal comes from the catalog and no real harness is probed.
 const project = { queue: 'planning/outcomes.json', changes: 'openspec/changes', receipts: 'evidence/results', target: 'main',
   checks: [{ command: 'node', args: ['{coverage}'] }], planningCheck: { command: 'openspec', args: ['validate'] } };
 const withPassingOpenspec: typeof runQueue = (config, options = {}) =>
-  runQueue(config, { ...options, openspec: { probe: () => ({ status: 0 }), configPresent: () => true } });
+  runQueue(config, { ...options, openspec: { probe: () => ({ status: 0 }), configPresent: () => true },
+    selection: { interactive: false, probe: harness => ({ harness, available: true, version: 'scripted' }) } });
 
 async function refused(t: TestContext, args: string[], rejected: string) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'catalog-refusal-')));

@@ -52,7 +52,8 @@ export async function main(path: string, runner: Runner = runQueue, output: Outp
     if (flags.harness) config.harness = flags.harness as Harness;
     if (flags.model) config.model = flags.model;
     if (flags.effort) config.effort = flags.effort;
-    config.coverage = resolveCoverage(flags.coverage !== undefined ? Number(flags.coverage) : config.coverage);
+    // Coverage stays unset when neither flag nor JSON gives it, so the runner can ask for it interactively.
+    if (flags.coverage !== undefined) config.coverage = resolveCoverage(Number(flags.coverage));
     const result = await runner(config, { report: event => output(JSON.stringify(event) + '\n') });
     output(JSON.stringify(result) + '\n');
     return ['exhausted', 'limit-reached'].includes(result.status) ? 0 : 3;
