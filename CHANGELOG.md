@@ -1,3 +1,31 @@
+## 0.9.0 - 2026-11-11
+
+### Features
+
+- implement OR-7 (c239d64)
+- implement OR-7 (f0fc68a)
+- implement OR-7 (2343239)
+- implement OR-7 (498e690)
+- implement OR-7 (4211469)
+- implement OR-7 (20eb501)
+- implement OR-7 (8ec8b46)
+- implement OR-7 (30b8026)
+- implement OR-7 (4a40d4c)
+- implement OR-7 (0974f71)
+- implement OR-7 (1a80242)
+- implement OR-7 (a1e9d6e)
+- implement OR-7 (bb34b52)
+- implement OR-7 (9a4d35f)
+- implement OR-7 (62e3fa2)
+- implement OR-7 (0a84129)
+- implement OR-7 (de8ee1f)
+- implement OR-7 (40bae44)
+- implement OR-7 (e3f7454)
+- implement OR-7 (87d6109)
+- implement OR-7 (7f6df2f)
+- implement OR-7 (5fcb67f)
+- implement OR-7 (5c11e35)
+
 ## 0.8.0 - 2026-11-11
 
 ### Features
