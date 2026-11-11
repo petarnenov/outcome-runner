@@ -19,13 +19,20 @@ export function lockRootOf(primary: string): string {
 }
 
 const held = new Map<string, number>();
+const busy = (error: unknown): boolean => /locked|busy/iu.test((error as Error).message);
+
+export interface GitLockOptions {
+  timeoutMs?: number;
+  /** Called once, before waiting, when another process holds the lock; never called for a free or nested lock. */
+  onWait?: () => void;
+}
 
 /**
  * Runs one synchronous group of Git operations while holding the per-clone Git lock
  * `<lockRoot>/<hash(primary)>-git.sqlite`. The operating system releases the SQLite file lock when the holder exits
  * or crashes. A nested call in the same process reuses the held lock.
  */
-export function withGitLock<T>(primary: string, fn: () => T, { timeoutMs = GIT_LOCK_TIMEOUT_MS }: { timeoutMs?: number } = {}): T {
+export function withGitLock<T>(primary: string, fn: () => T, { timeoutMs = GIT_LOCK_TIMEOUT_MS, onWait }: GitLockOptions = {}): T {
   const key = resolve(primary);
   const depth = held.get(key) ?? 0;
   if (depth) {
@@ -34,10 +41,25 @@ export function withGitLock<T>(primary: string, fn: () => T, { timeoutMs = GIT_L
   }
   const database = new DatabaseSync(join(lockRootOf(key), `${hash(key)}-git.sqlite`));
   try {
-    database.exec(`PRAGMA busy_timeout=${Math.max(0, Math.floor(timeoutMs))};`);
-    try { database.exec('BEGIN EXCLUSIVE;'); }
-    catch (error) {
-      if (/locked|busy/iu.test((error as Error).message)) throw new Error(GIT_LOCK_TIMEOUT_MESSAGE);
+    const timeout = Math.max(0, Math.floor(timeoutMs));
+    const acquire = (wait: number) => {
+      database.exec(`PRAGMA busy_timeout=${wait};`);
+      database.exec('BEGIN EXCLUSIVE;');
+    };
+    try {
+      if (!onWait) acquire(timeout);
+      else {
+        // A first try without waiting tells whether the lock is contended, so the wait is announced only once.
+        const started = Date.now();
+        try { acquire(0); }
+        catch (error) {
+          if (!busy(error)) throw error;
+          try { onWait(); } catch { /* Announcing the wait never changes the lock. */ }
+          acquire(Math.max(0, timeout - (Date.now() - started)));
+        }
+      }
+    } catch (error) {
+      if (busy(error)) throw new Error(GIT_LOCK_TIMEOUT_MESSAGE);
       throw error;
     }
     held.set(key, 1);
