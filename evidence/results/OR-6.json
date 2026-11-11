@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "id": "OR-6",
+  "taskHash": "524f796cb3dd0e05cc8e9dd6e16cbb9d21c3b9349d4e42a53a798ceb4cebf064",
+  "authority": "owner-2026-11-10-pr4-alternate",
+  "specification": {
+    "openspec/changes/graded-test-planning/design.md": "73932d4d0ceada2b0647f47416b68a5aa225113a60f7c13481a32f558bf4dba8",
+    "openspec/changes/graded-test-planning/proposal.md": "d4f9c2fd537a4d8b8f2f873eda6604b2b85deab12fc7fc9fab30c8237a484011",
+    "openspec/changes/graded-test-planning/specs/graded-test-planning/spec.md": "77378c2cee1d15a4d5e961a333d6d61f3943bf8c7e527b27b7ff94b7cdb765ce"
+  },
+  "review": {
+    "reviewer": "claude:47f489f5-7276-4343-ae67-5e17ddb5ea99",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "09c3a6e5ece473ce180e947e06b3841d8b921251fd44fcc904f793ed49953d9c"
+    },
+    {
+      "path": "openspec/changes/graded-test-planning/design.md",
+      "hash": "73932d4d0ceada2b0647f47416b68a5aa225113a60f7c13481a32f558bf4dba8"
+    },
+    {
+      "path": "openspec/changes/graded-test-planning/proposal.md",
+      "hash": "d4f9c2fd537a4d8b8f2f873eda6604b2b85deab12fc7fc9fab30c8237a484011"
+    },
+    {
+      "path": "openspec/changes/graded-test-planning/specs/graded-test-planning/spec.md",
+      "hash": "77378c2cee1d15a4d5e961a333d6d61f3943bf8c7e527b27b7ff94b7cdb765ce"
+    },
+    {
+      "path": "openspec/changes/graded-test-planning/tasks.md",
+      "hash": "65ce515d1c4ee28dc1a95afb90fcbfeb82fc96f601d11ccbdcbbd093574d513f"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "5239957915c61829ab104513453165c54075b91216b5533731f61d0e3407ee10"
+    },
+    {
+      "path": "src/test-grading.ts",
+      "hash": "5def8559d971881a3931cac00811955d07490321bebf734269dec129cc8dff7c"
+    },
+    {
+      "path": "test/test-grading.test.ts",
+      "hash": "9c0f8a7dd575a3625aa86b7303b40e1798b739f6661c156fc6f7d828dc8d0ba7"
+    }
+  ],
+  "head": "5e15f718da94e796cfc775e428fdf1470b69e8d4",
+  "base": "c1ce0b980e5e63ca2557c590ac817032d53283d2"
+}
