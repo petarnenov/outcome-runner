@@ -727,7 +727,10 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       }
       const limitReached = !!config.maxAccepted && acceptedThisRun({ ids, completed: store.state.completed ?? {},
         blocked: store.state.blocked ?? {}, done, baselineDone: store.state.baselineDone! }).length >= config.maxAccepted;
-      if (acceptanceFailed && limitReached) {
+      // A merged task of the invocation whose acceptance recording failed (in this iteration or an earlier one) keeps
+      // the run incomplete (exit 3) when the limit is reached, even when a later task reached it.
+      const mergedBlocked = ids.some(id => done.has(id) && Object.hasOwn(store.state.blocked ?? {}, id));
+      if (mergedBlocked && limitReached) {
         return finish({ status: 'incomplete', ...resultData(newlyAccepted), remaining,
           blockers: explain(remaining, foreignClaimsOf(ledger.pull(), done, claimant)) });
       }

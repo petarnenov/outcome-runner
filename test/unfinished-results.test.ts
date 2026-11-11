@@ -250,6 +250,20 @@ test('A (required): a failed acceptance recording without a limit keeps working 
   assert.equal(released(f, config), false); assert.equal(stateOf(config).status, 'blocked');
 });
 
+test('A (required): a failed acceptance recording stays exit 3 when a later task reaches maxAccepted', async t => {
+  const f = runnerFixture(t, { ids: ['A', 'B'] });
+  const config = f.config('one', { leaves: ['A', 'B'], maxAccepted: 2 });
+  // A merges but recording its acceptance fails (one counted, below the limit); B is then accepted and reaches it.
+  await mergeWithoutClaimTime(f, config, 'A');
+  const { code, line } = await withoutLedgerClaimTime('A', () => cli(f, config));
+  assert.equal(code, 3); assert.equal(line.status, 'incomplete');
+  assert.deepEqual(line.accepted, ['B']); assert.deepEqual(line.remaining, []);
+  assert.deepEqual(Object.keys(line.blockers), ['A']); assert.equal(line.blockers.A.kind, 'blocked');
+  assert.equal(line.blockers.A.stage, 'merge');
+  assert.equal(released(f, config), false); assert.equal(stateOf(config).status, 'blocked');
+  assert.match(stateOf(config).blocked.A.reason, /Cannot recover original claim timestamp/u);
+});
+
 test('A (required): a failed acceptance recording and a failing session are both explained', async t => {
   const f = runnerFixture(t, { ids: ['A', 'B'] });
   const config = f.config('one', { leaves: ['A', 'B'] });

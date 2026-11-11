@@ -27,7 +27,9 @@
 - [x] 2.4 Acceptance-recording failure (design decision 3): record the task in `state.blocked` as today; return
   `incomplete` with `explainUnfinished` blockers only when `maxAccepted` is set and `acceptedThisRun(...).length`
   reaches it; otherwise skip the cleanup and `accepted` report of that task and continue with the normal remaining
-  computation, limit check and selection of the same iteration.
+  computation, limit check and selection of the same iteration. When a later task reaches the limit while
+  `state.blocked` still holds a merged task of the invocation (one in `done`), the limit path also returns
+  `incomplete` (exit 3) instead of `limit-reached`, without releasing the ownership.
 - [x] 2.5 Use `explainUnfinished` on the no-selectable-task `incomplete` return (with the ledger snapshot it already
   pulled), on the acceptance-failure return of 2.4 and on the `limit-reached` return (each pulling the ledger with
   `ledger.pull()` before the call); keep blocked entries outside `remaining` and keep `claimedElsewhere`.
@@ -132,6 +134,10 @@ failure is scripted as a claim-time recovery failure of the merged task.
   unblocked task of the invocation (recovered work); a new run with `maxAccepted` 1 accepts another task while the
   recovered work is kept for a later run and no task is blocked. The result is `limit-reached`, the ownership is not
   released and `state.json` `status` is `completed`.
+- [x] 5.19 (A) (required) Limit reached by a later task after a failed acceptance recording: `maxAccepted` 2,
+  independent leaves `A` and `B`; `A` merges but recording its acceptance fails (count 1, below the limit), then `B`
+  is accepted and reaches the limit. `main` exits 3, the result is `incomplete` with `A` `kind` `blocked`, the
+  ownership is not released and `state.json` `status` is `blocked`.
 
 ## 6. Verification after binding
 
