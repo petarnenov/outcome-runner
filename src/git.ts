@@ -27,6 +27,7 @@ export interface Receipt {
  * runner cannot take ref lock files while another runner of the same clone works.
  */
 export const GIT_OPTIONS: readonly string[] = ['-c', 'gc.auto=0'];
+const GIT_PREFIX = `git ${GIT_OPTIONS.join(' ')} `;
 
 const runOptions = (): ExecFileSyncOptionsWithStringEncoding => ({ encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
   env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
@@ -34,6 +35,14 @@ const runOptions = (): ExecFileSyncOptionsWithStringEncoding => ({ encoding: 'ut
 export const command = (cwd: string, program: string, args: string[]): string => execFileSync(program, args, {
   ...runOptions(), cwd, stdio: ['ignore', 'pipe', 'pipe'],
 }).trim();
+/** Runs one Git command with the runner options; failure messages name the command without them. */
+function runGit<T>(run: (args: string[]) => T, args: string[]): T {
+  try { return run([...GIT_OPTIONS, ...args]); }
+  catch (error) {
+    if (error instanceof Error) error.message = error.message.replace(GIT_PREFIX, 'git ');
+    throw error;
+  }
+}
 export async function gitPage(cwd: string, offset: number, ...args: string[]): Promise<TextPage> {
   const child = spawn('git', [...GIT_OPTIONS, ...args], { cwd, env: runOptions().env, stdio: ['ignore', 'pipe', 'ignore'] });
   const [page, [code]] = await Promise.all([
@@ -46,17 +55,17 @@ export async function gitPage(cwd: string, offset: number, ...args: string[]): P
   if (page.nextOffset === null && code !== 0) throw new Error(`git ${args[0]} failed`);
   return page;
 }
-export const gitWithInput = (cwd: string, input: string, ...args: string[]): string => execFileSync('git',
-  [...GIT_OPTIONS, ...args], { ...runOptions(), cwd, input, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-export const git = (cwd: string, ...args: string[]): string => command(cwd, 'git', [...GIT_OPTIONS, ...args]);
+export const gitWithInput = (cwd: string, input: string, ...args: string[]): string => runGit(full =>
+  execFileSync('git', full, { ...runOptions(), cwd, input, stdio: ['pipe', 'pipe', 'pipe'] }).trim(), args);
+export const git = (cwd: string, ...args: string[]): string => runGit(full => command(cwd, 'git', full), args);
 /** Whether `ref` (for example `refs/heads/<branch>`) exists in the repository of `root`. */
 export function hasRef(root: string, ref: string): boolean {
   try { git(root, 'show-ref', '--verify', '--quiet', ref); return true; } catch { return false; }
 }
 export function fileAt(root: string, revision: string, path: string): Buffer {
-  return execFileSync('git', [...GIT_OPTIONS, 'show', `${revision}:${path}`], {
+  return runGit(full => execFileSync('git', full, {
     cwd: root, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  }), ['show', `${revision}:${path}`]);
 }
 export function receiptAt(root: string, revision: string, path: string, taskHash: string, authority: string | null): Receipt | null {
   const files = git(root, 'ls-tree', '-r', '--name-only', revision, '--', path).split('\n');

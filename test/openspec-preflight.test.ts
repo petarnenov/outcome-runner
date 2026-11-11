@@ -178,6 +178,9 @@ test('missing config and yes with every file already present still stops for com
 /** HEAD, the current branch, the index and the porcelain status of a checkout. */
 const checkoutState = (root: string) => ({ head: git(root, 'rev-parse', 'HEAD'), branch: git(root, 'branch', '--show-current'),
   index: git(root, 'ls-files', '--stage'), status: git(root, 'status', '--porcelain', '--untracked-files=all') });
+/** The files of a checkout's working tree, without its Git directory. */
+const workingFiles = (root: string) => readdirSync(root, { recursive: true }).map(String)
+  .filter(path => path !== '.git' && !path.startsWith('.git/')).sort();
 const outcomesOf = (root: string) => join(dirname(root), `${basename(root)}-outcomes`);
 
 test('C: interactive layout creation writes into the setup worktree and leaves the start checkout unchanged', async t => {
@@ -186,7 +189,7 @@ test('C: interactive layout creation writes into the setup worktree and leaves t
   writeFileSync(join(root, 'openspec/changes/.gitkeep'), 'kept');
   git(root, 'add', '.'); git(root, 'rm', '-q', 'openspec/config.yaml');
   git(root, 'commit', '-m', 'test: remove config'); git(root, 'push', 'origin', 'HEAD:main');
-  const before = checkoutState(root); const listing = readdirSync(root, { recursive: true }).sort();
+  const before = checkoutState(root); const listing = workingFiles(root);
   // A declined prompt creates no setup worktree.
   await assert.rejects(openspecPreflight(configFor(root), { interactive: true, ask: async () => 'no', say: () => {},
     probe: () => ({ status: 0 }), exec: () => { throw new Error('No process may run'); } }), refusedWith('openspec-not-initialized'));
@@ -209,7 +212,7 @@ test('C: interactive layout creation writes into the setup worktree and leaves t
   assert.match(said.join(''), /push the branch and merge it into main/u);
   // The start checkout is unchanged and no file was created under it.
   assert.deepEqual(checkoutState(root), before);
-  assert.deepEqual(readdirSync(root, { recursive: true }).sort(), listing);
+  assert.deepEqual(workingFiles(root), listing);
   assert.equal(existsSync(join(root, 'openspec/config.yaml')), false);
   assert.equal(existsSync(join(root, 'evidence')), false);
   assert.equal(git(root, 'rev-parse', 'origin/main'), before.head);
