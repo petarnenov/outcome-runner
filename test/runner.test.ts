@@ -917,6 +917,8 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
       if (!pr || !published) return pr;
       const stage = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8')).current.stage;
       if (stage !== 'merge') return pr;
+      // After the merge, a lookup recovers PR metadata for acceptance; it is not a merge view.
+      if (merges) return pr;
       const actual = scenario === 'missing-ref' ? oldHead : git(join(f.base, 'origin.git'), 'rev-parse', `refs/heads/${branch}`);
       // The first merge view observes the advanced target before the new publish.
       if (scenario === 'target-race' && actual === oldHead) return { ...pr };
