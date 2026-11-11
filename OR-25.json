@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "OR-25",
+  "taskHash": "4773c9cb070b738b729d26dbc6fc174521468b222c3c555e140345c65b54411c",
+  "scopes": [
+    ".github",
+    "scripts",
+    "docs"
+  ],
+  "claimant": "57089fdd-5183-4eed-b8d5-ff643cb198da",
+  "host": "GEO-PetarPetrov",
+  "branch": "outcome/OR-25-4cea4da18638",
+  "claimedAt": "2026-11-11T17:44:53.930Z"
+}
