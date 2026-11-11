@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "OR-20",
+  "taskHash": "784fa9545f83845cde3066598b2d6c4d7adc4d788869fdbf623cfa49e51a380e",
+  "scopes": [
+    "src",
+    "test",
+    "README.md"
+  ],
+  "claimant": "6a33b543-c013-4427-a0b6-2e8f194ffda7",
+  "host": "GEO-PetarPetrov",
+  "branch": "outcome/OR-20-7e895218f4ce",
+  "claimedAt": "2026-11-11T22:08:01.380Z"
+}
