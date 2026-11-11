@@ -230,3 +230,31 @@ test('B: partial selection retains only resolved fields when an unanswered promp
   assert.deepEqual(record.settings.coverage, { value: null, source: null });
   assert.deepEqual(record.settings.leaves, { value: null, source: null });
 });
+
+test('A: finalization is guarded and late task/usage updates cannot rewrite the terminal snapshot', () => {
+  const statistics = collector().statistics; const task = { id: 'A', change: 'a' };
+  statistics.decision(task, 'blocked'); const usage = statistics.session('A');
+  usage(tokenUsage({ inputTokens: 1 }));
+  const first = statistics.finish('cancelled', 3); const bytes = JSON.stringify(first);
+  statistics.decision(task, 'accepted'); usage(tokenUsage({ inputTokens: 100 }));
+  assert.equal(statistics.finish('unavailable', 4, 'private'), first);
+  assert.equal(JSON.stringify(first), bytes); assert.equal(first.tasks[0].blockingReason, 'cancelled');
+});
+
+test('A: pending snapshots retain owned and foreign decisions through cancellation', () => {
+  const statistics = collector().statistics;
+  const owned = { id: 'A', change: 'a', stage: 'work', sessionStarts: { work: 2 },
+    finalChecks: [{ command: 'npm', args: ['test'], outcome: 'failed' }] } as unknown as Work;
+  statistics.decision(owned, 'blocked', owned);
+  statistics.decision(owned);
+  statistics.decision({ id: 'B', change: 'b' }, 'claimed-elsewhere');
+  statistics.decision({ id: 'B', change: 'b' });
+  const record = statistics.finish('cancelled', 3);
+  assert.equal(record.tasks[0].outcome, 'blocked'); assert.equal(record.tasks[0].lastStage, 'work');
+  assert.equal(record.tasks[0].workerSessions.work, 2); assert.equal(record.tasks[0].blockingReason, 'cancelled');
+  assert.equal(record.tasks[0].finalChecks[0].outcome, 'failed');
+  assert.equal(record.tasks[1].outcome, 'claimed-elsewhere');
+  const bytes = JSON.stringify(record);
+  statistics.setting('model', 'late', 'default'); statistics.metadata(config, '/late', null);
+  assert.equal(JSON.stringify(record), bytes);
+});

@@ -152,7 +152,8 @@ export async function selectHarness(config: RunConfig, overrides: Partial<Select
     selected.harness ??= recorded.harness; selected.model ??= recorded.model; selected.effort ??= recorded.effort;
     if (selected.coverage === undefined) selected.coverage = recorded.coverage;
   }
-  const observe = (key: Setting, value: Settings[Setting]['value']) => deps.onSetting?.(key, value, sources[key] ?? 'default');
+  const observe = (key: Setting, value: Settings[Setting]['value']) =>
+    deps.onSetting?.(key, value, (key === 'harnessCliVersion' ? sources.harness : sources[key]) ?? 'default');
   const prompting = deps.interactive && !recorded;
   const choose = async (label: 'Harness' | 'Model' | 'Effort', options: readonly string[], preselected: string): Promise<string> => {
     deps.say(`${label} options: ${options.map((option, index) => `${index + 1}) ${option}`).join('  ')}\n`);

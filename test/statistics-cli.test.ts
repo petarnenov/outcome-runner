@@ -1,4 +1,3 @@
-// @ts-nocheck
 import test, { afterEach } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
@@ -169,4 +168,19 @@ test('B: two concurrent fake runs append two complete independently parseable li
   const records = f.records(); assert.equal(records.length, 2);
   assert.notEqual(records[0].runId, records[1].runId);
   assert.ok(records.every(record => record.exitCode === 0 && record.status === 'exhausted'));
+});
+
+test('A: repeated signals racing a normal result finalize once, preserve accepted data and remove handlers', async t => {
+  const f = fixture(t); const before = ['SIGINT', 'SIGTERM'].map(signal => process.listenerCount(signal));
+  let writes = 0; let stdout = '';
+  const code = await main(f.path, async () => {
+    process.emit('SIGINT'); process.emit('SIGTERM'); process.emit('SIGINT');
+    return { status: 'exhausted', accepted: ['A'], remaining: ['B'], completions: { A: { summary: 'Approved.' } } };
+  }, line => { stdout += line; }, { cwd: f.root, env: f.env,
+    ledger: { effects: { ...ledgerEffects, append: (fd, bytes) => { writes++; return ledgerEffects.append(fd, bytes); } } } });
+  assert.equal(code, 3); assert.equal(writes, 1); assert.equal(f.records().length, 1);
+  assert.equal(f.records()[0].status, 'cancelled'); assert.equal(f.records()[0].exitCode, 3);
+  assert.deepEqual(JSON.parse(stdout), { status: 'cancelled', accepted: ['A'], remaining: ['B'],
+    completions: { A: { summary: 'Approved.' } } });
+  assert.deepEqual(['SIGINT', 'SIGTERM'].map(signal => process.listenerCount(signal)), before);
 });

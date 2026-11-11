@@ -1,4 +1,3 @@
-// @ts-nocheck
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawnSync } from 'node:child_process';
@@ -1373,3 +1372,26 @@ for (const phase of ['preflight', 'selection', 'work'] as const) {
     });
   }
 }
+
+test('A: repeated cancellation races worker rejection and cleanup without duplicate ledger writes', { timeout: 20000 }, async t => {
+  const f = fixture(t); const xdg = join(f.base, 'racing-ledger');
+  const { root: _root, stateDirectory: _state, ...invocation } = f.config;
+  const path = join(f.base, 'racing-invocation.json'); writeFileSync(path, JSON.stringify({ ...invocation, leaves: ['A'] }));
+  const child = fork(fileURLToPath(new URL('./support/statistics-child.ts', import.meta.url)), [path, f.root, 'race'], {
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+      !['NODE_TEST_CONTEXT', 'NODE_TEST_WORKER_ID', 'NODE_OPTIONS'].includes(key))), XDG_STATE_HOME: xdg },
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
+  child.stdout!.resume(); let stderr = ''; child.stderr!.on('data', chunk => { stderr += chunk; });
+  let clean = false;
+  child.on('message', (message: { type: string; handlersClean?: boolean }) => {
+    if (message.type === 'ready') child.send('race'); else if (message.type === 'done') clean = message.handlersClean!;
+  });
+  const code = await new Promise<number | null>(resolve => child.once('exit', code => resolve(code)));
+  assert.equal(code, 3, stderr); assert.ok(clean);
+  const lines = readFileSync(ledgerPath({ XDG_STATE_HOME: xdg }), 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1); const record = JSON.parse(lines[0]) as RunStatistics;
+  assert.equal(record.status, 'cancelled'); assert.equal(record.tasks[0].blockingReason, 'cancelled');
+  assert.equal(record.tasks[0].lastStage, 'investigate'); assert.ok(!lines[0].includes('SECRET_'));
+});

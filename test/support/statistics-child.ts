@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { main } from '../../src/cli.ts';
 import { runQueue } from '../../src/runner.ts';
 import type { RunOptions } from '../../src/runner.ts';
@@ -32,7 +31,10 @@ try {
           });
         });
       },
-      close: () => { closes++; rejectWork(new Error('SECRET_PRIVATE_WORKER_FAILURE')); },
+      close: () => {
+        closes++; rejectWork(new Error('SECRET_PRIVATE_WORKER_FAILURE'));
+        if (phase === 'race') throw new Error('SECRET_CLEANUP_FAILURE');
+      },
     }),
   }), line => { process.stdout.write(line); }, { cwd: root });
   process.exitCode = code;

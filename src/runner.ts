@@ -264,12 +264,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         store, identity: { id: work.id, operation: work.operation, purpose },
         revalidate: async () => assertWork(activeWork()) });
       signal?.throwIfAborted();
-      const starts = activeWork().sessionStarts ?? Object.fromEntries(
-        (['investigate', 'plan', 'work', 'review'] as const).map(key =>
-          [key, (activeWork().sessions ?? []).filter(session => session.purpose === key).length]));
-      save({ sessionStarts: { ...starts, [purpose]: (starts[purpose] ?? 0) + 1 } });
-      const usage = statistics?.session(work.id);
-      adapter = createAdapter({ cwd: work.path, tools: [brokerTool, reportTool], onUsage: usage,
+      let usage: ReturnType<Statistics['session']> | undefined;
+      adapter = createAdapter({ cwd: work.path, tools: [brokerTool, reportTool], onUsage: value => usage?.(value),
         onHandle: handle => save({ session: { purpose, ...handle } }),
         handleTool: async (name, input) => {
           signal?.throwIfAborted();
@@ -301,6 +297,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         } });
       try {
         if (adapter.probe().status !== 'interface-ready') throw new Error('Selected harness interface unavailable');
+      const starts = activeWork().sessionStarts ?? Object.fromEntries(
+        (['investigate', 'plan', 'work', 'review'] as const).map(key =>
+          [key, (activeWork().sessions ?? []).filter(session => session.purpose === key).length]));
+      save({ sessionStarts: { ...starts, [purpose]: (starts[purpose] ?? 0) + 1 } });
+      usage = statistics?.session(work.id);
+
         const reply = await cancellable(adapter.startAction('OFF. Never ask a person anything. All output is private. ' +
           'Use only backlog_tool operations read_file/write_file/context/run_checks and outcome_report. ' +
           'Read files with input {path,offset}; write with {path,content,expectedHash} from the read result. ' +
@@ -318,10 +320,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           purpose, threadId: reply.threadId, events: reply.events, privateText: reply.text }] });
         if (!result || result.outcome === 'blocked') throw new Error(`Worker ${purpose} incomplete`);
         return { ...result, reviewer: `${config.harness}:${reply.threadId}` };
-      } finally { adapter.close(); adapter = null; }
+      } finally { try { adapter?.close(); } finally { adapter = null; } }
     };
     process.on('SIGINT', stop); process.on('SIGTERM', stop);
     const recovery = Object.values(store.state.blocked ?? {}).map(entry => entry.work).filter(Boolean);
+    for (const work of recovery.filter(work => ids.includes(work.id))) statistics?.decision(work, 'blocked', work);
+    if (store.state.current) statistics?.decision(store.state.current, 'blocked', store.state.current);
     store.update({ blocked: {} });
     for (;;) {
       await yieldLoop();
@@ -578,8 +582,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       }
     }
   } finally {
-    adapter?.close(); store?.close(); lock.close();
+    const cleanupErrors: unknown[] = [];
+    for (const close of [() => adapter?.close(), () => store?.close(), () => lock.close()]) {
+      try { close(); } catch (error) { cleanupErrors.push(error); }
+    }
     signal?.removeEventListener('abort', stop);
     process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
+    if (cleanupErrors.length) throw cleanupErrors[0];
   }
 }

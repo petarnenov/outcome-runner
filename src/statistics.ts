@@ -135,6 +135,8 @@ export class Statistics {
     if (this.finished) return;
     const previous = this.tasks.get(task.id);
     if (previous?.outcome === 'accepted' && outcome !== 'accepted') return;
+    if (previous && outcome === 'not-started' && !work &&
+        ['blocked', 'claimed-elsewhere'].includes(previous.outcome)) return;
     const accepted = outcome === 'accepted' ? work?.completion : undefined;
     const planning = work?.planningReviews?.map(review => review.findings.length) ?? [];
     const implementation = work?.reviews?.map(review => review.findings.length) ?? [];
