@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "id": "OR-7",
+  "taskHash": "496a22c77b6389e869f3e20e46b35ff5d1cf1cf6ad2f98860b9a6a79730b0113",
+  "authority": "owner-2026-11-10-pr4-alternate",
+  "specification": {
+    "openspec/changes/run-statistics-ledger/design.md": "64a84e2bc3be31763eb80afeb731549349ec8c6178fd6eb1932c88e5c9458f51",
+    "openspec/changes/run-statistics-ledger/proposal.md": "de69c4841ec9581406fc31040b658dc9f4c25664cbd0d05bec7e394889a1eb30",
+    "openspec/changes/run-statistics-ledger/specs/run-statistics-ledger/spec.md": "96283a05a096af66a06be76dce684958770742a522c2bfeb5cf9fb4b7d683f2f"
+  },
+  "review": {
+    "reviewer": "codex:01a1c8dd-3456-7273-a9fd-76da9051e50b",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "dc31bfaf7e307abea17e44884383cca8c51a72953128bf4f66d63bcaa8071889"
+    },
+    {
+      "path": "openspec/changes/run-statistics-ledger/design.md",
+      "hash": "64a84e2bc3be31763eb80afeb731549349ec8c6178fd6eb1932c88e5c9458f51"
+    },
+    {
+      "path": "openspec/changes/run-statistics-ledger/proposal.md",
+      "hash": "de69c4841ec9581406fc31040b658dc9f4c25664cbd0d05bec7e394889a1eb30"
+    },
+    {
+      "path": "openspec/changes/run-statistics-ledger/specs/run-statistics-ledger/spec.md",
+      "hash": "96283a05a096af66a06be76dce684958770742a522c2bfeb5cf9fb4b7d683f2f"
+    },
+    {
+      "path": "openspec/changes/run-statistics-ledger/tasks.md",
+      "hash": "61246b226d7b6e7215acec76677263eda00f50d5e0ec1959a633eeb00b3b846c"
+    },
+    {
+      "path": "src/claude-adapter.ts",
+      "hash": "807b4ae2e4263e982b1b95db79a26ea87a0cd85e3c85116fc5e18250580629f2"
+    },
+    {
+      "path": "src/cli.ts",
+      "hash": "158a622872951d5fb839c330d480c967ae5e66bf4c3557c9599a163cf45cc77f"
+    },
+    {
+      "path": "src/codex-adapter.ts",
+      "hash": "37aac2d313042a875ce4a0b2830c69170c45c42b844bec1a843c7021dbe13b9e"
+    },
+    {
+      "path": "src/git.ts",
+      "hash": "b92a96fe89aafbdec8fc6a4943668f10edd328a57493e6106178a8f53c971392"
+    },
+    {
+      "path": "src/harness-adapter.ts",
+      "hash": "043b4417abdb4585d02f8b69041212cf9cff808000c6b3a214844e703581d647"
+    },
+    {
+      "path": "src/harness-selection.ts",
+      "hash": "768c26396eb46c508e7836c9d15342750b557dd2a54107ce08e47eb49656d062"
+    },
+    {
+      "path": "src/harness.ts",
+      "hash": "89fdc362d8e49bdc6cc8025439bd40ac17178393afbc3df05eca29b725f255ec"
+    },
+    {
+      "path": "src/model.ts",
+      "hash": "f0524b32993370e4d388e39f67d9453a52ba873cae5858a6c9245e8a052e0e98"
+    },
+    {
+      "path": "src/openspec-preflight.ts",
+      "hash": "cf980118b7fa2179a287bc6bbfdd4329a517f44639f8515b6487ef2aee343e37"
+    },
+    {
+      "path": "src/run-store.ts",
+      "hash": "bfd7745b160b6112d23cb028119e7bcc32ab30923a3625a137832acdc2ef6244"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "8290e7ea07073e332f22daeed3db05cdd057c12ee4aa30b7b67af7586c23cce1"
+    },
+    {
+      "path": "src/statistics.ts",
+      "hash": "689ac13210af470a6a1fcf2b92b0492ffaacc11ab47f838b7d50daac924b3e2e"
+    },
+    {
+      "path": "test/cli.test.ts",
+      "hash": "23e67e14d9010540c68e95254f1cd5d574228d8d76edc2710f05f5c732b21575"
+    },
+    {
+      "path": "test/harness-catalog.test.ts",
+      "hash": "b34353e90097c9da5b9eb0844823e5163a430f23059e2e55b7e45c9051a67328"
+    },
+    {
+      "path": "test/harness-selection.test.ts",
+      "hash": "a2968948cc5be8410af1516248a1962f3dbb72bc4589c1f7de4caf95d5c2c6d7"
+    },
+    {
+      "path": "test/openspec-preflight.test.ts",
+      "hash": "5fe86654253d636b5242e16353f306caea1c6e1743297959728ef3a9023c6d21"
+    },
+    {
+      "path": "test/runner-claude.test.ts",
+      "hash": "67df459a8f27d1cfb932846a11828d04d01f32eb88e028262e4fb8330e005b0e"
+    },
+    {
+      "path": "test/runner-harness.test.ts",
+      "hash": "87e7dc714ab4805a87b64fdc23942f63da8a88c3dd58a41d48db55c8255eaea0"
+    },
+    {
+      "path": "test/runner-transport.test.ts",
+      "hash": "3f1d4a28bab3a26a8891b1394fc237612b19c62cdfeb798837dfae8d668c4a42"
+    },
+    {
+      "path": "test/runner.test.ts",
+      "hash": "0cc69fdb2713c752496f189773bd153e8c5d5f4034cd5d83e7633a9a653001db"
+    },
+    {
+      "path": "test/statistics-cli.test.ts",
+      "hash": "e78cc24dc0de13e94a3a8c5646544adf76257f7da36cec2e80ffd90e9d6d4a39"
+    },
+    {
+      "path": "test/statistics.test.ts",
+      "hash": "327645da41bb418874c61b8276af3a8796f7c387733312b67406dc6381e7659c"
+    },
+    {
+      "path": "test/support/isolated-cli.ts",
+      "hash": "5efa071765891e60651fe1d27401565939b84aed11c2eb2287c1efb3853ba7e6"
+    },
+    {
+      "path": "test/support/statistics-child.ts",
+      "hash": "2bb26930aa84505bccc25d7088061b7731988341ee3935bf3540df50f454be3e"
+    }
+  ],
+  "head": "c239d64d39d9d7a475a3f2cbbbacbabf9aacb4d4",
+  "base": "fa11e0c25d5df3ac8bbc4f8ae67f87a14ff36b71"
+}
