@@ -173,6 +173,9 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 - Defaults stay `claude` / `claude-opus-5-5` / `medium`.
 - A model or effort the selected harness does not offer stops the run with exit
   code 4 before any work starts.
+- From a terminal, a small mascot on stderr shows how each task and the run
+  ended. Add `--no-mascot` (or set `OUTCOME_RUNNER_MASCOT=0`) to turn it off;
+  see [Mascot](#mascot).
 
 **8. Read the result**
 
@@ -502,7 +505,7 @@ security decisions.
 ```sh
 cd /path/to/repository
 outcome-runner hash path/to/queue.json
-outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>]
+outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>] [--no-mascot]
 ```
 
 Every start first runs the [OpenSpec preflight](#openspec-preflight), then the
@@ -531,7 +534,11 @@ in one short app-server session that is closed before allocation.
 
 `--harness=`, `--model=` and `--effort=` each override the JSON `harness`,
 `model` and `effort` respectively. They may appear in any order, each at most
-once; any other argument is refused with exit code 4. A model not offered by the
+once; any other argument is refused with exit code 4. The valueless
+`--no-mascot` (see [Mascot](#mascot)) may also appear once, in any position
+among them; a repeated `--no-mascot` or a valued form such as `--no-mascot=1` is
+refused with exit code 4 like any other invalid flag, and the mascot stays off
+for that refusal. A model not offered by the
 selected harness's catalog, or an effort the selected model does not support, is
 refused before allocation with exit code 4 and a diagnostics message naming the
 rejected value. Omitted fields still fall back to the defaults above.
@@ -757,6 +764,59 @@ file contents, environment variables and raw errors are excluded. Origin URL
 userinfo credentials are removed. The approved completion summary is the
 intentional public summary, not a private worker report.
 
+## Mascot
+
+When a task or a run ends, the runner plays a short animation of the terminal
+mascot from `mascot/mascot.ts`, with a one-line caption. The previews of every
+mood are in [mascot/README.md](mascot/README.md).
+
+| When | Mood | Caption |
+|---|---|---|
+| A task is accepted and its Pull Request merged | `happy` | `<id> merged`, for example `OR-1 merged` |
+| A task is blocked | `angry` | `<id> blocked: <reason>`, for example `OR-1 blocked: Worker plan incomplete` |
+| The run ends `exhausted` | `celebrating` | `exhausted: <n> accepted, <m> remaining` |
+| The run ends `limit-reached` | `content` | `limit-reached: <n> accepted, <m> remaining` |
+| The run ends `incomplete` without blockers, only waiting for claimed or dependent work | `sleepy` | `incomplete: <n> accepted, <m> remaining` |
+| The run ends `incomplete` with blockers | `sad` | `incomplete: <n> accepted, <m> remaining` |
+| The run is cancelled by SIGINT or SIGTERM | `startled` | `cancelled: <n> accepted, <m> remaining` |
+| The runner exits with code 4 (`unavailable`) | `dizzy` | `unavailable: 0 accepted, 0 remaining` |
+
+- The blocked reason has its whitespace (including newlines) collapsed to single
+  spaces and is cut to at most 60 characters, ending in `…` when it was longer.
+  Without a reason the caption is `<id> blocked`. The reason is shown only in
+  the caption on stderr; it is never added to stdout.
+- The run mood and the status in its caption come from the final status and
+  exit code, the same values the [run statistics ledger](#run-statistics-ledger)
+  records. A SIGINT or SIGTERM that arrives after the terminal line was written
+  therefore plays `startled` with `cancelled: ...`, while the stdout line keeps
+  its status. `<n>` and `<m>` count the `accepted` and `remaining` arrays of the
+  terminal line; a missing array counts as 0.
+- The mascot is written to **stderr only**, and only when stderr is a terminal;
+  nothing is drawn for a pipe, a file or CI. The JSON lines on stdout are
+  byte-for-byte the same with and without the mascot. Animations never overlap,
+  and the terminal line waits for a task animation that is still playing.
+- SIGINT or SIGTERM stops a playing animation, and the cursor is shown again
+  before the cancelled result is written.
+- A failing mascot never changes the result line, the exit code, the run state
+  or the statistics ledger.
+- The `hash` command shows no mascot.
+
+Turn the mascot off with the flag `--no-mascot`, which may appear once in any
+order with the other flags:
+
+```sh
+outcome-runner ~/invocations/my-project-1.json --model=claude-sonnet-5-5 --no-mascot --effort=high
+```
+
+or with the environment variable `OUTCOME_RUNNER_MASCOT=0`:
+
+```sh
+OUTCOME_RUNNER_MASCOT=0 outcome-runner ~/invocations/my-project-1.json
+```
+
+Any argument that asks for the off switch keeps the mascot off, even a refused
+one such as `--no-mascot=1`, so that refusal (exit code 4) plays no `dizzy`.
+
 ## Acceptance limits
 
 Git-host fixtures exercise real repository merges and receipt validation;
@@ -780,7 +840,8 @@ selection's answers, harness probes and Codex reader, so no test starts a real
 `claude` or `codex`. The test framework preflight is scripted the same way: a
 scripted analysis session, answers, install executor, snapshots and in-memory
 file writes, so no test starts a real harness, runs a package manager or uses a
-real TTY. The `live:*` scripts exercise a real
+real TTY. The mascot tests inject a recording player through `main`, so they
+need no real terminal or timers. The `live:*` scripts exercise a real
 harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
 
 ## License
