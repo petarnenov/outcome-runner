@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -12,10 +12,10 @@ import { git } from '../src/git.ts';
 import { GIT_LOCK_TIMEOUT_MS, withGitLock } from '../src/git-lock.ts';
 import type { RunConfig } from '../src/model.ts';
 import { invocationLockFiles } from '../src/runner.ts';
-import type { RunOptions } from '../src/runner.ts';
+import type { RunEvent, RunOptions } from '../src/runner.ts';
 import { setupWorktree } from '../src/setup-worktree.ts';
 import { main } from './support/isolated-cli.ts';
-import { hasBranch, runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
+import { checkoutState, hasBranch, runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
 import type { RunnerFixture } from './support/runner-fixture.ts';
 
 const child = fileURLToPath(new URL('./support/git-lock-child.ts', import.meta.url));
@@ -161,7 +161,8 @@ test('C (required): leftovers of accepted tasks are removed on start before sele
         foreign: existsSync(foreign.path) && hasBranch(f.root, foreign.branch),
         setup: existsSync(setup.path) && hasBranch(f.root, setup.branch) };
     } }) });
-  assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.deepEqual(result.accepted, ['B']);
+  // A stays in the invocation's accepted results from its earlier run; B is accepted now.
+  assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.deepEqual(result.accepted, ['A', 'B']);
   assert.deepEqual(observed, { leftoverWorktree: false, leftoverBranch: false, leftoverListed: false,
     unfinished: true, foreign: true, setup: true });
   assert.equal(events[0], 'sweep'); assert.ok(events.indexOf('sweep') < events.indexOf('session'), events.join());
@@ -184,4 +185,118 @@ test('C (required): a blocked task keeps its worktree, local branch and pushed r
   const completed = f.state('one').completed.A;
   assert.equal(completed.path, work.path); assert.equal(completed.branch, work.branch); assert.equal(completed.head, work.head);
   assert.equal(f.records.length, 1); assert.equal(f.records[0].state, 'MERGED');
+});
+
+// Grade B
+
+test('B (required): after the merge and confirmed acceptance the worktree, local branch and remote branch are removed', async t => {
+  const f = runnerFixture(t); const events: RunEvent[] = [];
+  const result = await f.run(f.config('one', { leaves: ['A'] }), { report: event => { events.push(event); } });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  const work = f.state('one').completed.A;
+  assert.equal(existsSync(work.path), false);
+  assert.ok(!git(f.root, 'worktree', 'list', '--porcelain').includes(work.path));
+  assert.equal(hasBranch(f.root, work.branch), false);
+  assert.equal(git(f.remote, 'for-each-ref', `refs/heads/${work.branch}`), '');
+  assert.equal(events.length, 1); assert.equal(events[0].status, 'accepted'); assert.equal(events[0].id, 'A');
+  assert.equal('cleanupFailed' in events[0], false); assert.equal(work.cleanup, undefined);
+  assert.ok(git(f.remote, 'show', 'refs/heads/main:evidence/results/A.json'));
+});
+
+test('B (required): a cleanup failure is reported in the accepted event without changing the result or exit code', async t => {
+  const f = runnerFixture(t);
+  // Origin refuses every branch deletion, so the remote task branch cannot be removed.
+  writeFileSync(join(f.remote, 'hooks', 'pre-receive'), '#!/bin/sh\nwhile read old new ref; do\n' +
+    '  case "$new" in *[!0]*) ;; *) echo "deletion refused" >&2; exit 1 ;; esac\ndone\nexit 0\n', { mode: 0o755 });
+  const path = invocationFile(f, f.config('one', { leaves: ['A'] }));
+  let stateDirectory = ''; const lines: string[] = [];
+  const code = await main(path, (resolved, options) => { stateDirectory = resolved.stateDirectory; return f.run(resolved, options); },
+    line => lines.push(line), { cwd: f.root, env: { XDG_STATE_HOME: join(f.base, 'xdg') } });
+  const [accepted, result] = lines.map(line => JSON.parse(line));
+  assert.equal(code, 0, lines.join(''));
+  assert.equal(accepted.status, 'accepted'); assert.equal(accepted.id, 'A'); assert.deepEqual(accepted.cleanupFailed, ['remote-branch']);
+  assert.equal(accepted.grade, 'E'); assert.match(accepted.summary, /^The counter adds one\./u);
+  assert.equal(result.status, 'exhausted'); assert.deepEqual(result.accepted, ['A']); assert.deepEqual(result.remaining, []);
+  assert.equal(lines.length, 2);
+  const work = JSON.parse(readFileSync(join(stateDirectory, 'state.json'), 'utf8')).completed.A;
+  assert.deepEqual(work.cleanup, { failed: ['remote-branch'] });
+  assert.equal(existsSync(work.path), false); assert.equal(hasBranch(f.root, work.branch), false);
+  assert.notEqual(git(f.remote, 'for-each-ref', `refs/heads/${work.branch}`), '');
+});
+
+test('B (required): a run started from a feature branch opens and merges its pull requests against that branch', async t => {
+  const f = runnerFixture(t);
+  git(f.root, 'checkout', '-q', '-b', 'feature/x'); git(f.root, 'push', '-q', 'origin', 'HEAD:refs/heads/feature/x');
+  const main0 = git(f.remote, 'rev-parse', 'refs/heads/main');
+  const config = f.config('one', { leaves: ['A'] });
+  const { target: _project, ...project } = config.project; const { target: _authority, ...authority } = config.authority;
+  const path = invocationFile(f, { ...config, project, authority } as RunConfig);
+  let resolved!: RunConfig; const lines: string[] = [];
+  const code = await main(path, (candidate, options) => { resolved = candidate; return f.run(candidate, options); },
+    line => lines.push(line), { cwd: f.root, env: { XDG_STATE_HOME: join(f.base, 'xdg') } });
+  assert.equal(code, 0, lines.join(''));
+  assert.deepEqual([resolved.project.target, resolved.authority.target], ['feature/x', 'feature/x']);
+  assert.equal(f.records.length, 1); assert.equal(f.records[0].base, 'feature/x'); assert.equal(f.records[0].state, 'MERGED');
+  const receipt = JSON.parse(git(f.remote, 'show', 'refs/heads/feature/x:evidence/results/A.json'));
+  assert.equal(receipt.target, 'feature/x');
+  assert.equal(git(f.remote, 'rev-parse', 'refs/heads/main'), main0);
+  assert.notEqual(git(f.remote, 'for-each-ref', 'refs/heads/work-queue-claims-feature-x'), '');
+});
+
+test('B (required): the start checkout is unchanged and every task session works in a worktree outside it', async t => {
+  const f = runnerFixture(t); const before = checkoutState(f.root); const checkout = realpathSync(f.root);
+  const sessions: { cwd: string; real: string }[] = [];
+  const result = await f.run(f.config('one', { leaves: ['A', 'B'] }), {
+    createAdapter: scriptedWorker({ onSession: options => { sessions.push({ cwd: options.cwd, real: realpathSync(options.cwd) }); } }) });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.deepEqual(result.accepted, ['A', 'B']);
+  assert.deepEqual(checkoutState(f.root), before);
+  assert.ok(sessions.length > 0);
+  assert.equal(new Set(sessions.map(session => session.cwd)).size, 2);
+  for (const { cwd, real } of sessions) {
+    assert.ok(cwd.startsWith(`${f.outcomes}/`), cwd);
+    assert.notEqual(cwd, f.root); assert.notEqual(real, checkout);
+    assert.ok(!real.startsWith(`${checkout}/`), real);
+  }
+});
+
+// Grade A
+
+test('A (required): two invocations run concurrently in one clone on one branch and merge different tasks', { timeout: 300000 }, async t => {
+  const f = runnerFixture(t);
+  // Both invocations hold a claimed task before either works on it, so the runs really overlap.
+  const arrived = new Set<string>(); let release!: () => void;
+  const together = new Promise<void>(resolve => { release = resolve; });
+  const sessions: [string, string][] = [];
+  const worker = (name: string) => scriptedWorker({ onSession: async (_options, prompt) => {
+    sessions.push([name, /Task ([A-Z]);/u.exec(prompt)![1]]);
+    if (arrived.has(name)) return;
+    arrived.add(name); if (arrived.size === 2) release();
+    await together;
+  } });
+  const [one, two] = await Promise.all(['one', 'two'].map(name => f.run(f.config(name), { createAdapter: worker(name) })));
+  for (const result of [one, two]) assert.ok(['exhausted', 'incomplete'].includes(result.status), JSON.stringify(result));
+  assert.ok(one.accepted.length > 0 && two.accepted.length > 0, JSON.stringify([one, two]));
+  assert.deepEqual([...one.accepted, ...two.accepted].sort(), ['A', 'B', 'C', 'D']);
+  // No task was worked by both invocations.
+  const workers = new Map<string, Set<string>>();
+  for (const [name, id] of sessions) workers.set(id, new Set([...(workers.get(id) ?? []), name]));
+  for (const [id, names] of workers) assert.equal(names.size, 1, `${id} worked by ${[...names]}`);
+  // The claims ledger holds one claim per task, each by the claimant of the invocation that accepted it.
+  const claimants = { one: f.state('one').claimant as string, two: f.state('two').claimant as string };
+  assert.notEqual(claimants.one, claimants.two);
+  assert.deepEqual(git(f.remote, 'ls-tree', '--name-only', 'refs/heads/work-queue-claims-main').split('\n').sort(),
+    ['A.json', 'B.json', 'C.json', 'D.json']);
+  for (const id of ['A', 'B', 'C', 'D']) {
+    const claim = JSON.parse(git(f.remote, 'show', `refs/heads/work-queue-claims-main:${id}.json`));
+    assert.equal(claim.claimant, one.accepted.includes(id) ? claimants.one : claimants.two, id);
+  }
+  // Every task was merged into the start branch exactly once.
+  assert.equal(f.records.length, 4);
+  for (const id of ['A', 'B', 'C', 'D']) {
+    assert.equal(f.records.filter(pr => pr.branch!.startsWith(`outcome/${id}-`) && pr.state === 'MERGED').length, 1, id);
+  }
+  assert.ok(f.records.every(pr => pr.base === 'main'));
+  assert.deepEqual(git(f.remote, 'ls-tree', '-r', '--name-only', 'refs/heads/main', '--', 'evidence/results').split('\n').sort(),
+    ['evidence/results/A.json', 'evidence/results/B.json', 'evidence/results/C.json', 'evidence/results/D.json']);
+  assert.equal(git(f.root, 'worktree', 'list').split('\n').length, 1);
 });
