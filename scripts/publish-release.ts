@@ -79,7 +79,7 @@ export function publish(cwd: string, hooks: Hooks = {}): string {
             throw new Error('Publication uncertain; inspect partial remote refs before recovery.');
           }
           const rejection = String(error) + String((error as { stderr?: unknown }).stderr ?? '');
-          if (head === base || !contains(base, head) || !/rejected|non-fast-forward|fetch first/i.test(rejection)) {
+          if (head === base || !contains(base, head) || !/non-fast-forward|fetch first/i.test(rejection)) {
             throw new Error('Publication rejected without recoverable main advancement; inspect remote and rerun a fresh validated release. ' + rejection);
           }
           // Delete only the owned unpublished object in this disposable clone.

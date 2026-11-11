@@ -98,3 +98,18 @@ test('D T3 controlled advance is capped at three attempts', t => {
   }), /three total attempts/);
   assert.equal(attempts, 3);
 });
+
+for (const stage of ['preinstall', 'typecheck', 'test']) {
+  test('D T3 actual npm validation stops at ' + stage, t => {
+    const f = fixture(t);
+    const scripts = Object.fromEntries(['preinstall', 'typecheck', 'test'].map(name =>
+      [name, 'node -e "process.exit(' + (name === stage ? 1 : 0) + ')"']));
+    writeFileSync(join(f.author, 'package.json'), JSON.stringify({ name: 'fixture', version: '1.2.3', scripts }));
+    git(f.author, 'add', '.'); git(f.author, 'commit', '-m', 'fix: failing validation');
+    git(f.author, 'push', 'origin', 'main');
+    const head = git(f.origin, 'rev-parse', 'main');
+    assert.throws(() => publish(f.queued, { push: () => assert.fail('push after failed validation'), notes: noNotes }), /Command failed/);
+    assert.equal(git(f.origin, 'rev-parse', 'main'), head);
+    assert.equal(git(f.origin, 'tag', '--list', 'v1.2.4'), '');
+  });
+}
