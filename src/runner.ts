@@ -18,6 +18,8 @@ import { selectHarness } from './harness-selection.ts';
 import type { SelectionDeps } from './harness-selection.ts';
 import { openspecPreflight } from './openspec-preflight.ts';
 import type { PreflightDeps } from './openspec-preflight.ts';
+import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
+  implementationReviewTestInstructions } from './test-grading.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
 
 export interface PullRequestHost {
@@ -377,11 +379,13 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         if (activeWork().stage === 'plan') {
           let bound = false;
           for (let attempt = 0; attempt < 4; attempt += 1) {
+            // Graded test fragments come from the frozen threshold on every attempt, so replanning repeats them.
             await session(work, 'plan', prompt + 'Create proposal.md, design.md, tasks.md and specs/<capability>/spec.md. ' +
               'Use OpenSpec delta headings and WHEN/THEN scenarios. Stay within task scope; do not edit product files. ' +
               'This session writes only those planning artifacts. Product file writes and run_checks are refused until ' +
               'the specification is bound, in a later session; that is expected and not a blocker, so do not attempt them. ' +
               'When the artifacts are written, call outcome_report with outcome ready. ' +
+              planTestInstructions(config.coverage) + ' ' +
               'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
             let specification;
             try {
@@ -392,7 +396,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             }
             const review = await session(work, 'review', prompt +
               'Review planning artifacts independently against exact source criteria, scope and decisions. ' +
-              'Report accepted only with zero findings; otherwise changes-required with concrete findings.');
+              'Report accepted only with zero findings; otherwise changes-required with concrete findings. ' +
+              planningReviewTestInstructions(config.coverage));
             save({ planningReviews: [...(activeWork().planningReviews ?? []), review] });
             if (review.outcome === 'accepted' && !review.findings.length) {
               save({ specification, stage: 'work', findings: [] }); bound = true; break;
@@ -405,7 +410,9 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           let passed = false;
           for (let attempt = 0; attempt < 4; attempt += 1) {
             await session(activeWork(), 'work', prompt +
-              'Implement all approved OpenSpec scenarios and tests within product scope. Preserve bound specs. ' +
+              'Implement all approved OpenSpec scenarios and every test marked (required) within product scope; ' +
+              'write (coverage-only) tests only as the graded test rules below allow. ' +
+              workTestInstructions(config.coverage) + ' Preserve bound specs. ' +
               'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
             await afterEffect('implementation', activeWork());
             assertWork(activeWork()); commit(work);
@@ -416,7 +423,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
               'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required. ' +
               'When reporting accepted, provide completion.summary with two or three English sentences describing what ' +
               'the whole task changed, and completion.grade for whole-task complexity: A (most complex), B, C, D, ' +
-              'E (easiest). Grade complexity, not correctness, quality or execution speed.', true);
+              'E (easiest). Grade complexity, not correctness, quality or execution speed. ' +
+              implementationReviewTestInstructions(config.coverage), true);
             save({ reviews: [...(activeWork().reviews ?? []), review] });
             if (review.outcome === 'accepted' && !review.findings.length) {
               save({ review: { ...review, accepted: true }, stage: 'receipt', findings: [] }); passed = true; break;

@@ -525,6 +525,37 @@ survive a restart; existing baseline receipts are excluded. With no newly
 accepted tasks, `completions` is `{}`. Historical receipts need no migration.
 Other private reports, findings, session text and check output remain private.
 
+## Graded test planning
+
+Workers plan and write tests by complexity, on the same scale as the completion
+grade: A (most complex), B, C, D, E (easiest). Every prompt states the resolved
+coverage threshold as a percentage, for example `90%`, and the graded
+instructions name that same percentage.
+
+- **Plan.** `tasks.md` must contain a test section in which every planned test
+  has a grade, and the tests are listed from E to A (easiest first). Each test is
+  marked `(required)` when a source criterion or spec scenario demands it,
+  otherwise `(coverage-only)`.
+- **Planning review.** The reviewer reports changes-required when a planned test
+  lacks a grade, the tests are not listed from E to A, or a test demanded by a
+  criterion or scenario is not marked `(required)`.
+- **Work.** The worker writes tests grade by grade starting with E, calls
+  `run_checks` after each grade and continues with the next harder grade until
+  the coverage gate passes at the resolved coverage threshold. Tests marked
+  `(required)` are always written, whatever the coverage; only `(coverage-only)`
+  tests stop at the threshold. Coverage-only grades left unwritten because the
+  threshold was reached stay unchecked in `tasks.md` with the note
+  `not needed: coverage reached`.
+- **Implementation review.** The reviewer reports changes-required when the
+  coverage gate did not pass at the resolved threshold, when a harder grade was
+  written while an easier planned grade is still unchecked without that note, or
+  when a `(required)` test is unwritten or carries the note.
+
+The controller does not parse `tasks.md`; the planning review and the
+implementation review enforce these rules before specification binding and
+acceptance. Retried and resumed sessions receive the same instructions and
+percentage from the frozen threshold.
+
 ## Acceptance limits
 
 Git-host fixtures exercise real repository merges and receipt validation;
