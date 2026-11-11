@@ -1,12 +1,22 @@
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { hash } from '../src/model.ts';
 import type { RunConfig } from '../src/model.ts';
 import { compareIdentity, invocationIdentity, missingSetting, MissingSettingError, REQUIRED_SETTINGS }
   from '../src/invocation-identity.ts';
 import type { InvocationIdentity } from '../src/invocation-identity.ts';
+import { RunStore } from '../src/run-store.ts';
+import { main } from '../src/cli.ts';
+import { ledgerPath } from '../src/statistics.ts';
+import type { RunStatistics } from '../src/statistics.ts';
+import { runnerFixture } from './support/runner-fixture.ts';
 
 const TASKS = { A: 'hash-a', B: 'hash-b' };
+const AT = Date.parse('2026-11-12T10:00:00Z');
 
 /** A resolved configuration with its root and leaves, as the runner projects it. */
 const resolved = (patch: Record<string, unknown> = {}, project: Record<string, unknown> = {}):
@@ -21,6 +31,12 @@ const resolved = (patch: Record<string, unknown> = {}, project: Record<string, u
 } as RunConfig & { leaves: string[] });
 
 const identityHash = (config: RunConfig & { leaves: string[] }) => hash(invocationIdentity(config));
+
+function temporary(t: TestContext): string {
+  const path = mkdtempSync(join(tmpdir(), 'invocation-evolution-'));
+  t.after(() => rmSync(path, { recursive: true, force: true }));
+  return path;
+}
 
 // 5.1 (E) (required)
 test('E: invocationIdentity keeps only what the owner authorised', () => {
@@ -99,3 +115,110 @@ test('E: missingSetting finds the first missing path and MissingSettingError nam
   assert.match(error.message, /project\.example/u);
   assert.ok(error.message.includes(JSON.stringify({ project: { example: 'value' } })), error.message);
 });
+
+// 5.4 (E) (coverage-only): not needed, coverage reached.
+
+// 5.5 (D) (required)
+test('D: the CLI refuses a missing setting with exit code 4, the setting and an example', async t => {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const { root: _root, stateDirectory: _state, ...invocation } = f.config();
+  const path = join(f.base, 'invocation.json'); writeFileSync(path, JSON.stringify(invocation));
+  const env = { XDG_STATE_HOME: join(f.base, 'xdg') };
+  const lines: string[] = [];
+  const code = await main(path, async () => { throw new MissingSettingError({ path: 'project.example', example: 'value' }); },
+    line => lines.push(line), { cwd: f.root, env, mascot: () => {} });
+  assert.equal(code, 4);
+  assert.equal(lines.length, 1);
+  const line = JSON.parse(lines[0]);
+  t.after(() => rmSync(join(line.diagnostics, '..'), { recursive: true, force: true }));
+  assert.deepEqual(Object.keys(line), ['status', 'reason', 'setting', 'example', 'diagnostics']);
+  assert.equal(line.status, 'unavailable'); assert.equal(line.reason, 'missing-setting');
+  assert.equal(line.setting, 'project.example'); assert.equal(line.example, 'value');
+  assert.match(JSON.parse(readFileSync(line.diagnostics, 'utf8')).message, /project\.example/u);
+  const record = JSON.parse(readFileSync(ledgerPath(env), 'utf8').trim()) as RunStatistics;
+  assert.equal(record.failureReason, 'missing-setting'); assert.equal(record.exitCode, 4);
+});
+
+/** Writes state as the previous runner did: the whole configuration with root and leaves is the identity. */
+function legacyState(directory: string, config: RunConfig & { leaves: string[] }) {
+  const legacyHash = hash(config);
+  const action = { leaf: 'A', action: 'write' }; const fingerprint = 'fingerprint';
+  const id = `run-${hash({ identity: legacyHash, action, fingerprint })}`;
+  const current = { id: 'A', stage: 'work', branch: 'outcome/A-1', path: '/outcomes/a' };
+  const state = { version: 2, identityHash: legacyHash, identity: config, frozen: [...config.leaves],
+    operations: { [id]: { id, action, fingerprint, status: 'resolved', result: { status: 'accepted', acceptanceId: 'r' } } },
+    accepted: { r: id }, status: 'running', cancelled: false, sequence: 7, claimant: 'claimant-1', current,
+    completed: { B: { id: 'B', stage: 'merge' } }, baselineDone: [] };
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, 'state.json'), JSON.stringify(state));
+  return { legacyHash, action, fingerprint, id, state };
+}
+
+// 5.6 (D) (required)
+test('D: legacy state is migrated in place, keeping its work and operation ids, and tampered state is refused', t => {
+  const directory = join(temporary(t), 'state');
+  const config = resolved({ newerRunnerDefault: 'kept out' }, { archive: { command: 'openspec', args: ['archive'] } });
+  const legacy = legacyState(directory, config);
+  const next = invocationIdentity(config);
+  const store = new RunStore(directory, next, { now: () => AT });
+  try {
+    const { state } = store;
+    assert.equal(state.identitySchema, 2);
+    assert.deepEqual(state.identity, next); assert.equal(state.identityHash, hash(next));
+    assert.deepEqual(state.frozen, ['A', 'B']);
+    assert.equal(state.operationKey, legacy.legacyHash);
+    assert.deepEqual(state.changes, [{ kind: 'identity-upgraded', from: 1, to: 2, at: new Date(AT).toISOString() }]);
+    assert.deepEqual(state.operations, legacy.state.operations); assert.deepEqual(state.accepted, legacy.state.accepted);
+    assert.deepEqual(state.current, legacy.state.current); assert.equal(state.claimant, 'claimant-1');
+    assert.deepEqual(state.completed, legacy.state.completed);
+    assert.equal(store.intend(legacy.action, legacy.fingerprint).id, legacy.id);
+    assert.equal(Object.keys(store.state.operations).length, 1);
+  } finally { store.close(); }
+  // Reopening the migrated state with the same identity records nothing new.
+  const again = new RunStore(directory, next, { now: () => AT + 1000 });
+  try { assert.equal(again.state.changes!.length, 1); assert.equal(again.state.operationKey, legacy.legacyHash); }
+  finally { again.close(); }
+
+  const tampered = join(temporary(t), 'state');
+  const { state } = legacyState(tampered, config);
+  writeFileSync(join(tampered, 'state.json'), JSON.stringify({ ...state, identity: { ...config, model: 'claude-sonnet-5-5' } }));
+  const before = readFileSync(join(tampered, 'state.json'), 'utf8');
+  assert.throws(() => new RunStore(tampered, next), /Run state is incompatible/u);
+  assert.equal(readFileSync(join(tampered, 'state.json'), 'utf8'), before);
+  const changed = join(temporary(t), 'state');
+  legacyState(changed, config);
+  const unchanged = readFileSync(join(changed, 'state.json'), 'utf8');
+  assert.throws(() => new RunStore(changed, invocationIdentity({ ...config, model: 'claude-sonnet-5-5' })),
+    /Run state is incompatible/u);
+  assert.equal(readFileSync(join(changed, 'state.json'), 'utf8'), unchanged);
+});
+
+// 5.7 (D) (required)
+test('D: added tasks update the stored identity; removed or changed tasks are refused without a write', t => {
+  const directory = join(temporary(t), 'state');
+  const first = invocationIdentity(resolved());
+  const created = new RunStore(directory, first, { now: () => AT });
+  const operation = created.intend({ leaf: 'A' }, 'one').id;
+  created.close();
+  const added = invocationIdentity(resolved({ leaves: ['A', 'B', 'C'],
+    authority: { ...resolved().authority, tasks: { ...TASKS, C: 'hash-c' } } }));
+  const store = new RunStore(directory, added, { now: () => AT });
+  try {
+    assert.deepEqual(store.state.changes, [{ kind: 'tasks-added', tasks: ['C'], at: new Date(AT).toISOString() }]);
+    assert.deepEqual(store.state.identity, added); assert.equal(store.state.identityHash, hash(added));
+    assert.deepEqual(store.state.frozen, ['A', 'B', 'C']);
+    assert.equal(store.state.operationKey, hash(first));
+    assert.equal(store.intend({ leaf: 'A' }, 'one').id, operation);
+  } finally { store.close(); }
+  const file = join(directory, 'state.json'); const before = readFileSync(file, 'utf8');
+  const removed = invocationIdentity(resolved({ leaves: ['A', 'C'],
+    authority: { ...resolved().authority, tasks: { A: 'hash-a', C: 'hash-c' } } }));
+  const changed = invocationIdentity(resolved({ leaves: ['A', 'B', 'C'],
+    authority: { ...resolved().authority, tasks: { ...TASKS, B: 'changed', C: 'hash-c' } } }));
+  for (const identity of [removed, changed]) {
+    assert.throws(() => new RunStore(directory, identity), /Run state is incompatible/u);
+    assert.equal(readFileSync(file, 'utf8'), before);
+  }
+});
+
+// 5.8 (D) (coverage-only): not needed, coverage reached.
