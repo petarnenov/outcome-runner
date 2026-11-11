@@ -496,6 +496,35 @@ completion. A target that advanced without touching the task scopes or change
 directory is merged into the result and all final checks run again. A target
 change inside that scope is reported incomplete.
 
+## Completion summaries
+
+Each newly accepted task includes the final implementation reviewer's two or three
+English sentences describing the change, followed by one sentence stating elapsed
+time and complexity grade. The grade describes the complexity of the whole task:
+A is most complex, then B, C, D, and E is easiest. It does not rate correctness,
+quality or execution speed.
+
+The wall-clock duration runs from the original durable claim to the controller's
+first observation of valid acceptance on the target, including downtime and
+restarts. It is rounded down to whole seconds, clamped at zero, and displayed as
+`Hh Mm Ss` with all three units (hours can exceed 24). Completion is saved before
+the accepted event is emitted and reused on a same-invocation restart.
+
+The stdout accepted JSON event contains `status`, `id`, `summary`,
+`durationSeconds` and `grade`, for example:
+
+```json
+{"status":"accepted","id":"OR-5","summary":"The runner now reports completion details. Claim timing survives restarts. The task took 1h 12m 5s from claim to acceptance and has complexity grade B.","durationSeconds":4325,"grade":"B"}
+```
+
+The final result keeps its `accepted` ID array and adds `completions`, an object
+keyed by each newly accepted task ID. Each entry contains the identical
+`summary`, `durationSeconds` and `grade` from the event, including when the
+invocation later returns incomplete, cancelled or limit-reached. Saved entries
+survive a restart; existing baseline receipts are excluded. With no newly
+accepted tasks, `completions` is `{}`. Historical receipts need no migration.
+Other private reports, findings, session text and check output remain private.
+
 ## Acceptance limits
 
 Git-host fixtures exercise real repository merges and receipt validation;

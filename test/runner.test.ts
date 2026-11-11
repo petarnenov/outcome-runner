@@ -150,6 +150,7 @@ function scripted(options: ScriptedOptions): HarnessAdapter {
     } else {
       result.outcome = 'accepted';
       if (prompt.includes('Review actual implementation')) {
+        result.completion = { summary: 'The counter now increments finite numbers. Invalid inputs are rejected.', grade: 'E' };
         const file = await options.handleTool('backlog_tool', { operation: 'read_file', input: { path: `src/${id}/result.mjs` } });
         if (!file.content.includes('Number.isFinite')) {
           result.outcome = 'changes-required'; result.findings = ['Reject NaN and infinities as required.'];
@@ -978,3 +979,101 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     }
   });
 }
+
+for (const boundary of ['claim', 'merge']) test(`completion timing includes downtime after ${boundary} and stays frozen`, async t => {
+  const f = fixture(t); const config = { ...f.config, leaves: ['A'] };
+  const start = Date.parse('2026-01-01T00:00:00Z');
+  const statePath = join(f.config.stateDirectory, 'state.json');
+  const state = () => JSON.parse(readFileSync(statePath, 'utf8'));
+  await assert.rejects(runQueue(config, { host: f.host, createAdapter: scripted, now: () => start,
+    afterEffect: async kind => {
+      if (kind === boundary) throw Object.assign(new Error('Interrupted'), { interrupted: true });
+    } }), /Interrupted/u);
+  assert.equal(state().current.claimedAt, new Date(start).toISOString());
+  // Model unfinished work written by an older runner. Restore its time from the owned ledger.
+  const legacy = state(); delete legacy.current.claimedAt;
+  writeFileSync(statePath, JSON.stringify(legacy));
+  const events: RunEvent[] = [];
+  const result = await runQueue(config, { host: f.host, createAdapter: scripted, now: () => start + 4325999,
+    report: event => {
+      events.push(event);
+      if (event.status === 'accepted') {
+        assert.equal(state().current, null);
+        assert.equal(state().completed.A.acceptedAt, new Date(start + 4325999).toISOString());
+        assert.equal(state().completed.A.completion.summary, event.summary);
+      }
+    } });
+  const expected = { summary: 'The counter now increments finite numbers. Invalid inputs are rejected. ' +
+    'The task took 1h 12m 5s from claim to acceptance and has complexity grade E.', durationSeconds: 4325, grade: 'E' };
+  assert.deepEqual(result.accepted, ['A']);
+  assert.deepEqual(result.completions, { A: expected });
+  assert.deepEqual(events, [{ status: 'accepted', id: 'A', ...expected }]);
+  assert.equal(state().completed.A.claimedAt, new Date(start).toISOString());
+  const repeatEvents: RunEvent[] = [];
+  const repeat = await runQueue(config, { host: f.host, createAdapter: scripted,
+    now: () => start + 999999999, report: event => repeatEvents.push(event) });
+  assert.deepEqual(repeat, result); assert.deepEqual(repeatEvents, []);
+});
+
+for (const invalid of ['missing', 'grade']) test(`accepted implementation review refuses ${invalid} completion before receipt`, async t => {
+  const f = fixture(t);
+  const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host,
+    createAdapter: options => scripted({ ...options, handleTool: async (name, input) => {
+      if (name === 'outcome_report' && input.completion) {
+        input = { ...input };
+        if (invalid === 'missing') delete input.completion;
+        else input.completion = { summary: 'Changed behavior. Added tests.', grade: 'F' } as unknown as ToolInput['completion'];
+      }
+      return options.handleTool(name, input, { threadId: 'test' });
+    } }) });
+  assert.equal(result.status, 'incomplete');
+  assert.deepEqual(result.accepted, []); assert.deepEqual(result.completions, {});
+  assert.equal(f.records.length, 0);
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+  assert.equal(state.blocked.A.work.stage, 'work');
+  assert.match(state.blocked.A.reason, /Invalid private report/u);
+  assert.equal(existsSync(join(state.blocked.A.work.path, f.project.receipts, 'A.json')), false);
+});
+
+test('report schema, optional reports and review prompts enforce the completion contract', async t => {
+  const f = fixture(t); let reviewed = false;
+  const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host,
+    createAdapter: options => {
+      const schema = options.tools.find(tool => tool.name === 'outcome_report')!.inputSchema as {
+        required: string[]; properties: { completion: { required: string[]; properties: { grade: { enum: string[] } } } };
+      };
+      assert.ok(!schema.required.includes('completion'));
+      assert.deepEqual(schema.properties.completion.required, ['summary', 'grade']);
+      assert.deepEqual(schema.properties.completion.properties.grade.enum, ['A', 'B', 'C', 'D', 'E']);
+      const inner = scripted(options as ScriptedOptions);
+      return { ...inner, async startAction(prompt) {
+        if (prompt.includes('Review actual implementation')) {
+          assert.match(prompt, /two or three English sentences/u);
+          assert.match(prompt, /whole-task complexity: A \(most complex\), B, C, D, E \(easiest\)/u);
+          assert.match(prompt, /not correctness, quality or execution speed/u);
+          const call = (completion: unknown) => options.handleTool('outcome_report',
+            { outcome: 'accepted', summary: 'Private diagnostic summary', findings: [], completion } as ToolInput,
+            { threadId: 'test' });
+          for (const completion of [null, [], 3, {}, { summary: 'Text' }, { grade: 'A' },
+            { summary: 3, grade: 'A' }, { summary: '  ', grade: 'A' }, { summary: 'Text', grade: 'F' }]) {
+            await assert.rejects(call(completion), /Invalid private report/u);
+          }
+          for (const grade of ['A', 'B', 'C', 'D', 'E']) {
+            await call({ summary: 'Valid change summary. Tests cover it.', grade });
+          }
+          // Nonaccepted implementation reviews can omit completion.
+          await options.handleTool('outcome_report', { outcome: 'changes-required', summary: 'Private diagnostic',
+            findings: ['Repair this.'] }, { threadId: 'test' });
+          reviewed = true;
+        } else if (prompt.includes('Review planning artifacts')) {
+          // Supplied malformed completion is invalid even when optional.
+          await assert.rejects(options.handleTool('outcome_report', { outcome: 'accepted', summary: 'Planning',
+            findings: [], completion: null } as unknown as ToolInput, { threadId: 'test' }), /Invalid private report/u);
+        }
+        return inner.startAction(prompt);
+      } };
+    } });
+  assert.equal(result.status, 'exhausted'); assert.ok(reviewed);
+  assert.match(result.completions.A.summary, /^The counter now/u);
+  assert.ok(!JSON.stringify(result).includes('Private diagnostic'));
+});

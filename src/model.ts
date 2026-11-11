@@ -65,7 +65,12 @@ export type Purpose = 'investigate' | 'plan' | 'work' | 'review';
 
 export interface CheckRecord extends CommandSpec { outcome: string; output?: string }
 
+export type Grade = 'A' | 'B' | 'C' | 'D' | 'E';
+export interface Completion { summary: string; grade: Grade }
+export interface TaskCompletion extends Completion { durationSeconds: number }
+
 export interface WorkerReport {
+  completion?: Completion;
   outcome: string;
   summary: string;
   findings: string[];
@@ -113,6 +118,9 @@ export interface Work extends Task {
   testedTarget?: string;
   pr?: PullRequest;
   acceptedTarget?: string;
+  claimedAt?: string;
+  acceptedAt?: string;
+  completion?: TaskCompletion;
 }
 
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) :

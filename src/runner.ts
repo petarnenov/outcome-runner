@@ -6,10 +6,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay, setImmediate as yieldLoop } from 'node:timers/promises';
 import { hash, digest, within, safePath, validateConfig, validateQueue } from './model.ts';
 import type { CheckRecord, CommandSpec, PullRequest, Purpose, Queue, ReviewRecord, RunConfig, Task, Work,
-  WorkerReport } from './model.ts';
+  WorkerReport, TaskCompletion } from './model.ts';
 import { command, git, gitPage, fileAt, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS, MERGE_STATE_POLL_MS } from './git.ts';
 import { pageOffset, readPage } from './text-page.ts';
 import { RunStore } from './run-store.ts';
+import { buildCompletion, validCompletion } from './completion.ts';
 import { ClaimLedger } from './claims.ts';
 import { CodexFiles, brokerTool } from './codex-files.ts';
 import { resolveHarness, createHarness, codexSelection } from './harness.ts';
@@ -25,9 +26,10 @@ export interface PullRequestHost {
   merge(pr: PullRequest, head: string): void | Promise<void>;
 }
 
-export interface RunEvent { status: string; id: string }
+export interface RunEvent { status: string; id: string; summary?: string; durationSeconds?: number; grade?: TaskCompletion['grade'] }
 
 export interface RunOptions {
+  now?: () => number;
   mergePolling?: import('./git.ts').MergePolling;
   host?: PullRequestHost;
   createAdapter?: (options: HarnessOptions) => HarnessAdapter;
@@ -57,7 +59,11 @@ const reportTool: ToolDefinition = { type: 'function', name: 'outcome_report',
   inputSchema: { type: 'object', additionalProperties: false,
     properties: { outcome: { type: 'string', enum: ['ready', 'accepted', 'changes-required', 'blocked'] },
       summary: { type: 'string' }, inspected: { type: 'array', items: { type: 'string' } },
-      findings: { type: 'array', items: { type: 'string' } } }, required: ['outcome', 'summary', 'findings'] } };
+      findings: { type: 'array', items: { type: 'string' } },
+      completion: { type: 'object', additionalProperties: false,
+        properties: { summary: { type: 'string', minLength: 1 },
+          grade: { type: 'string', enum: ['A', 'B', 'C', 'D', 'E'] } },
+        required: ['summary', 'grade'] } }, required: ['outcome', 'summary', 'findings'] } };
 
 export function packet(root: string, directory: string): Record<string, string> {
   const paths = ['proposal.md', 'design.md'];
@@ -90,7 +96,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
   const { config: selected, codex } = await selectHarness(requested, options.selection);
   const config = await resolveHarness(selected, codex ? async () => codex : codexSelection);
   validateConfig(config);
-  const { afterEffect = async () => {}, report = () => {} } = options;
+  const { afterEffect = async () => {}, report = () => {}, now = Date.now } = options;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
   const root = realpathSync(config.root); const project = config.project;
   const primary = dirname(resolve(root, git(root, 'rev-parse', '--git-common-dir')));
@@ -190,7 +196,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
       if (section !== 'findings' && section !== 'checks') throw new Error('Unknown context section');
       return { section, ...await readPage([Buffer.from(JSON.stringify(activeWork()[section] ?? []))], offset) };
     };
-    const session = async (work: Work, purpose: Purpose, prompt: string): Promise<ReviewRecord> => {
+    const session = async (work: Work, purpose: Purpose, prompt: string, implementationReview = false): Promise<ReviewRecord> => {
       let result: WorkerReport | undefined;
       const files = git(work.path, 'ls-files', '-z').split('\0').filter(Boolean);
       const instructionPaths = [...new Set(['AGENTS.md', ...[...work.scopes, work.directory].flatMap(path =>
@@ -226,6 +232,10 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
           if (name !== reportTool.name || !input.outcome || !['ready', 'accepted', 'changes-required', 'blocked'].includes(input.outcome) ||
               !input.summary || !Array.isArray(input.findings) ||
               input.findings.some(f => typeof f !== 'string' || !f)) throw new Error('Invalid private report');
+          if (Object.hasOwn(input, 'completion') && !validCompletion(input.completion) ||
+              implementationReview && input.outcome === 'accepted' && !validCompletion(input.completion)) {
+            throw new Error('Invalid private report');
+          }
           if (purpose === 'investigate' && !input.inspected?.length) throw new Error('Investigation references required');
           result = input as WorkerReport; return { status: 'recorded' };
         } });
@@ -260,24 +270,50 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
         if (accepted(target, task)) done.add(task.id);
       }
       if (!store.state.baselineDone) store.update({ baselineDone: [...done] });
+      if (!store.state.current && recovery.length) save(recovery.shift()!);
       const current = store.state.current;
+      const recoverClaimTime = (work: Work): string => {
+        if (work.claimedAt && Number.isFinite(Date.parse(work.claimedAt))) return work.claimedAt;
+        const claim = ledger.pull().claims.get(work.id);
+        if (!claim || claim.claimant !== claimant || claim.taskHash !== work.taskHash ||
+            claim.branch !== work.branch || hash(claim.scopes) !== hash(work.scopes) ||
+            !claim.claimedAt || !Number.isFinite(Date.parse(claim.claimedAt))) {
+          throw new Error('Cannot recover original claim timestamp from matching owned ledger claim');
+        }
+        return claim.claimedAt;
+      };
+      const resultData = (acceptedIds: string[]) => ({
+        accepted: acceptedIds,
+        completions: Object.fromEntries(acceptedIds.flatMap(id =>
+          completed[id]?.completion ? [[id, completed[id].completion]] : [])) as Record<string, TaskCompletion>,
+      });
       if (current && done.has(current.id)) {
-        completed[current.id] = { ...current, acceptedTarget: target };
-        store.update({ current: null, completed });
-        report({ status: 'accepted', id: current.id });
+        try {
+          const claimedAt = recoverClaimTime(current);
+          const acceptedAt = new Date(now()).toISOString();
+          const completion = buildCompletion(current.review?.completion, claimedAt, acceptedAt);
+          completed[current.id] = { ...current, claimedAt, acceptedAt, completion, acceptedTarget: target };
+          store.update({ current: null, completed });
+          report({ status: 'accepted', id: current.id, ...completion });
+        } catch (error) {
+          store.update({ blocked: { ...store.state.blocked, [current.id]: {
+            reason: failureDetail(error), work: current } }, current: null });
+          const acceptedIds = Object.keys(completed).filter(id => done.has(id) && !store.state.baselineDone!.includes(id));
+          return { status: 'incomplete', ...resultData(acceptedIds), remaining: ids.filter(id => !done.has(id)),
+            blockers: { [current.id]: { stage: current.stage, reason: 'operation-incomplete', diagnostics: join(store.directory, 'state.json') } } };
+        }
       }
       const newlyAccepted = Object.keys(completed).filter(id => done.has(id) && !store.state.baselineDone!.includes(id));
       const remaining = ids.filter(id => !done.has(id));
       if (config.maxAccepted && newlyAccepted.length >= config.maxAccepted) {
         if (!Object.keys(store.state.blocked!).length && !store.state.current && !recovery.length) release();
-        return { status: 'limit-reached', accepted: newlyAccepted, remaining };
+        return { status: 'limit-reached', ...resultData(newlyAccepted), remaining };
       }
       if (!remaining.length) {
         release();
-        return { status: config.maxAccepted ? 'incomplete' : 'exhausted', accepted: newlyAccepted, remaining };
+        return { status: config.maxAccepted ? 'incomplete' : 'exhausted', ...resultData(newlyAccepted), remaining };
       }
-      if (stopped) return { status: 'cancelled', accepted: newlyAccepted, remaining };
-      if (!store.state.current && recovery.length) save(recovery.shift()!);
+      if (stopped) return { status: 'cancelled', ...resultData(newlyAccepted), remaining };
       let work = store.state.current;
       if (!work) {
         const ledgerSnapshot = ledger.pull();
@@ -288,7 +324,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
           !foreignClaims.some(claim => claim.id === task.id || scopesOverlap(claim.scopes, task.scopes)) &&
           !Object.values(store.state.blocked!).some(entry => entry.work && scopesOverlap(entry.work.scopes, task.scopes)))
           .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
-        if (!task) return { status: 'incomplete', accepted: newlyAccepted, remaining,
+        if (!task) return { status: 'incomplete', ...resultData(newlyAccepted), remaining,
           blockers: Object.fromEntries(Object.entries(store.state.blocked!).map(([id, entry]) =>
             [id, { stage: entry.work?.stage, reason: 'operation-incomplete',
               diagnostics: join(store.directory, 'state.json') }])),
@@ -297,7 +333,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
         const branch = `outcome/${task.id}-${operation.slice(0, 12)}`;
         if (!ledgerSnapshot.claims.has(task.id) && !ledger.acquire(ledgerSnapshot, {
           version: 1, id: task.id, taskHash: hash(task), scopes: task.scopes, claimant,
-          host: hostname(), branch, claimedAt: new Date().toISOString(),
+          host: hostname(), branch, claimedAt: new Date(now()).toISOString(),
         }, commitSubject('chore', `claim ${task.id}`))) continue;
         save({ ...task, taskHash: hash(task), operation, stage: 'claim', base: target, branch,
           path: join(dirname(primary), `${primary.split('/').at(-1)}-outcomes`, operation),
@@ -305,6 +341,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
         work = activeWork();
       }
       try {
+        const claimedAt = recoverClaimTime(work);
+        if (work.claimedAt !== claimedAt) { save({ claimedAt }); work = activeWork(); }
         const prompt = `Task ${work.id}; OpenSpec directory ${work.directory}. ` +
           `Exact source: ${JSON.stringify(authorized(queue, work.id))}\n`;
         if (prompt.length > 65536) throw new Error('Selected outcome prompt is too large');
@@ -365,7 +403,10 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
             catch (error) { save({ findings: [failureDetail(error)] }); continue; }
             const review = await session(activeWork(), 'review', prompt +
               'Review actual implementation independently against every criterion, scope, security and test evidence. ' +
-              'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required.');
+              'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required. ' +
+              'When reporting accepted, provide completion.summary with two or three English sentences describing what ' +
+              'the whole task changed, and completion.grade for whole-task complexity: A (most complex), B, C, D, ' +
+              'E (easiest). Grade complexity, not correctness, quality or execution speed.', true);
             save({ reviews: [...(activeWork().reviews ?? []), review] });
             if (review.outcome === 'accepted' && !review.findings.length) {
               save({ review: { ...review, accepted: true }, stage: 'receipt', findings: [] }); passed = true; break;
