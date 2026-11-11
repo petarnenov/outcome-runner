@@ -67,12 +67,14 @@ export interface RunOptions {
   runCommand?: CommandRunner;
 }
 
-interface CommandFailure extends Error { stderr?: string | Buffer; stdout?: string | Buffer }
+interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
 interface InterruptedFailure extends Error { interrupted?: boolean }
 
+// Test reporters write failures to stdout while package managers write notices to stderr, so both are kept.
 const failureDetail = (error: unknown): string => {
-  const { stderr, message } = error as CommandFailure;
-  return String(stderr ?? message).slice(-16000);
+  const { stdout, stderr, message } = error as CommandFailure;
+  const output = [stdout, stderr].map(stream => String(stream ?? '').trim()).filter(Boolean).join('\n');
+  return (output || message).slice(-16000);
 };
 
 const checkRecords = (rows: CheckRecord[]) => rows.map(({ command, args, outcome }) => ({ command, args, outcome }));
