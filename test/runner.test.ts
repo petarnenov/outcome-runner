@@ -300,7 +300,7 @@ test('changed source and bound specification cannot gain execution authority', a
     } });
   assert.equal(result.status, 'incomplete'); assert.equal(f.records.length, 0);
   assert.equal(result.blockers!.A.stage, 'work');
-  const privateState = JSON.parse(readFileSync(result.blockers!.A.diagnostics, 'utf8'));
+  const privateState = JSON.parse(readFileSync(result.blockers!.A.diagnostics!, 'utf8'));
   assert.match(privateState.blocked.A.reason, /specification changed/u);
 });
 
@@ -443,7 +443,7 @@ test('unresolved structured report and unavailable interface remain incomplete',
     createAdapter: () => ({ probe: () => ({ status: 'unsupported' }), close() {} }) as HarnessAdapter });
   assert.equal(result.status, 'incomplete'); assert.equal(f.records.length, 0);
   assert.equal(result.blockers!.A.stage, 'investigate');
-  assert.match(JSON.parse(readFileSync(result.blockers!.A.diagnostics, 'utf8')).blocked.A.reason, /interface/u);
+  assert.match(JSON.parse(readFileSync(result.blockers!.A.diagnostics!, 'utf8')).blocked.A.reason, /interface/u);
   const retry = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host,
     createAdapter: () => ({ probe: () => ({ status: 'interface-ready' }), close() {},
       async startAction() { return { threadId: 'no-report', events: [], text: 'Private question?' } as unknown as WorkerReply; } }) });
@@ -723,7 +723,7 @@ function advanceTarget(f: Fixture, path: string, name: string) {
 
 const ledgerCommits = (f: Fixture) => git(join(f.base, 'origin.git'), 'rev-list', '--count', 'work-queue-claims-proposal');
 const claimAt = (f: Fixture, id: string) => JSON.parse(git(join(f.base, 'origin.git'), 'show', `work-queue-claims-proposal:${id}.json`));
-const blockedReason = (result: RunResult) => JSON.parse(readFileSync(result.blockers!.A.diagnostics, 'utf8')).blocked.A.reason;
+const blockedReason = (result: RunResult) => JSON.parse(readFileSync(result.blockers!.A.diagnostics!, 'utf8')).blocked.A.reason;
 
 test('two machines take different tasks and integrate each other results', async t => {
   const f = fixture(t); const first = machine(f, 'one'); const second = machine(f, 'two');
