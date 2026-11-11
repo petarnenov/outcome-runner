@@ -17,7 +17,7 @@ type Flag = 'harness' | 'model' | 'effort' | 'coverage';
 
 export interface MainOptions {
   args?: string[]; cwd?: string; env?: NodeJS.ProcessEnv;
-  ledger?: { home?: string; stderr?: (line: string) => void; effects?: LedgerEffects };
+  ledger?: { env?: NodeJS.ProcessEnv; home?: string; stderr?: (line: string) => void; effects?: LedgerEffects };
 }
 
 const writeOutput: Output = line => process.stdout.write(line);

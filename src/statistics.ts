@@ -98,9 +98,11 @@ export class Statistics {
   private sessions: { id: string; usage: TokenUsage | null }[] = [];
   private start: number;
   private finished = false;
-  constructor(private clocks = { utc: () => new Date().toISOString(), elapsed: () => performance.now(),
+  private clocks: { utc: () => string; elapsed: () => number; uuid: () => string; version: () => string; host: () => string };
+  constructor(clocks: Statistics['clocks'] = { utc: () => new Date().toISOString(), elapsed: () => performance.now(),
     uuid: randomUUID, version: () => JSON.parse(readFileSync(new URL(existsSync(new URL('../package.json', import.meta.url)) ? '../package.json' : '../../package.json', import.meta.url), 'utf8')).version as string,
     host: hostname }) {
+    this.clocks = clocks;
     this.start = clocks.elapsed();
     const pair = () => ({ value: null, source: null });
     this.record = { schemaVersion: 1, runId: clocks.uuid(), runnerVersion: clocks.version(), hostname: clocks.host(),

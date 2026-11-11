@@ -308,7 +308,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           'Read applicable AGENTS.md. Report blockers privately. No shell or approval tools.\n' +
           `Resolved coverage threshold: ${config.coverage}%.\n` + prompt), signal);
         for (const event of reply.events) {
-          if (event.type === 'token-usage') usage?.(tokenUsage(event));
+          if (event.type === 'token-usage') usage?.(tokenUsage({ inputTokens: event.inputTokens, outputTokens: event.outputTokens, totalTokens: event.totalTokens }));
         }
         save({ sessions: [...(activeWork().sessions ?? []), {
           purpose, threadId: reply.threadId, events: reply.events, privateText: reply.text }] });
@@ -394,50 +394,4 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         const task = queue.tasks.filter(task => remaining.includes(task.id) && !store.state.blocked![task.id] &&
           task.dependencies.every(id => done.has(id)) &&
           !foreignClaims.some(claim => claim.id === task.id || scopesOverlap(claim.scopes, task.scopes)) &&
-          !Object.values(store.state.blocked!).some(entry => entry.work && scopesOverlap(entry.work.scopes, task.scopes)))
-          .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
-        if (!task) return { status: 'incomplete', ...resultData(newlyAccepted), remaining,
-          blockers: Object.fromEntries(Object.entries(store.state.blocked!).map(([id, entry]) =>
-            [id, { stage: entry.work?.stage, reason: 'operation-incomplete',
-              diagnostics: join(store.directory, 'state.json') }])),
-          claimedElsewhere: Object.fromEntries(foreignClaims.map(claim => [claim.id, { host: claim.host }])) };
-        const operation = hash({ invocation: config.invocation, id: task.id, authority: config.authority.reference });
-        const branch = `outcome/${task.id}-${operation.slice(0, 12)}`;
-        if (!ledgerSnapshot.claims.has(task.id) && !ledger.acquire(ledgerSnapshot, {
-          version: 1, id: task.id, taskHash: hash(task), scopes: task.scopes, claimant,
-          host: hostname(), branch, claimedAt: new Date(now()).toISOString(),
-        }, commitSubject('chore', `claim ${task.id}`))) continue;
-        save({ ...task, taskHash: hash(task), operation, stage: 'claim', base: target, branch,
-          path: join(dirname(primary), `${primary.split('/').at(-1)}-outcomes`, operation),
-          directory: `${project.changes}/${task.change}` });
-        work = activeWork();
-      }
-      try {
-        const claimedAt = recoverClaimTime(work);
-        if (work.claimedAt !== claimedAt) save({ claimedAt });
-        const prompt = `Task ${work.id}; OpenSpec directory ${work.directory}. ` +
-          `Exact source: ${JSON.stringify(authorized(queue, work.id))}\n`;
-        if (prompt.length > 65536) throw new Error('Selected outcome prompt is too large');
-        if (work.stage === 'claim') {
-          if (!existsSync(work.path)) {
-            git(root, 'worktree', 'add', '-b', work.branch, work.path, work.base);
-            await afterEffect('claim', work);
-          }
-          if (git(work.path, 'rev-parse', 'HEAD') !== work.base || git(work.path, 'status', '--porcelain')) {
-            throw new Error('Initial worktree differs from recorded base');
-          }
-          save({ stage: 'investigate' });
-        }
-        if (activeWork().stage === 'investigate') {
-          checks(work, project.setup ?? []);
-          const investigation = await session(work, 'investigate', prompt +
-            'Inspect current files and history before edits. Call outcome_report with outcome ready, summary, ' +
-            'inspected containing actual inspected repository paths, and findings array. Do not edit files. ' +
-            'Do not use a final message as a substitute for outcome_report.');
-          save({ investigation, stage: 'plan' });
-        }
-        if (activeWork().stage === 'plan') {
-          let bound = false;
-          for (let attempt = 0; attempt < 4; attempt += 1) {
-            // Graded test fragments come from the frozen threshold on every attempt, so replanning repeats them.
-            await session(work, 'plan', prompt 
+          !O
