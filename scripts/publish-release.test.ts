@@ -162,3 +162,78 @@ for (const transport of ['normal', 'confirmed', 'indeterminate', 'notes-failure'
     assert.equal(publish(f.queued, { validate: valid, notes: noNotes, push: () => assert.fail('duplicate push') }), 'no release\n');
   });
 }
+
+test('B T6 main advancement recomputes patch to minor and revalidates', t => {
+  const f = fixture(t); f.advance('fix: first patch');
+  const bases: string[] = []; let attempts = 0; let notes = 0;
+  const output = publish(f.queued, {
+    validate: cwd => { bases.push(git(cwd, 'rev-parse', 'HEAD')); },
+    push: (cwd, tag) => {
+      attempts++;
+      if (attempts === 1) {
+        assert.equal(tag, 'v1.2.4');
+        f.advance('feat: new feature');
+        try { atomicPush(cwd, tag); }
+        catch (error) {
+          assert.equal(git(f.origin, 'tag', '--list', tag), '');
+          assert.notEqual(git(f.origin, 'rev-parse', 'main'), git(cwd, 'rev-parse', 'HEAD'));
+          throw error;
+        }
+        assert.fail('stale push unexpectedly accepted');
+      }
+      atomicPush(cwd, tag);
+    },
+    notes: (_cwd, tag, section) => {
+      notes++; assert.equal(tag, 'v1.3.0');
+      assert.equal(section.split('first patch').length, 2);
+      assert.equal(section.split('new feature').length, 2);
+      assert.ok(!section.includes('1.2.4'));
+    },
+  });
+  assert.ok(output.startsWith('1.3.0\n'));
+  assert.equal(attempts, 2); assert.equal(notes, 1);
+  assert.equal(bases.length, 2); assert.notEqual(bases[0], bases[1]);
+  assert.equal(git(f.origin, 'tag', '--list', 'v1.2.4'), '');
+});
+for (const additional of [false, true]) {
+  test('B T7 independent remote release refreshes boundary: ' + additional, t => {
+    const f = fixture(t); f.advance('fix: already covered');
+    let attempts = 0; let object = ''; let notes = 0;
+    const output = publish(f.queued, {
+      validate: valid,
+      push: (cwd, tag) => {
+        if (++attempts === 1) {
+          release(f.author, false, new Date('2020-01-01'));
+          atomicPush(f.author, 'v1.2.4');
+          object = git(f.origin, 'rev-parse', 'v1.2.4');
+          if (additional) f.advance('fix: next change');
+        }
+        atomicPush(cwd, tag);
+      },
+      notes: (_cwd, tag, section) => {
+        notes++; assert.equal(tag, 'v1.2.5');
+        assert.ok(section.includes('next change'));
+        assert.ok(!section.includes('already covered'));
+      },
+    });
+    assert.ok(additional ? output.startsWith('1.2.5\n') : output === 'no release\n');
+    assert.equal(notes, additional ? 1 : 0);
+    assert.equal(git(f.origin, 'rev-parse', 'v1.2.4'), object);
+    const history = git(f.origin, 'show', 'main:CHANGELOG.md');
+    assert.equal(history.split('already covered').length, 2);
+  });
+}
+test('B T8 real atomic rejections exhaust exactly three attempts', t => {
+  const f = fixture(t); f.advance('fix: pending');
+  let attempts = 0;
+  assert.throws(() => publish(f.queued, {
+    validate: valid, notes: noNotes,
+    push: (cwd, tag) => {
+      attempts++; f.advance('docs: concurrent ' + attempts);
+      try { atomicPush(cwd, tag); }
+      finally { assert.equal(git(f.origin, 'tag', '--list', tag), ''); }
+    },
+  }), /three total attempts/);
+  assert.equal(attempts, 3);
+  assert.equal(git(f.origin, 'log', '--format=%s').includes('chore(release):'), false);
+});
