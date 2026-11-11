@@ -17,6 +17,7 @@ import { pageOffset, readPage } from './text-page.ts';
 import { RunStore } from './run-store.ts';
 import { buildCompletion, validCompletion } from './completion.ts';
 import { ClaimLedger } from './claims.ts';
+import type { Claim, LedgerSnapshot } from './claims.ts';
 import { CodexFiles, brokerTool } from './codex-files.ts';
 import { resolveHarness, createHarness, codexSelection } from './harness.ts';
 import { selectHarness } from './harness-selection.ts';
@@ -43,12 +44,32 @@ export interface RunEvent {
   cleanupFailed?: CleanupStep[];
 }
 
+/** Why a task of the invocation was not finished. */
+export type BlockerKind = 'blocked' | 'waiting-for-dependency' | 'waiting-for-claim' | 'waiting-for-blocked-scope' |
+  'max-accepted';
+
+/**
+ * One unfinished task of the invocation: `blocked` carries `stage` and `diagnostics` (the state.json path),
+ * `waiting-for-dependency` the `dependencies` not yet accepted, `waiting-for-claim` the foreign `claim`,
+ * `waiting-for-blocked-scope` the blocked `task` whose scopes overlap and `max-accepted` the `limit`.
+ */
+export interface Blocker {
+  kind: BlockerKind;
+  reason: string;
+  stage?: Work['stage'];
+  diagnostics?: string;
+  dependencies?: string[];
+  claim?: { id: string; host?: string };
+  task?: string;
+  limit?: number;
+}
+
 export interface RunResult {
   status: string;
   accepted: string[];
   remaining: string[];
   completions: Record<string, TaskCompletion>;
-  blockers?: Record<string, { stage?: Work['stage']; reason: string; diagnostics: string }>;
+  blockers?: Record<string, Blocker>;
   claimedElsewhere?: Record<string, { host?: string }>;
 }
 
@@ -95,6 +116,99 @@ const DOCUMENTATION_ROUNDS = 4;
 /** The number of sessions of `purpose` already started for `work`, as the session start counter records it. */
 const sessionsStarted = (work: Work, purpose: Purpose): number => work.sessionStarts ?
   work.sessionStarts[purpose] ?? 0 : (work.sessions ?? []).filter(item => item.purpose === purpose).length;
+
+/**
+ * For each id of `ids` (in order), its dependencies that are outside `ids` and not accepted. A dependency that is
+ * not a task of `tasks` is always missing. Ids without missing dependencies are omitted.
+ */
+export function missingDependencies(ids: string[], tasks: Pick<Task, 'id' | 'dependencies'>[],
+  isAccepted: (id: string) => boolean): Record<string, string[]> {
+  const missing: Record<string, string[]> = {};
+  for (const id of ids) {
+    const dependencies = (tasks.find(task => task.id === id)?.dependencies ?? []).filter(dependency =>
+      !ids.includes(dependency) && !(tasks.some(task => task.id === dependency) && isAccepted(dependency)));
+    if (dependencies.length) missing[id] = dependencies;
+  }
+  return missing;
+}
+
+export interface AcceptedInput {
+  ids: string[];
+  completed: Record<string, unknown>;
+  blocked: Record<string, unknown>;
+  done: Iterable<string>;
+  baselineDone: Iterable<string>;
+}
+
+/**
+ * The ids of the invocation counted against `maxAccepted`: newly done ids that this run accepted (`completed`) or
+ * merged without recording the acceptance (`blocked`). Ids outside `ids` never count, even when newly done.
+ */
+export function acceptedThisRun({ ids, completed, blocked, done, baselineDone }: AcceptedInput): string[] {
+  const finished = new Set(done); const baseline = new Set(baselineDone);
+  return ids.filter(id => finished.has(id) && !baseline.has(id) &&
+    (Object.hasOwn(completed, id) || Object.hasOwn(blocked, id)));
+}
+
+/** The claims of another claimant whose task is not done. */
+export function foreignClaimsOf(snapshot: Pick<LedgerSnapshot, 'claims'>, done: Iterable<string>,
+  claimant: string): Claim[] {
+  const finished = new Set(done);
+  return [...snapshot.claims.values()].filter(claim => claim.claimant !== claimant && !finished.has(claim.id));
+}
+
+export interface UnfinishedInput extends AcceptedInput {
+  remaining: string[];
+  tasks: Pick<Task, 'id' | 'dependencies' | 'scopes'>[];
+  blocked: Record<string, { work?: Pick<Work, 'stage' | 'scopes'> }>;
+  maxAccepted?: number;
+  foreignClaims: Pick<Claim, 'id' | 'host' | 'scopes'>[];
+  statePath: string;
+}
+
+/**
+ * A blocker for every blocked task of the invocation and every remaining task, using the first matching rule:
+ * blocked, max-accepted, waiting-for-dependency, waiting-for-claim, waiting-for-blocked-scope. Throws
+ * `Unexplained unfinished task` when no rule matches.
+ */
+export function explainUnfinished(input: UnfinishedInput): Record<string, Blocker> {
+  const { remaining, ids, tasks, blocked, done, maxAccepted, foreignClaims, statePath } = input;
+  const finished = new Set(done);
+  const limited = !!maxAccepted && acceptedThisRun(input).length >= maxAccepted;
+  const blockedIds = ids.filter(id => Object.hasOwn(blocked, id));
+  const claims = [...foreignClaims].sort((first, second) => first.id.localeCompare(second.id));
+  const blockers: Record<string, Blocker> = {};
+  for (const id of [...new Set([...blockedIds, ...remaining])]) {
+    if (Object.hasOwn(blocked, id)) {
+      blockers[id] = { kind: 'blocked', stage: blocked[id].work?.stage, reason: 'operation-incomplete',
+        diagnostics: statePath };
+      continue;
+    }
+    if (limited) {
+      blockers[id] = { kind: 'max-accepted', reason: 'max-accepted', limit: maxAccepted };
+      continue;
+    }
+    const task = tasks.find(item => item.id === id);
+    const dependencies = (task?.dependencies ?? []).filter(dependency => !finished.has(dependency));
+    if (dependencies.length) {
+      blockers[id] = { kind: 'waiting-for-dependency', reason: 'waiting-for-dependency', dependencies };
+      continue;
+    }
+    const scopes = task?.scopes ?? [];
+    const claim = claims.find(item => item.id === id || scopesOverlap(item.scopes, scopes));
+    if (claim) {
+      blockers[id] = { kind: 'waiting-for-claim', reason: 'waiting-for-claim', claim: { id: claim.id, host: claim.host } };
+      continue;
+    }
+    const scoped = blockedIds.find(other => blocked[other].work && scopesOverlap(blocked[other].work!.scopes, scopes));
+    if (scoped) {
+      blockers[id] = { kind: 'waiting-for-blocked-scope', reason: 'waiting-for-blocked-scope', task: scoped };
+      continue;
+    }
+    throw new Error(`Unexplained unfinished task: ${id}`);
+  }
+  return blockers;
+}
 
 /**
  * The per-invocation lock and ownership files of one clone: `<hash(primary)>-<hash(stateDirectory)>.sqlite` and
@@ -263,7 +377,11 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       }
     }
     const ownership = { identity: hash(config), stateDirectory: resolve(config.stateDirectory), released: false };
-    const release = () => writeFileSync(ownershipFile, JSON.stringify({ ...ownership, released: true }));
+    let released = false;
+    const release = () => {
+      writeFileSync(ownershipFile, JSON.stringify({ ...ownership, released: true }));
+      released = true;
+    };
     const refresh = (subject = 'run') => {
       const target = lockGit(subject, () => {
         git(root, 'fetch', 'origin', project.target);
@@ -281,7 +399,20 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         throw new Error('Task source differs from frozen authority');
       }
     });
+    const receiptPath = (id: string) => `${project.receipts}/${id}.json`;
+    const accepted = (target: string, task: Task) => receiptAt(root, target, receiptPath(task.id),
+      hash(task), null);
+    // Every dependency of a task of the invocation is in the invocation or already accepted at the initial target;
+    // otherwise the run is refused before any state, ownership, claim or worktree exists.
+    const missingByTask = missingDependencies(ids, initial.queue.tasks, id =>
+      Boolean(accepted(initial.target, initial.queue.tasks.find(task => task.id === id)!)));
+    if (Object.keys(missingByTask).length) {
+      throw Object.assign(new Error(`Dependencies outside the invocation are not accepted: ${Object.entries(missingByTask)
+        .map(([id, dependencies]) => `${id} needs ${dependencies.join(', ')}`).join('; ')}`),
+      { reason: 'dependencies-outside-invocation', details: { missing: missingByTask } });
+    }
     store = new RunStore(config.stateDirectory, { ...config, root, leaves: ids }, { repositoryRoot: root });
+    const stateFile = join(store.directory, 'state.json');
     sources = store.state.statisticsSources ?? sources;
     if (!store.state.statisticsSources) store.update({ statisticsSources: sources });
     statistics?.resolved(config, sources, harnessVersion);
@@ -335,9 +466,6 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       if (!task || hash(task) !== config.authority.tasks[id]) throw new Error('Task source differs from frozen authority');
       return task;
     };
-    const receiptPath = (id: string) => `${project.receipts}/${id}.json`;
-    const accepted = (target: string, task: Task) => receiptAt(root, target, receiptPath(task.id),
-      hash(task), null);
     const assertWork = (work: Work): boolean => {
       const { queue } = refresh(work.id); authorized(queue, work.id);
       if (git(work.path, 'branch', '--show-current') !== work.branch) throw new Error('Work branch changed');
@@ -513,6 +641,15 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       store.update({ completed: { ...store.state.completed, [id]: { ...entry, cleanup: { failed } } } });
       await cancellable(afterEffect('sweep', entry), signal);
     }
+    store.update({ status: 'running' });
+    const blockedInInvocation = () => Object.keys(store.state.blocked ?? {}).some(id => ids.includes(id));
+    // Every return of the loop records the invocation status the run reached in state.json first.
+    const finish = (result: RunResult): RunResult => {
+      const status = released ? 'released' : blockedInInvocation() ? 'blocked' :
+        result.status === 'limit-reached' ? 'completed' : 'incomplete';
+      store.update({ status });
+      return result;
+    };
     for (;;) {
       await yieldLoop();
       if (signal?.aborted) stopped = true;
@@ -541,6 +678,12 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         completions: Object.fromEntries(acceptedIds.flatMap(id =>
           completed[id]?.completion ? [[id, completed[id].completion]] : [])) as Record<string, TaskCompletion>,
       });
+      const explain = (unfinished: string[], foreignClaims: Claim[]) => explainUnfinished({ remaining: unfinished, ids,
+        tasks: queue.tasks, completed: store.state.completed ?? {}, blocked: store.state.blocked ?? {}, done,
+        baselineDone: store.state.baselineDone ?? [], maxAccepted: config.maxAccepted, foreignClaims,
+        statePath: stateFile });
+      const withBlockers = (blockers: Record<string, Blocker>) => Object.keys(blockers).length ? { blockers } : {};
+      let acceptanceFailed = false;
       if (current && done.has(current.id)) {
         try {
           taskStep(current.id, 'acceptance', 'recording the acceptance');
@@ -557,22 +700,23 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           completed[current.id] = finished;
           statistics?.decision(finished, 'accepted', finished);
         } catch (error) {
+          // The merged task stays blocked for the next run; other tasks are still worked unless the limit is reached.
           store.update({ blocked: { ...store.state.blocked, [current.id]: {
             reason: failureDetail(error), work: current } }, current: null });
           blockedStep(current.id, current.stage);
-          const acceptedIds = Object.keys(completed).filter(id => done.has(id) && !store.state.baselineDone!.includes(id));
-          return { status: 'incomplete', ...resultData(acceptedIds), remaining: ids.filter(id => !done.has(id)),
-            blockers: { [current.id]: { stage: current.stage, reason: 'operation-incomplete', diagnostics: join(store.directory, 'state.json') } } };
+          acceptanceFailed = true;
         }
-        // The merge is confirmed, so the task worktree, local branch and remote branch are no longer needed.
-        taskStep(current.id, 'cleanup', 'removing the worktree and branches');
-        const cleanupFailed = cleanupTask(current.id, completed[current.id], true);
-        if (cleanupFailed.length) {
-          completed[current.id] = { ...completed[current.id], cleanup: { failed: cleanupFailed } };
-          store.update({ completed: { ...store.state.completed, [current.id]: completed[current.id] } });
+        if (!acceptanceFailed) {
+          // The merge is confirmed, so the task worktree, local branch and remote branch are no longer needed.
+          taskStep(current.id, 'cleanup', 'removing the worktree and branches');
+          const cleanupFailed = cleanupTask(current.id, completed[current.id], true);
+          if (cleanupFailed.length) {
+            completed[current.id] = { ...completed[current.id], cleanup: { failed: cleanupFailed } };
+            store.update({ completed: { ...store.state.completed, [current.id]: completed[current.id] } });
+          }
+          report({ status: 'accepted', id: current.id, ...completed[current.id].completion,
+            ...(cleanupFailed.length ? { cleanupFailed } : {}) });
         }
-        report({ status: 'accepted', id: current.id, ...completed[current.id].completion,
-          ...(cleanupFailed.length ? { cleanupFailed } : {}) });
       }
       const newlyAccepted = Object.keys(completed).filter(id => done.has(id) && !store.state.baselineDone!.includes(id));
       const remaining = ids.filter(id => !done.has(id));
@@ -581,20 +725,33 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         else if (store.state.blocked?.[task.id]) statistics?.decision(task, 'blocked', store.state.blocked[task.id].work);
         else statistics?.decision(task);
       }
-      if (config.maxAccepted && newlyAccepted.length >= config.maxAccepted) {
+      const limitReached = !!config.maxAccepted && acceptedThisRun({ ids, completed: store.state.completed ?? {},
+        blocked: store.state.blocked ?? {}, done, baselineDone: store.state.baselineDone! }).length >= config.maxAccepted;
+      // A merged task of the invocation whose acceptance recording failed (in this iteration or an earlier one) keeps
+      // the run incomplete (exit 3) when the limit is reached, even when a later task reached it.
+      const mergedBlocked = ids.some(id => done.has(id) && Object.hasOwn(store.state.blocked ?? {}, id));
+      if (mergedBlocked && limitReached) {
+        return finish({ status: 'incomplete', ...resultData(newlyAccepted), remaining,
+          blockers: explain(remaining, foreignClaimsOf(ledger.pull(), done, claimant)) });
+      }
+      if (limitReached) {
         if (!Object.keys(store.state.blocked!).length && !store.state.current && !recovery.length) release();
-        return { status: 'limit-reached', ...resultData(newlyAccepted), remaining };
+        return finish({ status: 'limit-reached', ...resultData(newlyAccepted), remaining,
+          ...withBlockers(explain(remaining, foreignClaimsOf(ledger.pull(), done, claimant))) });
       }
       if (!remaining.length) {
+        // A merged task whose acceptance recording failed keeps the ownership for the next run.
+        if (blockedInInvocation()) {
+          return finish({ status: 'incomplete', ...resultData(newlyAccepted), remaining, blockers: explain(remaining, []) });
+        }
         release();
-        return { status: config.maxAccepted ? 'incomplete' : 'exhausted', ...resultData(newlyAccepted), remaining };
+        return finish({ status: config.maxAccepted ? 'incomplete' : 'exhausted', ...resultData(newlyAccepted), remaining });
       }
-      if (stopped) return { status: 'cancelled', ...resultData(newlyAccepted), remaining };
+      if (stopped) return finish({ status: 'cancelled', ...resultData(newlyAccepted), remaining });
       let work = store.state.current;
       if (!work) {
         const ledgerSnapshot = ledger.pull();
-        const foreignClaims = [...ledgerSnapshot.claims.values()]
-          .filter(claim => claim.claimant !== claimant && !done.has(claim.id));
+        const foreignClaims = foreignClaimsOf(ledgerSnapshot, done, claimant);
         for (const candidate of queue.tasks.filter(task => remaining.includes(task.id))) {
           if (foreignClaims.some(claim => claim.id === candidate.id || scopesOverlap(claim.scopes, candidate.scopes))) {
             statistics?.decision(candidate, 'claimed-elsewhere');
@@ -605,11 +762,9 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           !foreignClaims.some(claim => claim.id === task.id || scopesOverlap(claim.scopes, task.scopes)) &&
           !Object.values(store.state.blocked!).some(entry => entry.work && scopesOverlap(entry.work.scopes, task.scopes)))
           .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
-        if (!task) return { status: 'incomplete', ...resultData(newlyAccepted), remaining,
-          blockers: Object.fromEntries(Object.entries(store.state.blocked!).map(([id, entry]) =>
-            [id, { stage: entry.work?.stage, reason: 'operation-incomplete',
-              diagnostics: join(store.directory, 'state.json') }])),
-          claimedElsewhere: Object.fromEntries(foreignClaims.map(claim => [claim.id, { host: claim.host }])) };
+        if (!task) return finish({ status: 'incomplete', ...resultData(newlyAccepted), remaining,
+          blockers: explain(remaining, foreignClaims),
+          claimedElsewhere: Object.fromEntries(foreignClaims.map(claim => [claim.id, { host: claim.host }])) });
         const operation = hash({ invocation: config.invocation, id: task.id, authority: config.authority.reference });
         const branch = `outcome/${task.id}-${operation.slice(0, 12)}`;
         taskStep(task.id, 'claim', 'claiming the task');
@@ -899,7 +1054,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       } catch (error) {
         if (stopped || signal?.aborted) {
           statistics?.decision(activeWork(), 'blocked', activeWork(), 'cancelled');
-          return { status: 'cancelled', ...resultData(newlyAccepted), remaining };
+          return finish({ status: 'cancelled', ...resultData(newlyAccepted), remaining });
         }
         if ((error as InterruptedFailure).interrupted) throw error;
         const stage = activeWork().stage;

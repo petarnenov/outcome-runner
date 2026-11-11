@@ -151,6 +151,9 @@ Save it as, for example, `~/invocations/my-project-1.json`:
   `openspec archive {change} --yes`; set `project.archive` to use another
   command. See [Documentation and archive](#documentation-and-archive).
 - Without `leaves`, every task in `authority.tasks` runs.
+- Every dependency of a task the run will work must be in that set or already
+  accepted on the target; otherwise the run is refused. See
+  [Dependency check](#dependency-check).
 - Leave out `coverage` (and `harness`, `model`, `effort`) to be asked for it
   when the run starts from a terminal; see [Harness selection](#harness-selection).
 
@@ -195,8 +198,8 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 | Exit code | Meaning |
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
-| 3 | Incomplete, for example blocked dependencies or a protected merge |
-| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
+| 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked, a foreign claim or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)) |
+| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `dependencies-outside-invocation`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
 
 After an interruption, run the **same command with the same file** from the same
 branch to resume. Do not delete the state under `~/.local/state/outcome-runner/`.
@@ -637,7 +640,31 @@ outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>
 Every start first resolves the [target branch](#target-branch), then runs the
 [OpenSpec preflight](#openspec-preflight), then the
 [harness availability check and selection](#harness-selection), then the
-[test framework preflight](#test-framework-preflight).
+[test framework preflight](#test-framework-preflight). After the invocation
+lock, the authority check of the selected tasks and the
+[dependency check](#dependency-check) follow, before any run state, ownership,
+claim or worktree is created.
+
+### Dependency check
+
+The tasks a run works are its `leaves`, or every task in `authority.tasks` when
+`leaves` is omitted. Before claiming anything, the runner checks every direct
+dependency of each of these tasks (a dependency inside the set is itself checked
+in the same way). A dependency is allowed when it is in the set, or when it is
+already accepted: its receipt is valid at `origin/<target>` when the run starts.
+A dependency that is neither, including an id the queue does not contain, is
+missing.
+
+When any task has a missing dependency, the run is refused with exit code 4 and
+reason `dependencies-outside-invocation`. The stdout line is
+`{"status":"unavailable","reason":"dependencies-outside-invocation","diagnostics":"..."}`,
+and the private diagnostics file lists each task and its missing dependencies,
+for example `"details": {"missing": {"B": ["A"], "C": ["A", "X"]}}`, with a
+message such as `Dependencies outside the invocation are not accepted: B needs A; C needs A, X`.
+No `state.json`, ownership record, claim or worktree is created. Add the missing
+tasks to `leaves` (and `authority.tasks`), or accept them first in another run.
+Because of this check a run never ends incomplete (exit 3) only because a
+dependency outside the run can never be worked.
 
 Claude is used when both the CLI and JSON harness are omitted (and, from a
 terminal, chosen or accepted with Enter), or when
@@ -700,17 +727,79 @@ Restart with the same configuration and state directory. Do not delete ownership
 or state files to evade unfinished work. Private worker output and reports stay
 in state. A worker session ending does not stop the controller.
 
-`maxAccepted` counts newly accepted results in the durable invocation. It does
-not count prior completion, proposals, attempts or worker sessions. A reached
-bound is successful with remaining task IDs reported. Too few accepted results,
-blocked dependencies or protected merges return incomplete without asking a
-person anything. Independent work may proceed only without overlapping held
-scopes. Receipts validate outputs at their first accepted target commit; later ordinary
+`maxAccepted` counts only tasks of the invocation that were newly accepted during
+the durable invocation: tasks whose acceptance this invocation recorded, and
+merged tasks of the invocation whose acceptance recording failed. It does not
+count prior completion, tasks accepted by other runners, proposals, attempts or
+worker sessions. A reached bound is successful (`limit-reached`, exit 0) with the
+remaining task IDs reported and explained. Too few accepted results, blocked
+tasks, dependencies inside the run that are blocked, foreign claims or protected
+merges return incomplete without asking a person anything. Independent work may
+proceed only without overlapping held scopes. Receipts validate outputs at their
+first accepted target commit; later ordinary
 changes preserve historical acceptance. Removed or altered receipts do not prove
 completion. A target that advanced without touching the task scopes, the change
 directory, the archived change directory or the `openspec/specs` files written by
 the archive is merged into the result and all final checks run again. A target
 change inside any of them is reported incomplete.
+
+When a task is merged but recording its acceptance fails (for example its
+original claim time cannot be recovered), the task is recorded as blocked and
+the run keeps working the other tasks it can select, unless `maxAccepted` is set
+and reached, in which case it stops at once. Either way the run still ends with
+exit code 3 (`incomplete`) and a `blocked` entry for that task, keeps its
+ownership, and the next run of the same invocation retries the acceptance.
+
+### Unfinished results
+
+An `incomplete` result (exit code 3) and a `limit-reached` result carry
+`blockers`, an object keyed by task id, whenever a task remains or a task of the
+invocation is blocked. Every task in `remaining` has an entry, so `blockers` is
+never empty while `remaining` is not; a blocked task that is no longer remaining
+(a merged task whose acceptance recording failed) keeps its entry too. An
+`incomplete` result with nothing remaining and nothing blocked (a run with
+`maxAccepted` that accepted every task before reaching the limit) has no
+`blockers`. Each entry has a `kind` and a public `reason` code; the first
+matching kind is used, in this order:
+
+| `kind` | Meaning | Other fields |
+|---|---|---|
+| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete`, `stage` and `diagnostics` (the private `state.json` path) |
+| `max-accepted` | The task was not started because `maxAccepted` was reached | `reason` `max-accepted`, `limit` |
+| `waiting-for-dependency` | A dependency is not accepted yet (for example blocked in this run) | `reason` `waiting-for-dependency`, `dependencies` (the ids not accepted) |
+| `waiting-for-claim` | Another runner holds a claim on the task or on overlapping scopes | `reason` `waiting-for-claim`, `claim` with the claimed task `id` and `host` |
+| `waiting-for-blocked-scope` | A blocked task of this invocation holds overlapping scopes | `reason` `waiting-for-blocked-scope`, `task` (the blocked task id) |
+
+For example:
+
+```json
+{"status":"incomplete","accepted":[],"remaining":["A","B"],"completions":{},"blockers":{"A":{"kind":"blocked","stage":"investigate","reason":"operation-incomplete","diagnostics":"/home/me/.local/state/outcome-runner/.../state.json"},"B":{"kind":"waiting-for-dependency","reason":"waiting-for-dependency","dependencies":["A"]}},"claimedElsewhere":{}}
+```
+
+The private failure message of a blocked task stays in `state.json`; it is never
+written to stdout. `claimedElsewhere` still lists foreign claims by task id. A
+`cancelled` result carries no `blockers`.
+
+### Invocation status
+
+`state.json` in the invocation's state directory records in `status` the last
+invocation status the runner reached, written before the process exits:
+
+| `status` | When |
+|---|---|
+| `starting` | The state was just created; the run has not reached its first task selection |
+| `running` | Written after the leftover sweep, before the first task is selected; a run that ends with an error after that keeps it |
+| `released` | The ownership was released: every task accepted without a blocked task, or the limit reached with no blocked task and no in-progress work, even when unstarted `max-accepted` tasks remain |
+| `blocked` | A `limit-reached`, `incomplete` or `cancelled` result keeps a blocked task of the invocation, including a merged task whose acceptance recording failed |
+| `completed` | A `limit-reached` result keeps in-progress work and has no blocked task |
+| `incomplete` | Any other `incomplete` or `cancelled` result, for example waiting for a foreign claim |
+
+In-progress work is the current task of the run or recovered work of an earlier
+run that is claimed but neither accepted nor blocked and is kept for a later
+run. Unstarted tasks explained as `max-accepted` are not in-progress work. A
+`limit-reached` run therefore exits 0 with `status` `released` when nothing else
+is held, `completed` when it keeps in-progress work, and `blocked` when it keeps
+a blocked task, so `state.json` never hides a block.
 
 ## Completion summaries
 
@@ -950,8 +1039,9 @@ Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
 `failureReason`: `openspec-missing`, `openspec-not-initialized`,
 `openspec-layout-created`, `harness-unavailable`, `test-framework-missing`,
 `test-framework-analysis-failed`, `test-framework-prepared` or
-`startup-or-run-failed` (target refusals and `invocation-running` are recorded
-as `startup-or-run-failed`). Blocked tasks use safe `blockingReason` codes
+`startup-or-run-failed` (target refusals, `invocation-running` and
+`dependencies-outside-invocation` are recorded as `startup-or-run-failed`).
+Blocked tasks use safe `blockingReason` codes
 `operation-incomplete` or `cancelled`. SIGINT and SIGTERM are handled
 during startup and work through one guarded finalizer; SIGKILL, power loss and
 crashes preventing cleanup cannot produce a termination record.
@@ -1047,8 +1137,8 @@ mood are in [mascot/README.md](mascot/README.md).
 | A task is blocked | `angry` | `<id> blocked: <reason>`, for example `OR-1 blocked: Worker plan incomplete` |
 | The run ends `exhausted` | `celebrating` | `exhausted: <n> accepted, <m> remaining` |
 | The run ends `limit-reached` | `content` | `limit-reached: <n> accepted, <m> remaining` |
-| The run ends `incomplete` without blockers, only waiting for claimed or dependent work | `sleepy` | `incomplete: <n> accepted, <m> remaining` |
-| The run ends `incomplete` with blockers | `sad` | `incomplete: <n> accepted, <m> remaining` |
+| The run ends `incomplete` without `blockers`: nothing remains and nothing is blocked (a `maxAccepted` run that accepted every task before reaching the limit) | `sleepy` | `incomplete: <n> accepted, <m> remaining` |
+| The run ends `incomplete` with `blockers`, which includes every incomplete run with remaining tasks, also when they only wait for a dependency or a foreign claim | `sad` | `incomplete: <n> accepted, <m> remaining` |
 | The run is cancelled by SIGINT or SIGTERM | `startled` | `cancelled: <n> accepted, <m> remaining` |
 | The runner exits with code 4 (`unavailable`) | `dizzy` | `unavailable: 0 accepted, 0 remaining` |
 
@@ -1116,7 +1206,10 @@ tests archive with a scripted command and never run `openspec archive`. The
 mascot tests inject a recording player through `main`, so they
 need no real terminal or timers. Concurrent runners, the per-clone Git lock and
 worktree cleanup are tested with Git fixtures (a bare origin and clones),
-scripted pull request hosts and child processes. The `live:*` scripts exercise a real
+scripted pull request hosts and child processes. The dependency check, the
+unfinished reasons and the invocation status are tested with scripted adapters,
+the scripted pull request host and Git fixtures with per-task dependencies and
+scopes. The `live:*` scripts exercise a real
 harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
 Step lines are captured through `RunOptions.steps`.
 

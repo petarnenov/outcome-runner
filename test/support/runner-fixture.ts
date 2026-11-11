@@ -57,11 +57,21 @@ export function scriptedWorker(hooks: WorkerHooks = {}) {
     } });
 }
 
+export interface FixtureOptions {
+  target?: string;
+  ids?: string[];
+  /** Dependencies per task id; tasks without an entry have none. */
+  dependencies?: Record<string, string[]>;
+  /** Scopes per task id; the first scope must stay `src/<id>`. Tasks without an entry have only `src/<id>`. */
+  scopes?: Record<string, string[]>;
+}
+
 /**
- * A bare origin, a start checkout on `target` and an integrator clone that merges pull requests. Every task has its
- * own scope and no dependencies, so different invocations can work on different tasks at the same time.
+ * A bare origin, a start checkout on `target` and an integrator clone that merges pull requests. By default every
+ * task has its own scope and no dependencies, so different invocations can work on different tasks at the same time.
  */
-export function runnerFixture(t: TestContext, { target = 'main', ids = ['A', 'B', 'C', 'D'] } = {}) {
+export function runnerFixture(t: TestContext, { target = 'main', ids = ['A', 'B', 'C', 'D'], dependencies = {},
+  scopes = {} }: FixtureOptions = {}) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'many-runners-')));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const remote = join(base, 'origin.git'); const root = join(base, 'project');
@@ -72,7 +82,8 @@ export function runnerFixture(t: TestContext, { target = 'main', ids = ['A', 'B'
     checks: [{ command: 'node', args: ['checks.mjs'] },
       { command: 'node', args: ['--test', '--experimental-test-coverage', '--test-coverage-lines={coverage}', '{scope}/*.test.mjs'] }] };
   const queue: Queue = { version: 1, tasks: ids.map((id, priority) => ({ id, priority, title: `Counter ${id}`,
-    change: `counter-${id.toLowerCase()}`, scopes: [`src/${id.toLowerCase()}`], dependencies: [],
+    change: `counter-${id.toLowerCase()}`, scopes: scopes[id] ?? [`src/${id.toLowerCase()}`],
+    dependencies: dependencies[id] ?? [],
     criteria: [`Create src/${id.toLowerCase()}/result.mjs exporting next(n) that adds one.`] })) };
   mkdirSync(join(root, 'planning')); writeFileSync(join(root, project.queue), JSON.stringify(queue));
   mkdirSync(join(root, 'openspec')); writeFileSync(join(root, 'openspec/config.yaml'), 'schema: spec-driven\n');
