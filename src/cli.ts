@@ -1,7 +1,7 @@
 import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Statistics, appendStatistics, cancellable, safeFailure } from './statistics.ts';
+import { Statistics, appendStatistics, safeFailure } from './statistics.ts';
 import type { LedgerEffects, Status } from './statistics.ts';
 import { git } from './git.ts';
 import { runQueue } from './runner.ts';
@@ -70,8 +70,8 @@ export async function main(path: string, runner: Runner = runQueue, output: Outp
     if (flags.model) config.model = flags.model;
     if (flags.effort) config.effort = flags.effort;
     if (flags.coverage !== undefined) config.coverage = resolveCoverage(Number(flags.coverage));
-    const result = await cancellable(runner(config, { statistics, signal: cancellation.signal,
-      report: event => output(JSON.stringify(event) + '\n') }), cancellation.signal);
+    const result = await runner(config, { statistics, signal: cancellation.signal,
+      report: event => output(JSON.stringify(event) + '\n') });
     status = result.status as Status;
     code = ['exhausted', 'limit-reached'].includes(status) ? 0 : 3;
     output(JSON.stringify(result) + '\n');

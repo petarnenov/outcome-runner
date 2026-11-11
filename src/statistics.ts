@@ -34,7 +34,7 @@ export interface RunStatistics {
 
 export const safeFailure = (reason: unknown): string =>
   ['openspec-missing', 'openspec-not-initialized', 'openspec-layout-created', 'harness-unavailable']
-    .includes(String(reason)) ? String(reason) : 'startup-or-run-failed';
+    .includes(typeof reason === 'string' ? reason : '') ? reason as string : 'startup-or-run-failed';
 
 export function cleanOrigin(origin: string): string | null {
   try {
@@ -63,12 +63,13 @@ export type LedgerEffects = typeof ledgerEffects;
 export function appendStatistics(record: RunStatistics, { env = process.env, home = homedir(),
   stderr = (line: string) => { process.stderr.write(line); }, effects = ledgerEffects }:
   { env?: NodeJS.ProcessEnv; home?: string; stderr?: (line: string) => void; effects?: LedgerEffects } = {}): void {
+  const warn = (message: string) => { try { stderr(message); } catch { /* Diagnostics cannot alter the result. */ } };
   let fd: number | undefined;
   try {
     const bytes = effects.serialize(record); const path = ledgerPath(env, home);
     effects.mkdir(dirname(path)); fd = effects.open(path); effects.secure(fd);
     if (effects.append(fd, bytes) !== bytes.length) throw new Error('short write');
-  } catch { stderr('outcome-runner: could not persist run statistics ledger.\n'); }
+  } catch { warn('outcome-runner: could not persist run statistics ledger.\n'); }
   finally {
     if (fd !== undefined) {
       try { effects.close(fd); } catch { stderr('outcome-runner: could not close run statistics ledger.\n'); }
@@ -87,7 +88,7 @@ export function tokenUsage(value: { inputTokens?: unknown; outputTokens?: unknow
 export function sumUsage(rows: (TokenUsage | null)[]): TokenUsage | null {
   if (!rows.some(Boolean)) return null;
   const sum = (key: keyof TokenUsage) => rows.every(row => row?.[key] != null) ?
-    rows.reduce((total, row) => total + row![key]!, 0) : null;
+    count(rows.reduce((total, row) => total + row![key]!, 0)) : null;
   return { inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'), totalTokens: sum('totalTokens') };
 }
 
@@ -166,7 +167,7 @@ export class Statistics {
 /** Race pending startup/session activity with cancellation and always remove the observer. */
 export async function cancellable<T>(activity: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return activity;
-  signal.throwIfAborted();
+  if (signal.aborted) { activity.catch(() => {}); throw signal.reason; }
   let cancel!: () => void;
   const aborted = new Promise<never>((_, reject) => {
     cancel = () => reject(signal.reason); signal.addEventListener('abort', cancel, { once: true });

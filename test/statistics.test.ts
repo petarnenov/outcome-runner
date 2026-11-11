@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Statistics, ledgerPath, cleanOrigin, tokenUsage } from '../src/statistics.ts';
+import { Statistics, ledgerPath, cleanOrigin, tokenUsage, appendStatistics, ledgerEffects, sumUsage } from '../src/statistics.ts';
+import { selectHarness } from '../src/harness-selection.ts';
+import { resolveHarness } from '../src/harness.ts';
+import type { Sources } from '../src/statistics.ts';
 import type { RunConfig, Work } from '../src/model.ts';
 
 function collector() {
@@ -77,4 +80,115 @@ test('E: task schema and completion nulls for every terminal decision', () => {
   }
   assert.deepEqual(tokenUsage({ inputTokens: 1, outputTokens: 2, totalTokens: 3 }),
     { inputTokens: 1, outputTokens: 2, totalTokens: 3 });
+});
+
+test('D: append creates private storage, secures existing files and preserves bytes in one write', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'ledger-append-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const env = { XDG_STATE_HOME: join(directory, 'nested/state') };
+  const record = collector().statistics.finish('exhausted', 0); let writes = 0;
+  const effects = { ...ledgerEffects, append: (fd: number, bytes: Buffer) => {
+    writes++; assert.equal(bytes.toString(), JSON.stringify(record) + '\n'); return ledgerEffects.append(fd, bytes);
+  } };
+  appendStatistics(record, { env, effects });
+  const path = ledgerPath(env); const first = readFileSync(path);
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  chmodSync(path, 0o666);
+  appendStatistics(record, { env, effects });
+  assert.equal(writes, 2); assert.equal(statSync(path).mode & 0o777, 0o600);
+  assert.deepEqual(readFileSync(path), Buffer.concat([first, first]));
+});
+
+test('D: settings carry effective precedence, every provenance class, Enter defaults and one observed probe', async () => {
+  const statistics = collector().statistics; let probes = 0; let answers = ['high', ''];
+  const result = await selectHarness({ ...config, root: '/unused', stateDirectory: '/unused',
+    harness: 'claude', model: 'claude-sonnet-5-5' }, {
+    interactive: true, ask: async () => answers.shift()!, say: () => {}, recorded: () => null,
+    probe: harness => { probes++; return { harness, available: true, version: 'fixture-version' }; },
+    sources: { harness: 'cli-flag', model: 'invocation-json' },
+    onResolved: (selected, sources, version) => statistics.resolved(selected, sources, version),
+  });
+  statistics.resolved(await resolveHarness(result.config), statistics.sources, 'fixture-version');
+  statistics.setting('leaves', ['expanded-A', 'expanded-B'], 'default');
+  const settings = statistics.finish('exhausted', 0).settings;
+  assert.equal(probes, 2);
+  assert.deepEqual(settings.harness, { value: 'claude', source: 'cli-flag' });
+  assert.deepEqual(settings.harnessCliVersion, { value: 'fixture-version', source: 'cli-flag' });
+  assert.deepEqual(settings.model, { value: 'claude-sonnet-5-5', source: 'invocation-json' });
+  assert.deepEqual(settings.effort, { value: 'high', source: 'interactive-answer' });
+  assert.deepEqual(settings.coverage, { value: 85, source: 'default' });
+  assert.deepEqual(settings.maxAccepted, { value: null, source: 'default' });
+  assert.deepEqual(settings.leaves, { value: ['expanded-A', 'expanded-B'], source: 'default' });
+  answers = ['', '', '', ''];
+  let sources: Sources = {};
+  await selectHarness({ root: '/unused', stateDirectory: '/unused' } as RunConfig, {
+    interactive: true, ask: async () => answers.shift()!, say: () => {}, recorded: () => null,
+    probe: harness => ({ harness, available: true, version: 'fixture' }),
+    onResolved: (_config, chosen) => { sources = chosen; },
+  });
+  for (const key of ['harness', 'model', 'effort', 'coverage'] as const) assert.equal(sources[key], 'default');
+});
+
+test('D: complete, partial, absent and invalid usage; cumulative reports replace rather than add', () => {
+  assert.equal(tokenUsage({ inputTokens: -1, outputTokens: 1.5, totalTokens: NaN }), null);
+  assert.equal(sumUsage([]), null); assert.equal(sumUsage([null, null]), null);
+  const statistics = collector().statistics; const task = { id: 'A', change: 'a' };
+  statistics.decision(task);
+  const first = statistics.session('A'); first(tokenUsage({ inputTokens: 1, outputTokens: 2, totalTokens: 3 }));
+  first(tokenUsage({ inputTokens: 4, outputTokens: 5, totalTokens: 9 }));
+  first(tokenUsage({ inputTokens: 4, outputTokens: 5, totalTokens: 9 }));
+  const second = statistics.session('A'); second(tokenUsage({ inputTokens: 6, outputTokens: 7, totalTokens: 13 }));
+  const result = statistics.finish('incomplete', 3);
+  assert.deepEqual(result.tasks[0].tokenUsage, { inputTokens: 10, outputTokens: 12, totalTokens: 22 });
+  assert.deepEqual(result.tokenUsage, result.tasks[0].tokenUsage);
+  assert.deepEqual(sumUsage([tokenUsage({ inputTokens: 2 }), tokenUsage({ inputTokens: 3, outputTokens: 1 })]),
+    { inputTokens: 5, outputTokens: null, totalTokens: null });
+  assert.deepEqual(sumUsage([tokenUsage({ inputTokens: 2 }), null]),
+    { inputTokens: null, outputTokens: null, totalTokens: null });
+  assert.equal(collector().statistics.finish('unavailable', 4).tokenUsage, null);
+});
+
+test('D: privacy allowlists exclude every private source and preserve only approved completion', () => {
+  const statistics = collector().statistics;
+  statistics.metadata(config, '/repository', 'https://user:SECRET_CREDENTIAL@example.org/repository');
+  const work = { id: 'A', change: 'a', stage: 'merge', findings: ['SECRET_FINDING'],
+    investigation: { summary: 'SECRET_INVESTIGATION' }, lastToolError: { input: 'SECRET_PROMPT' },
+    sessions: [{ purpose: 'work', privateText: 'SECRET_OUTPUT', events: [{ type: 'private', body: 'SECRET_FILE' }] }],
+    finalChecks: [{ command: 'npm', args: ['test'], outcome: 'failed', output: 'SECRET_CHECK' }],
+    reviews: [{ findings: ['SECRET_REVIEW'], summary: 'SECRET_REPORT' }],
+    planningReviews: [{ findings: [] }], completion: { summary: 'Approved completion.', grade: 'C', durationSeconds: 10 },
+  } as unknown as Work;
+  statistics.decision(work, 'blocked', work, 'SECRET_ERROR');
+  statistics.decision({ ...work, id: 'B' }, 'accepted', { ...work, id: 'B' });
+  const usage = statistics.session('A');
+  usage(tokenUsage({ inputTokens: 5, ...{ arbitrary: 'SECRET_EVENT', environment: 'SECRET_ENV' } }));
+  const result = statistics.finish('unavailable', 4, 'SECRET_FAILURE');
+  const bytes = JSON.stringify(result);
+  assert.ok(!bytes.includes('SECRET_')); assert.ok(bytes.includes('Approved completion.'));
+  assert.deepEqual(result.tasks[0].finalChecks, [{ command: 'npm', args: ['test'], outcome: 'failed' }]);
+  assert.deepEqual(result.tasks[0].implementationFindingsPerRound, [1]);
+  assert.equal(result.tasks[0].completionSummary, null);
+});
+
+test('D: every persistence failure and short writes are safely reported without retries or exceptions', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'ledger-effects-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const env = { XDG_STATE_HOME: directory };
+  for (const key of ['serialize', 'mkdir', 'open', 'secure', 'append', 'close', 'short'] as const) {
+    for (const status of ['exhausted', 'incomplete', 'unavailable', 'cancelled'] as const) {
+      const record = collector().statistics.finish(status, status === 'exhausted' ? 0 : status === 'unavailable' ? 4 : 3);
+      const before = JSON.stringify(record); let warnings = ''; let writes = 0;
+      const fail = () => { throw Object.assign(new Error('SECRET_EACCES'), { code: 'EACCES' }); };
+      const effects = { ...ledgerEffects, append: (fd: number, bytes: Buffer) => {
+        writes++; if (key === 'short') return bytes.length - 1;
+        if (key === 'append') return fail(); return ledgerEffects.append(fd, bytes);
+      } };
+      if (key === 'close') effects.close = fd => { ledgerEffects.close(fd); fail(); };
+      else if (key !== 'append' && key !== 'short') Object.assign(effects, { [key]: fail });
+      assert.doesNotThrow(() => appendStatistics(record, { env, effects, stderr: text => { warnings += text; } }));
+      assert.match(warnings, /statistics ledger/u); assert.ok(!warnings.includes('SECRET'));
+      assert.equal(JSON.stringify(record), before); assert.ok(writes <= 1);
+      if (key === 'short') assert.equal(writes, 1);
+    }
+  }
 });

@@ -9,7 +9,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { git, command } from '../src/git.ts';
 import { hash, validateConfig, validateQueue } from '../src/model.ts';
 import type { CheckRecord, Harness, Project, PullRequest, Queue, ReviewRecord, RunConfig, Work, WorkerSession } from '../src/model.ts';
-import { main } from '../src/cli.ts';
+import { main } from './support/isolated-cli.ts';
 import { runQueue as runQueueWithPreflight } from '../src/runner.ts';
 import { PAGE_BYTES } from '../src/text-page.ts';
 import type { RunEvent, RunOptions } from '../src/runner.ts';
@@ -288,7 +288,7 @@ test('changed source and bound specification cannot gain execution authority', a
 
 test('CLI reports bounded success, incomplete work and unavailable configuration', async t => {
   const f = fixture(t); const configPath = join(f.base, 'config.json');
-  const { main } = await import('../src/cli.ts');
+  const { main } = await import('./support/isolated-cli.ts');
   const { root, stateDirectory, ...invocation } = f.config;
   writeFileSync(configPath, JSON.stringify(invocation));
   for (const [status, expected] of [['exhausted', 0], ['limit-reached', 0], ['incomplete', 3]] as [string, number][]) {

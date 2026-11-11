@@ -115,7 +115,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
     ...options.selection, signal, sources: statistics?.sources,
     onResolved: (config, resolvedSources, version) => {
       sources = resolvedSources; harnessVersion = version;
-      statistics?.resolved(config, sources, version);
+      if (config.harness) statistics?.setting('harness', config.harness, sources.harness ?? 'default');
+      if (version !== undefined) statistics?.setting('harnessCliVersion', version, sources.harness ?? 'default');
     },
   }), signal);
   const config = await cancellable(resolveHarness(selected, codex ? async () => codex :
@@ -421,7 +422,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         if (work.stage === 'claim') {
           if (!existsSync(work.path)) {
             git(root, 'worktree', 'add', '-b', work.branch, work.path, work.base);
-            await afterEffect('claim', work);
+            await cancellable(afterEffect('claim', work), signal);
           }
           if (git(work.path, 'rev-parse', 'HEAD') !== work.base || git(work.path, 'status', '--porcelain')) {
             throw new Error('Initial worktree differs from recorded base');
@@ -527,8 +528,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             `Authority: ${config.authority.reference}\nTested head: ${now.head}\nTarget: ${now.testedTarget}\n` +
             `Checks: ${JSON.stringify(checkRecords(now.finalChecks!))}\n` +
             `Reviews: ${JSON.stringify(now.reviews!.map(reviewRecord))}\n`);
-          let pr = await host.find(work.branch);
-          if (!pr) { pr = await host.create(now, body); await afterEffect('pr', pr); }
+          let pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
+          if (!pr) { pr = await cancellable(Promise.resolve(host.create(now, body)), signal); await afterEffect('pr', pr); }
           if (!pr || pr.state === 'CLOSED') throw new Error('PR unavailable or closed');
           save({ pr, stage: 'merge' });
         }
@@ -547,12 +548,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             }
             if (refresh().target !== now.testedTarget) { save({ stage: 'publish' }); break; }
             if (pr.headRefOid === now.head) {
-              await host.merge(pr, now.head!); await afterEffect('merge', pr);
+              await cancellable(Promise.resolve(host.merge(pr, now.head!)), signal); await afterEffect('merge', pr);
               break;
             }
             assertOriginHead(work.path, work.branch, now.head!);
             if (view >= limit) throw new Error('Checked head or target changed');
-            await (polling.delay ?? delay)(polling.pollMs ?? MERGE_STATE_POLL_MS);
+            await cancellable((polling.delay ?? delay)(polling.pollMs ?? MERGE_STATE_POLL_MS), signal);
           }
           if (activeWork().stage === 'publish') continue;
           const targetNow = refresh().target;
