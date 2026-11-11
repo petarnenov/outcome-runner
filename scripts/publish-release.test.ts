@@ -12,6 +12,10 @@ test('E T1 workflow serializes through validated publication', () => {
     "startsWith(github.event.head_commit.message, 'chore(release):')", 'fetch-depth: 0',
     'fetch-tags: true', "node-version: '24'", '@fission-ai/openspec@1.17.0',
     'openspec --version', 'node scripts/publish-release.ts']) assert.ok(workflow.includes(text), text);
+  const ordered = ['- run: npm ci', '- run: npm run typecheck',
+    '- run: npm install -g @fission-ai/openspec@1.17.0', '- run: openspec --version',
+    '- run: npm test', 'node scripts/publish-release.ts'].map(step => workflow.indexOf(step));
+  assert.ok(ordered.every((offset, index) => offset >= 0 && (index === 0 || offset > ordered[index - 1])));
   assert.equal((workflow.match(/group:/g) ?? []).length, 1);
   const script = readFileSync('scripts/publish-release.ts', 'utf8');
   assert.ok(script.includes("[['ci'], ['run', 'typecheck'], ['test']]"));
