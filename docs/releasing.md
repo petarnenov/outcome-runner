@@ -34,7 +34,7 @@ To create a local release, use Node 24 and `node scripts/release.ts` from the re
 
 ## Automated publication
 
-A push to main starts .github/workflows/release.yml unless its head is a release commit. The constant release concurrency group serializes runs through publication with cancellation disabled. GitHub supports pending-run coalescing and does not guarantee FIFO: a newer pending event can replace an older pending event. Close merges produce consecutive releases or one combined release containing both changes.
+A push to main starts .github/workflows/release.yml unless its head is a release commit. The constant release concurrency group serializes runs through publication with cancellation disabled (`group: release`, `cancel-in-progress: false`). Release runs never overlap: the retained queued run starts after the active run finishes. GitHub supports pending-run coalescing and does not guarantee FIFO: a newer pending event can replace an older pending event. Close merges produce consecutive releases or one combined release containing both changes.
 
 The workflow uses Node 24, checks the event checkout with npm ci and npm run typecheck, and installs the pinned OpenSpec prerequisite with `npm install -g @fission-ai/openspec@1.17.0`, then checks `openspec --version` in a separate step before npm test. The suite needs this CLI for `openspec validate` in its runner planning check; update the pin in `.github/workflows/release.yml`. After these initial checks it invokes `node scripts/publish-release.ts`. The orchestrator refreshes current main and tags in a disposable clone even for a stale queued-event checkout. Each selected base passes npm ci, npm run typecheck and npm test before release generation.
 
@@ -42,10 +42,31 @@ Publication uses one non-forced atomic push of the release commit and its annota
 
 ## Rejected pushes and recovery
 
-When main advances, a rejected atomic push publishes neither candidate ref. The orchestrator discards its owned unpublished attempt, fetches main and tags, repeats validation, and recomputes the version and changelog. A feature merged during a patch attempt can therefore change the release to a minor version. Already released entries are excluded by the refreshed tag boundary.
+When main advances, a rejected atomic push publishes neither candidate ref. The orchestrator discards its owned unpublished attempt, fetches main and tags, repeats validation, and recomputes the version and changelog. A feature merged during a patch attempt can therefore change the release to a minor version. Already released entries are excluded by the refreshed tag boundary. If another release already covers all qualifying commits, the retry succeeds with `no release`, leaving existing tags and changelog sections unchanged.
 
 There are three total attempts (initial plus two retries). Unchanged-main rejection, authentication failure and validation failure stop immediately. There is no force push. Exhaustion requires inspecting current main and starting a fresh validated release; never retry a stale generated commit. Temporary clones keep cleanup separate from the caller's checkout and pre-existing tags.
 
 If transport reports an uncertain outcome, remote refs are inspected first. Confirmed publication proceeds to notes; indeterminate state stops for inspection without retrying publication.
 
 If publication succeeded but GitHub Release notes are missing, verify the annotated tag and restore only the missing GitHub Release using the exact new CHANGELOG.md section, for example `gh release create vX.Y.Z --verify-tag --notes-file /path/to/new-section.md`. Do not create another release commit or move the existing tag.
+
+## Local verification of close merges
+
+With Node 24, Git and the pinned OpenSpec CLI available, run the same checks locally:
+
+```sh
+npm ci
+npm run typecheck
+npm install -g @fission-ai/openspec@1.17.0
+openspec --version
+npm test
+```
+
+`npm test` includes [release generation tests](../scripts/release.test.ts) and [publication tests](../scripts/publish-release.test.ts), and enforces aggregate line, branch and function coverage of at least 85%. Workflow-definition assertions check the shared concurrency group, disabled cancellation, prerequisites and validation before publication. Real Git fixtures use temporary repositories, a bare origin and independent clones to exercise stale event checkouts and both close-merge schedules:
+
+- Starting from `v1.2.3`, releasing the first fix merge before the second arrives produces `v1.2.4`, then `v1.2.5`.
+- If both fix merges reach main before preparation refreshes its base, one `v1.2.4` release contains both; the later queued invocation succeeds with `no release`.
+
+Both schedules finish without a failed publication and verify that each change and changelog section appears once, annotated tags point to the releases, and package metadata matches. Separate fixtures deliberately reject stale atomic pushes to verify recomputation (including patch-to-minor changes), revalidation, exclusion of already released changes, immutable existing tags and the three-attempt limit. They also cover uncertain publication and notes-only recovery. Close-merge orchestration fixtures substitute validation and notes hooks; the full local suite supplies the project checks.
+
+These local tests are the acceptance evidence for close merges. Observing hosted GitHub Actions runs is neither required nor part of that evidence.
