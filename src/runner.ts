@@ -393,4 +393,185 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         }
         const task = queue.tasks.filter(task => remaining.includes(task.id) && !store.state.blocked![task.id] &&
           task.dependencies.every(id => done.has(id)) &&
-          !foreignClaims.
+          !foreignClaims.some(claim => claim.id === task.id || scopesOverlap(claim.scopes, task.scopes)) &&
+          !Object.values(store.state.blocked!).some(entry => entry.work && scopesOverlap(entry.work.scopes, task.scopes)))
+          .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
+        if (!task) return { status: 'incomplete', ...resultData(newlyAccepted), remaining,
+          blockers: Object.fromEntries(Object.entries(store.state.blocked!).map(([id, entry]) =>
+            [id, { stage: entry.work?.stage, reason: 'operation-incomplete',
+              diagnostics: join(store.directory, 'state.json') }])),
+          claimedElsewhere: Object.fromEntries(foreignClaims.map(claim => [claim.id, { host: claim.host }])) };
+        const operation = hash({ invocation: config.invocation, id: task.id, authority: config.authority.reference });
+        const branch = `outcome/${task.id}-${operation.slice(0, 12)}`;
+        if (!ledgerSnapshot.claims.has(task.id) && !ledger.acquire(ledgerSnapshot, {
+          version: 1, id: task.id, taskHash: hash(task), scopes: task.scopes, claimant,
+          host: hostname(), branch, claimedAt: new Date(now()).toISOString(),
+        }, commitSubject('chore', `claim ${task.id}`))) continue;
+        save({ ...task, taskHash: hash(task), operation, stage: 'claim', base: target, branch,
+          path: join(dirname(primary), `${primary.split('/').at(-1)}-outcomes`, operation),
+          directory: `${project.changes}/${task.change}` });
+        work = activeWork();
+      }
+      try {
+        const claimedAt = recoverClaimTime(work);
+        if (work.claimedAt !== claimedAt) save({ claimedAt });
+        const prompt = `Task ${work.id}; OpenSpec directory ${work.directory}. ` +
+          `Exact source: ${JSON.stringify(authorized(queue, work.id))}\n`;
+        if (prompt.length > 65536) throw new Error('Selected outcome prompt is too large');
+        if (work.stage === 'claim') {
+          if (!existsSync(work.path)) {
+            git(root, 'worktree', 'add', '-b', work.branch, work.path, work.base);
+            await afterEffect('claim', work);
+          }
+          if (git(work.path, 'rev-parse', 'HEAD') !== work.base || git(work.path, 'status', '--porcelain')) {
+            throw new Error('Initial worktree differs from recorded base');
+          }
+          save({ stage: 'investigate' });
+        }
+        if (activeWork().stage === 'investigate') {
+          checks(work, project.setup ?? []);
+          const investigation = await session(work, 'investigate', prompt +
+            'Inspect current files and history before edits. Call outcome_report with outcome ready, summary, ' +
+            'inspected containing actual inspected repository paths, and findings array. Do not edit files. ' +
+            'Do not use a final message as a substitute for outcome_report.');
+          save({ investigation, stage: 'plan' });
+        }
+        if (activeWork().stage === 'plan') {
+          let bound = false;
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            // Graded test fragments come from the frozen threshold on every attempt, so replanning repeats them.
+            await session(work, 'plan', prompt + 'Create proposal.md, design.md, tasks.md and specs/<capability>/spec.md. ' +
+              'Use OpenSpec delta headings and WHEN/THEN scenarios. Stay within task scope; do not edit product files. ' +
+              'This session writes only those planning artifacts. Product file writes and run_checks are refused until ' +
+              'the specification is bound, in a later session; that is expected and not a blocker, so do not attempt them. ' +
+              'When the artifacts are written, call outcome_report with outcome ready. ' +
+              planTestInstructions(config.coverage) + ' ' +
+              'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
+            let specification;
+            try {
+              specification = packet(work.path, work.directory);
+              checks(work, [project.planningCheck]);
+            } catch (error) {
+              save({ findings: [failureDetail(error)] }); continue;
+            }
+            const review = await session(work, 'review', prompt +
+              'Review planning artifacts independently against exact source criteria, scope and decisions. ' +
+              'Report accepted only with zero findings; otherwise changes-required with concrete findings. ' +
+              planningReviewTestInstructions(config.coverage));
+            save({ planningReviews: [...(activeWork().planningReviews ?? []), review] });
+            if (review.outcome === 'accepted' && !review.findings.length) {
+              save({ specification, stage: 'work', findings: [] }); bound = true; break;
+            }
+            save({ findings: review.findings });
+          }
+          if (!bound) throw new Error('Planning review remains unresolved');
+        }
+        if (activeWork().stage === 'work') {
+          let passed = false;
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            await session(activeWork(), 'work', prompt +
+              'Implement all approved OpenSpec scenarios and every test marked (required) within product scope; ' +
+              'write (coverage-only) tests only as the graded test rules below allow. ' +
+              workTestInstructions(config.coverage) + ' Preserve bound specs. ' +
+              'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
+            await afterEffect('implementation', activeWork());
+            assertWork(activeWork()); commit(work);
+            try { save({ checks: checks(work, project.checks) }); }
+            catch (error) { save({ findings: [failureDetail(error)] }); continue; }
+            const review = await session(activeWork(), 'review', prompt +
+              'Review actual implementation independently against every criterion, scope, security and test evidence. ' +
+              'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required. ' +
+              'When reporting accepted, provide completion.summary with two or three English sentences describing what ' +
+              'the whole task changed, and completion.grade for whole-task complexity: A (most complex), B, C, D, ' +
+              'E (easiest). Grade complexity, not correctness, quality or execution speed. ' +
+              implementationReviewTestInstructions(config.coverage), true);
+            save({ reviews: [...(activeWork().reviews ?? []), review] });
+            if (review.outcome === 'accepted' && !review.findings.length) {
+              save({ review: { ...review, accepted: true }, stage: 'receipt', findings: [] }); passed = true; break;
+            }
+            save({ findings: review.findings });
+          }
+          if (!passed) throw new Error('Implementation checks or review remain unresolved');
+        }
+        if (activeWork().stage === 'receipt') {
+          const now = activeWork(); assertWork(now);
+          const paths = git(work.path, 'diff', '--name-only', work.base, 'HEAD').split('\n').filter(Boolean);
+          if (!paths.length || paths.some(path => ![...work.scopes, work.directory].some(scope => within(path, scope)))) {
+            throw new Error('Empty or out-of-scope result manifest');
+          }
+          const manifest = paths.map(path => ({ path, hash: digest(readFileSync(join(work.path, path))) }));
+          const receipt = { version: 1, id: work.id, taskHash: work.taskHash,
+            authority: config.authority.reference, specification: now.specification,
+            review: { ...reviewRecord(now.review!), accepted: true }, checks: checkRecords(now.checks!), manifest,
+            head: git(work.path, 'rev-parse', 'HEAD'), base: work.base };
+          const path = join(work.path, receiptPath(work.id)); mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, JSON.stringify(receipt, null, 2) + '\n');
+          git(work.path, 'add', '--', receiptPath(work.id));
+          git(work.path, 'commit', '-m', `docs(${project.commitScope ?? 'work-queue'}): record ${work.id} acceptance evidence${project.commitSuffix ?? ''}`);
+          save({ stage: 'publish' });
+        }
+        if (activeWork().stage === 'publish') {
+          assertWork(activeWork());
+          const targetNow = refresh().target;
+          integrateTarget(work, targetNow);
+          save({ finalChecks: checks(work, project.checks) });
+          if (git(work.path, 'status', '--porcelain')) throw new Error('Final checks changed tracked inputs');
+          const head = git(work.path, 'rev-parse', 'HEAD');
+          git(work.path, 'push', 'origin', `HEAD:refs/heads/${work.branch}`);
+          save({ head, testedTarget: targetNow, stage: 'pr' });
+        }
+        if (activeWork().stage === 'pr') {
+          const now = activeWork();
+          const body = join(store.directory, `${work.id}-pr.md`);
+          writeFileSync(body, `Outcome: ${work.id}\nOpenSpec change: ${work.change}\n` +
+            `Authority: ${config.authority.reference}\nTested head: ${now.head}\nTarget: ${now.testedTarget}\n` +
+            `Checks: ${JSON.stringify(checkRecords(now.finalChecks!))}\n` +
+            `Reviews: ${JSON.stringify(now.reviews!.map(reviewRecord))}\n`);
+          let pr = await host.find(work.branch);
+          if (!pr) { pr = await host.create(now, body); await afterEffect('pr', pr); }
+          if (!pr || pr.state === 'CLOSED') throw new Error('PR unavailable or closed');
+          save({ pr, stage: 'merge' });
+        }
+        if (activeWork().stage === 'merge') {
+          const now = activeWork();
+          const polling = options.mergePolling ?? {};
+          const limit = polling.views ?? MERGE_STATE_VIEWS;
+          for (let view = 1; ; view += 1) {
+            const pr = await host.find(work.branch);
+            if (!pr) throw new Error('Recorded PR missing');
+            if (pr.state === 'MERGED') break;
+            if (pr.state !== 'OPEN') throw new Error('PR unavailable or closed');
+            assertWork(now);
+            if (git(work.path, 'rev-parse', 'HEAD') !== now.head) {
+              throw new Error('Checked head or target changed');
+            }
+            if (refresh().target !== now.testedTarget) { save({ stage: 'publish' }); break; }
+            if (pr.headRefOid === now.head) {
+              await host.merge(pr, now.head!); await afterEffect('merge', pr);
+              break;
+            }
+            assertOriginHead(work.path, work.branch, now.head!);
+            if (view >= limit) throw new Error('Checked head or target changed');
+            await (polling.delay ?? delay)(polling.pollMs ?? MERGE_STATE_POLL_MS);
+          }
+          if (activeWork().stage === 'publish') continue;
+          const targetNow = refresh().target;
+          if (!accepted(targetNow, authorized(refresh().queue, work.id))) throw new Error('Merged result lacks valid receipt');
+        }
+      } catch (error) {
+        if (stopped || signal?.aborted) {
+          statistics?.decision(activeWork(), 'blocked', activeWork(), 'cancelled');
+          return { status: 'cancelled', ...resultData(newlyAccepted), remaining };
+        }
+        if ((error as InterruptedFailure).interrupted) throw error;
+        store.update({ blocked: { ...store.state.blocked, [work.id]: {
+          reason: (error as Error).message, work: activeWork() } }, current: null });
+        report({ status: 'blocked', id: work.id });
+      }
+    }
+  } finally {
+    adapter?.close(); store?.close(); lock.close();
+    signal?.removeEventListener('abort', stop);
+    process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
+  }
+}
