@@ -166,7 +166,8 @@ test('E: a failing analysis session refuses with test-framework-analysis-failed 
   for (const [script, message] of cases) {
     const { deps, calls } = scripted(t, script);
     await assert.rejects(testFrameworkPreflight(configFor(root), deps), refusedWith('test-framework-analysis-failed', error => {
-      assert.match(error.message, message); assert.match((error.details as { error: string }).error, message);
+      assert.match(error.message, message);
+      assert.match((error.details as { error: string }).error, script.addFailure ? /git fetch failed/u : message);
     }));
     assert.deepEqual(calls.asked, []); nothingDone(calls); removedOnce(calls);
     assert.equal(calls.added.length, script.addFailure ? 0 : 1);
@@ -250,7 +251,11 @@ test('D: invalid reports are refused to the harness and fail the analysis', asyn
   await assert.rejects(testFrameworkPreflight(configFor(root), stated.deps), refusedWith('test-framework-missing', error =>
     assert.deepEqual((error.details as { unprepared: string[] }).unprepared, ['Python'])));
   assert.equal(stated.calls.rejections.length, 0);
-  assert.equal(isPrepared(validateReport({ technologies: [prepared('Node.js', 84)] }, 85, new Set(['package.json'])).technologies[0], 85), false);
+  // A framework below the resolved threshold is not prepared, so its technology needs recommendations.
+  assert.equal(isPrepared(prepared('Node.js', 84) as unknown as Technology, 85), false);
+  assert.equal(isPrepared(prepared('Node.js', 85) as unknown as Technology, 85), true);
+  assert.throws(() => validateReport({ technologies: [prepared('Node.js', 84)] }, 85, new Set(['package.json'])),
+    /one to three recommendations/u);
 });
 
 test('D: skipping a technology executes and writes nothing and names it', async t => {
