@@ -374,19 +374,47 @@ test('C: a file change outside the allowed paths refuses the recommendation with
   const { base, root } = workspace(t);
   symlinkSync(base, join(root, 'link'));
   mkdirSync(join(root, '.git')); symlinkSync(join(root, '.git'), join(root, 'gitlink'));
+  // Directory symlinks into the protected directories, an allowed one, and a dangling one.
+  mkdirSync(join(root, 'openspec/changes'), { recursive: true }); mkdirSync(join(root, 'planning'));
+  mkdirSync(join(root, 'evidence/results'), { recursive: true }); mkdirSync(join(root, 'src'));
+  symlinkSync(join(root, 'openspec/changes'), join(root, 'docs')); symlinkSync(join(root, 'openspec'), join(root, 'spec'));
+  symlinkSync(join(root, 'planning'), join(root, 'plan')); symlinkSync(join(root, 'evidence'), join(root, 'proof'));
+  symlinkSync(join(root, 'src'), join(root, 'sources')); symlinkSync(join(base, 'nowhere'), join(root, 'dangling'));
   const config = configFor(root);
-  for (const path of ['../outside.txt', '/etc/passwd', '.git/config', 'sub/.git/hooks/pre-commit', 'planning/outcomes.json',
-    'evidence/results/OR-1.json', 'openspec/changes/x/proposal.md', 'openspec/changes', 'link/escape.txt', 'gitlink/config']) {
+  const refused = ['../outside.txt', '/etc/passwd', '.git/config', 'sub/.git/hooks/pre-commit', 'planning/outcomes.json',
+    'evidence/results/OR-1.json', 'openspec/changes/x/proposal.md', 'openspec/changes', 'link/escape.txt', 'gitlink/config',
+    // Case and other variants that case-insensitive filesystems (macOS, Windows) treat as .git.
+    '.GIT/hooks/pre-commit', '.Git/config', 'sub/.GIT/hooks/pre-commit', '.git./config', '.git /config', 'GIT~1/config',
+    '.g‌it/config',
+    // Case variants of the queue, receipts and OpenSpec changes paths.
+    'Planning/outcomes.json', 'PLANNING/OUTCOMES.JSON', 'Evidence/results/OR-1.json', 'evidence/Results/OR-1.json',
+    'OpenSpec/changes/x/proposal.md', 'openspec/CHANGES',
+    // Symlinks that resolve into the protected directories, and a dangling symlink.
+    'docs/x/proposal.md', 'docs', 'spec/changes/x/proposal.md', 'spec/Changes/x/proposal.md', 'plan/outcomes.json',
+    'proof/results/OR-1.json', 'dangling', 'dangling/x.txt'];
+  for (const path of refused) {
     const changes = [{ path: 'pytest.ini', content: '[pytest]\n' }, { path, content: 'refused\n' }];
     const { deps, calls } = scripted(t, { answers: [''], reports: [{ technologies: [python({ recommendations: [recommendation('pytest', 85, { changes })] })] }] });
-    await assert.rejects(testFrameworkPreflight(config, deps), refusedWith('test-framework-missing', error =>
+    await assert.rejects(testFrameworkPreflight(configFor(root), deps), refusedWith('test-framework-missing', error =>
       assert.deepEqual((error.details as { unprepared: string[] }).unprepared, ['Python'])), path);
     assert.equal(calls.asked.length, 1, path);
     assert.match(calls.said.join(''), /Refused pytest for Python: /u);
     nothingDone(calls); removedOnce(calls);
-    assert.notEqual(refusedChange(root, path, config.project), null);
+    assert.notEqual(refusedChange(root, path, config.project), null, path);
   }
-  for (const path of ['pytest.ini', 'src/new/vitest.config.ts', 'planning/other.json', 'openspec/config.yaml']) {
+  assert.equal(refusedChange(root, '.GIT/hooks/pre-commit', config.project), '.GIT/hooks/pre-commit is inside .git');
+  assert.equal(refusedChange(root, 'OpenSpec/changes/x/proposal.md', config.project),
+    'OpenSpec/changes/x/proposal.md is inside openspec/changes');
+  assert.equal(refusedChange(root, 'docs/x/proposal.md', config.project),
+    'docs/x/proposal.md resolves to openspec/changes/x/proposal.md, which is inside openspec/changes');
+  assert.equal(refusedChange(root, 'proof/results/OR-1.json', config.project),
+    'proof/results/OR-1.json resolves to evidence/results/OR-1.json, which is inside evidence/results');
+  assert.equal(refusedChange(root, 'gitlink/config', config.project), 'gitlink/config resolves to .git/config, which is inside .git');
+  assert.equal(refusedChange(root, 'link/escape.txt', config.project), 'link/escape.txt resolves outside the repository');
+  assert.equal(refusedChange(root, 'dangling/x.txt', config.project), 'dangling/x.txt cannot be resolved inside the repository');
+  for (const path of ['pytest.ini', 'src/new/vitest.config.ts', 'planning/other.json', 'openspec/config.yaml', 'plan/other.json',
+    'sources/new/test.ts', 'spec/config.yaml', 'spec/changes-archive/x.md', '.github/workflows/ci.yml', 'gitignore.txt',
+    'docs-site/x.md']) {
     assert.equal(refusedChange(root, path, config.project), null, path);
   }
 });

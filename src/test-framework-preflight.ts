@@ -1,8 +1,8 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isatty } from 'node:tty';
 import { CodexFiles, brokerTool } from './codex-files.ts';
 import { git } from './git.ts';
@@ -293,18 +293,48 @@ async function analysisSession(config: RunConfig, tree: string, files: string[],
   return recorded;
 }
 
-/** Why a recommended file change is refused, or null when it is allowed. */
+/** Code points HFS+ ignores in file names, so git treats names containing them as the unmarked name. */
+const IGNORABLE = /[‌-‏‪-‮⁪-⁯﻿]/gu;
+/**
+ * Folds one path component the way case-insensitive filesystems compare it: Unicode NFC, without HFS+ ignorable
+ * code points, lower case, and without the trailing dots and spaces that Windows drops.
+ */
+const foldComponent = (part: string): string =>
+  part.normalize('NFC').replace(IGNORABLE, '').toLowerCase().replace(/[. ]+$/u, '');
+const foldPath = (path: string): string => path.split('/').map(foldComponent).join('/');
+/** `.git` and the variants git itself refuses because such filesystems treat them as `.git` (including `git~1`). */
+const isGitComponent = (part: string): boolean => ['.git', 'git~1'].includes(foldComponent(part));
+
+/** Why a repository-relative path touches .git or a protected directory (compared case-insensitively), or null. */
+function protectedReason(path: string, project: Project): string | null {
+  if (path.split('/').some(isGitComponent)) return 'is inside .git';
+  const folded = foldPath(path);
+  for (const protectedPath of [project.queue, project.receipts, project.changes]) {
+    if (within(folded, foldPath(protectedPath))) return `is inside ${protectedPath}`;
+  }
+  return null;
+}
+
+const present = (path: string): boolean => { try { lstatSync(path); return true; } catch { return false; } };
+
+/**
+ * Why a recommended file change is refused, or null when it is allowed. `.git` and the queue, receipts and changes
+ * directories are compared case-insensitively, on the requested path and on the path after resolving symlinks.
+ */
 export function refusedChange(root: string, path: string, project: Project): string | null {
   try { safePath(path); } catch { return `${JSON.stringify(path)} is not a safe repository-relative path outside .git`; }
-  for (const protectedPath of [project.queue, project.receipts, project.changes]) {
-    if (within(path, protectedPath)) return `${path} is inside ${protectedPath}`;
-  }
-  let ancestor = join(root, path);
-  while (!existsSync(ancestor)) ancestor = dirname(ancestor);
-  const real = relative(root, realpathSync(ancestor));
-  if (real === '..' || real.startsWith('../') || real.startsWith('/') || real.split('/').includes('.git')) {
-    return `${path} resolves outside the repository or into .git`;
-  }
+  const literal = protectedReason(path, project);
+  if (literal) return `${path} ${literal}`;
+  // Resolve the deepest existing ancestor (a symlink counts as existing, even when dangling) through every symlink.
+  const requested = join(root, path);
+  let ancestor = requested;
+  while (!present(ancestor)) ancestor = dirname(ancestor);
+  let real: string;
+  try { real = relative(root, realpathSync(ancestor)); } catch { return `${path} cannot be resolved inside the repository`; }
+  if (real === '..' || real.startsWith(`..${sep}`) || isAbsolute(real)) return `${path} resolves outside the repository`;
+  const resolved = [real, relative(ancestor, requested)].filter(Boolean).join(sep).split(sep).join('/');
+  const viaLink = protectedReason(resolved, project);
+  if (viaLink) return `${path} resolves to ${resolved}, which ${viaLink}`;
   return null;
 }
 
