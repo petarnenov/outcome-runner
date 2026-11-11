@@ -756,7 +756,9 @@ test('a claim lost after push is resumed by the same durable claimant', async t 
   const store = new RunStore(config.stateDirectory, { ...config, coverage: 85, root: realpathSync(f.root), leaves: ['A'] }, { repositoryRoot: f.root });
   store.update({ claimant: 'durable' }); store.close();
   const ledger = new ClaimLedger(f.root, 'proposal');
-  ledger.acquire(ledger.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'durable', host: 'h' }, 'chore: claim A');
+  ledger.acquire(ledger.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'durable', host: 'h',
+    taskHash: hash(f.queue.tasks[0]), claimedAt: '2026-01-01T00:00:00Z',
+    branch: `outcome/A-${hash({ invocation: config.invocation, id: 'A', authority: config.authority.reference }).slice(0, 12)}` }, 'chore: claim A');
   assert.equal((await runQueue(config, { host: f.host, createAdapter: scripted })).status, 'exhausted');
   assert.equal(ledgerCommits(f), '1');
 });

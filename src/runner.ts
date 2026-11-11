@@ -28,6 +28,15 @@ export interface PullRequestHost {
 
 export interface RunEvent { status: string; id: string; summary?: string; durationSeconds?: number; grade?: TaskCompletion['grade'] }
 
+export interface RunResult {
+  status: string;
+  accepted: string[];
+  remaining: string[];
+  completions: Record<string, TaskCompletion>;
+  blockers?: Record<string, { stage?: Work['stage']; reason: string; diagnostics: string }>;
+  claimedElsewhere?: Record<string, { host?: string }>;
+}
+
 export interface RunOptions {
   now?: () => number;
   mergePolling?: import('./git.ts').MergePolling;
@@ -87,7 +96,7 @@ export function packet(root: string, directory: string): Record<string, string> 
   }));
 }
 
-export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
+export async function runQueue(requested: RunConfig, options: RunOptions = {}): Promise<RunResult> {
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
   // the lock, claims and worktrees.
   await openspecPreflight(requested, options.openspec);
