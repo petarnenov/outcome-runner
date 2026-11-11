@@ -428,6 +428,10 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
 
         const reply = await cancellable(adapter.startAction('OFF. Never ask a person anything. All output is private. ' +
           'Use only backlog_tool operations read_file/write_file/delete_file/context/run_checks and outcome_report. ' +
+          'The session sandbox is read-only on purpose: backlog_tool write_file and delete_file are the way to change ' +
+          'files and are allowed inside the authorized scopes, so a read-only sandbox is never a blocker. ' +
+          'The runner binds the specification when the plan is accepted; work and document sessions always start ' +
+          'after binding, so run_checks is available there and no binding step is left to you. ' +
           'Read files with input {path,offset}; write with {path,content,expectedHash} from the read result; ' +
           'delete a file with {path,expectedHash} from the read result. ' +
           'A read returns one page: repeat it with nextOffset until nextOffset is null. hash covers the whole file. ' +
