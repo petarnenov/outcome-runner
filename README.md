@@ -752,12 +752,15 @@ ownership, and the next run of the same invocation retries the acceptance.
 
 ### Unfinished results
 
-An `incomplete` result (exit code 3) and a `limit-reached` result with remaining
-tasks carry `blockers`, an object keyed by task id. Every task in `remaining` has
-an entry, so `blockers` is never empty while `remaining` is not; a blocked task
-that is no longer remaining (a merged task whose acceptance recording failed)
-keeps its entry too. Each entry has a `kind` and a public `reason` code; the
-first matching kind is used, in this order:
+An `incomplete` result (exit code 3) and a `limit-reached` result carry
+`blockers`, an object keyed by task id, whenever a task remains or a task of the
+invocation is blocked. Every task in `remaining` has an entry, so `blockers` is
+never empty while `remaining` is not; a blocked task that is no longer remaining
+(a merged task whose acceptance recording failed) keeps its entry too. An
+`incomplete` result with nothing remaining and nothing blocked (a run with
+`maxAccepted` that accepted every task before reaching the limit) has no
+`blockers`. Each entry has a `kind` and a public `reason` code; the first
+matching kind is used, in this order:
 
 | `kind` | Meaning | Other fields |
 |---|---|---|
@@ -1134,8 +1137,8 @@ mood are in [mascot/README.md](mascot/README.md).
 | A task is blocked | `angry` | `<id> blocked: <reason>`, for example `OR-1 blocked: Worker plan incomplete` |
 | The run ends `exhausted` | `celebrating` | `exhausted: <n> accepted, <m> remaining` |
 | The run ends `limit-reached` | `content` | `limit-reached: <n> accepted, <m> remaining` |
-| The run ends `incomplete` without blockers, only waiting for claimed or dependent work | `sleepy` | `incomplete: <n> accepted, <m> remaining` |
-| The run ends `incomplete` with blockers | `sad` | `incomplete: <n> accepted, <m> remaining` |
+| The run ends `incomplete` without `blockers`: nothing remains and nothing is blocked (a `maxAccepted` run that accepted every task before reaching the limit) | `sleepy` | `incomplete: <n> accepted, <m> remaining` |
+| The run ends `incomplete` with `blockers`, which includes every incomplete run with remaining tasks, also when they only wait for a dependency or a foreign claim | `sad` | `incomplete: <n> accepted, <m> remaining` |
 | The run is cancelled by SIGINT or SIGTERM | `startled` | `cancelled: <n> accepted, <m> remaining` |
 | The runner exits with code 4 (`unavailable`) | `dizzy` | `unavailable: 0 accepted, 0 remaining` |
 
