@@ -477,8 +477,8 @@
       "scopes": [".gitguardian.yaml", "scripts", "docs"],
       "dependencies": [],
       "criteria": [
-        "A .gitguardian.yaml in the repository root keeps scanning all product code and ignores only the known false positive for the path string /etc/passwd used by test fixtures, by match rather than by excluding the test directory.",
-        "A test in scripts reads .gitguardian.yaml and shows that its only ignore entry is the exact /etc/passwd match, that no repository path, including test, is excluded from scanning, and that the configuration is valid YAML with the keys GitGuardian documents. These local tests are the evidence; running the hosted GitGuardian scanner is not required and is not part of the evidence.",
+        "A .gitguardian.yaml in the repository root has exactly this shape: version: 2, and secret.ignored_matches with a single entry whose name describes the /etc/passwd test fixture and whose match is the literal string /etc/passwd. It has no paths-ignore or other exclusions, so all product and test code stays scanned.",
+        "A test in scripts reads .gitguardian.yaml and checks the shape above: version 2, exactly one ignored_matches entry with match /etc/passwd, and no paths-ignore or other exclusion. The shape given here is the whole contract; no external documentation, hosted GitGuardian scanner or network access is needed or part of the evidence.",
         "docs explain how to add a reviewed false positive to the configuration instead of marking it by hand in the dashboard."
       ]
     }
