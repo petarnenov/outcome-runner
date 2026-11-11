@@ -339,6 +339,148 @@
         "README describes the step lines on stderr and their format.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-18",
+      "title": "Refuse incomplete task sets and explain every unfinished result",
+      "change": "explain-unfinished-results",
+      "priority": 13,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-17"],
+      "criteria": [
+        "Before claiming anything, the runner checks that every dependency of every task it will work (leaves, or all authority tasks) is either in that set or already accepted. Otherwise the run is refused with exit code 4 and diagnostics reason dependencies-outside-invocation, listing each task and its missing dependencies. The runner never again exits 3 because a dependency outside the invocation can never be worked.",
+        "An incomplete result (exit code 3) always names, for every remaining task, why it was not finished: blocked with its reason and stage, waiting for a named dependency, waiting for a named foreign claim with overlapping scopes, or stopped by maxAccepted. blockers is never empty while remaining is not.",
+        "state.json carries the invocation status the runner last reached (running, incomplete, blocked, completed, released) instead of staying at starting, and is updated before the process exits.",
+        "Tests use scripted adapters and Git fixtures and cover: leaves missing a dependency refused with the missing tasks named; a dependency already accepted allowed; each kind of unfinished reason in the incomplete result; and the final status written to state for a completed, an incomplete and a blocked run.",
+        "README describes the dependency check, the unfinished reasons and the state status.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-19",
+      "title": "Dispose of an invocation with one command",
+      "change": "dispose-invocation",
+      "priority": 14,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-18"],
+      "criteria": [
+        "outcome-runner dispose <invocation file> ends an invocation the owner no longer wants: it releases the invocation's ownership, removes its claims of unaccepted tasks from the claims ledger with one commit naming the invocation, and marks its state released. Accepted tasks, receipts and merged pull requests are not touched.",
+        "Dispose is refused with exit code 4 and a clear reason while a process of that invocation is running, and when the file does not match a known invocation state. Running it twice is safe and reports that nothing was left to release.",
+        "By default the worktrees and local and remote branches of its unaccepted tasks are kept and listed, so finished work can still be inspected; with --remove-work they are removed. Open pull requests of the invocation are listed and never merged.",
+        "Disposing never touches the ownership, claims or state of another invocation or another repository.",
+        "Dispose prints a JSON summary on stdout with the released claims, kept or removed worktrees and branches, and open pull requests.",
+        "Tests use Git fixtures and cover: claims released and ownership freed so a new invocation can start; accepted work untouched; a running invocation refused; repeated dispose; work kept by default and removed with --remove-work; and another invocation left untouched.",
+        "README describes when and how to dispose of an invocation, replacing any manual editing of ownership files or the claims branch.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-20",
+      "title": "Recover when the target advances into a task scope",
+      "change": "recover-target-scope-change",
+      "priority": 15,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-19"],
+      "criteria": [
+        "When the target branch has changed files inside a task's scopes since the task's base, the runner no longer blocks the task with Target changed outcome scope. It merges the new target into the task branch in the task worktree and records the new base in durable state.",
+        "A merge without conflicts is followed again by the product checks, the implementation review and the documentation review before the pull request is published or updated. A previous acceptance of those steps is never reused for the new base.",
+        "A merge with conflicts gives the worker one implementation session to resolve them inside the task scopes, followed by the same checks and reviews. The task is blocked with reason target-conflict-unresolved and the conflicting paths only when that session fails or the reviews do not accept the result.",
+        "The same recovery applies whether the target advanced before publish, while waiting for checks, or before merge, and survives a restart of the invocation.",
+        "Tests use scripted adapters and Git fixtures and cover: a clean merge of an advanced target re-running checks and reviews before merge; a conflict resolved by the worker; an unresolved conflict blocking with its paths; recovery resumed after a restart; and a target change outside the scopes still integrated as before.",
+        "README describes what happens when the target advances during a run.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-21",
+      "title": "Keep invocation work across runner upgrades and added tasks",
+      "change": "evolve-invocation",
+      "priority": 16,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-20"],
+      "criteria": [
+        "The frozen invocation identity covers what the owner authorised (authority, target, tasks and their hashes, harness, model, effort, coverage, checks), not defaults or settings introduced by a newer runner. Upgrading the runner never by itself makes an unfinished invocation unrecoverable.",
+        "When a newer runner requires a setting the invocation lacks, the run is refused with exit code 4 and a reason naming the missing setting and an example. Adding exactly that setting to the invocation file keeps the durable state and resumes the unfinished work; the change is recorded in state and in later receipts.",
+        "The owner may add tasks to authority.tasks of an unfinished invocation. Existing claims, worktrees, reviews and accepted tasks are kept, the new tasks are worked after them in queue order, and the addition is recorded in state. Removing or changing a task hash is still refused as before.",
+        "Tests cover: an unfinished invocation resumed by a newer runner with unchanged settings; a missing required setting reported and then accepted without losing state; added tasks worked while existing work resumes; and a changed task hash still refused.",
+        "README describes upgrading the runner during an unfinished invocation and adding tasks to it.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-22",
+      "title": "Durable review round budgets",
+      "change": "durable-review-budgets",
+      "priority": 17,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-21"],
+      "criteria": [
+        "Planning, implementation and documentation review rounds are counted per task in durable state, so a restart continues the same count instead of granting new rounds silently.",
+        "A failing planning check or product check gives the worker its own bounded number of fix attempts and does not use up review rounds; the blocked reason says whether reviews or checks ran out and how many rounds of each were used.",
+        "A blocked task gets a fresh budget only when the owner restarts with --retry <task id>; the retry is recorded in state and in the receipt.",
+        "Tests use scripted adapters and cover: counts kept across a restart; check failures not consuming review rounds; the blocked reason naming the exhausted budget; and --retry granting one new budget that is recorded.",
+        "README describes the review and check budgets and --retry.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-23",
+      "title": "No temporary diagnostic files in published work",
+      "change": "no-diagnostic-leftovers",
+      "priority": 18,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-22"],
+      "criteria": [
+        "The worker prompt tells the worker to delete every scratch or diagnostic file it created before finishing, using delete_file.",
+        "The implementation review is asked to reject files that only served diagnosis, such as temporary debug tests, and to name them in its findings.",
+        "test/zz-debug-capture.test.ts and any other leftover diagnostic file on the target are removed when no test or product code depends on them.",
+        "Tests use scripted adapters and cover the worker and review prompts mentioning leftover files, and a review that names a leftover file sending the task back to the worker.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-24",
+      "title": "Clear CLI usage, version and install guidance",
+      "change": "cli-usage-and-install",
+      "priority": 19,
+      "scopes": ["src", "test", "README.md", "package.json"],
+      "dependencies": ["OR-23"],
+      "criteria": [
+        "outcome-runner --version prints the installed version and --help prints the commands and their arguments, both with exit code 0.",
+        "outcome-runner hash accepts a queue file and optional task ids and prints only those hashes. A missing file or an unknown task id is reported in one line on stderr naming the argument, with exit code 4, and never as a raw stack trace.",
+        "Every run and diagnostics file includes the runner version, so an outdated global install is visible.",
+        "README gives the exact global install and update command, including --allow-scripts=outcome-runner, and says to update the global runner only while no invocation is unfinished or after checking that it can resume.",
+        "Tests cover --version, --help, hash with task ids, a missing queue file and an unknown task id.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-25",
+      "title": "Release workflow survives merges close together",
+      "change": "release-concurrent-merges",
+      "priority": 20,
+      "scopes": [".github", "scripts", "docs"],
+      "dependencies": [],
+      "criteria": [
+        "Release runs triggered by pushes to main never run at the same time; a queued run starts after the previous one finishes.",
+        "When the release push is rejected because main advanced, the workflow fetches, recomputes the version from the new main and retries a bounded number of times, without creating a duplicate tag or changelog entry.",
+        "Tests of the workflow definition and the release scripts with Git fixtures show that two pull requests merged within a few minutes produce two consecutive releases or one release containing both, and no failed push. All criteria are verified locally with these tests; observing hosted GitHub Actions runs is not required and is not part of the evidence.",
+        "The release scripts have tests for recomputing after main advanced and for not duplicating an existing tag; npm test passes.",
+        "docs describe the release behaviour for close merges."
+      ]
+    },
+    {
+      "id": "OR-26",
+      "title": "Secret scanning without false positives on test fixtures",
+      "change": "secret-scan-config",
+      "priority": 21,
+      "scopes": [".gitguardian.yaml", "docs"],
+      "dependencies": [],
+      "criteria": [
+        "A .gitguardian.yaml in the repository root keeps scanning all product code and ignores only the known false positive for the path string /etc/passwd used by test fixtures, by match rather than by excluding the test directory.",
+        "Real secrets in test files are still reported.",
+        "docs explain how to add a reviewed false positive to the configuration instead of marking it by hand in the dashboard."
+      ]
     }
   ]
 }
