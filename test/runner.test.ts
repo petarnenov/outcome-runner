@@ -1420,7 +1420,7 @@ test('C: ledger retains an existing closed PR while refusing creation and merge'
   assert.equal(f.records.length, 0);
 });
 
-test('B: ledger recovers the PR URL from lookup for legacy merge-stage work', async t => {
+for (const boundary of ['pr', 'merge'] as const) test(`B: ledger recovers the legacy PR URL after interruption at ${boundary}`, async t => {
   const f = fixture(t); const env = { XDG_STATE_HOME: join(f.base, 'legacy-pr-ledger') };
   const { root: _root, stateDirectory: _state, ...invocation } = { ...f.config, leaves: ['A'] };
   const path = join(f.base, 'legacy-pr-invocation.json'); writeFileSync(path, JSON.stringify(invocation));
@@ -1431,7 +1431,7 @@ test('B: ledger recovers the PR URL from lookup for legacy merge-stage work', as
   }, { ...options, host: f.host,
     createAdapter: resume ? () => { throw new Error('Merge recovery must not start a worker'); } : scripted,
     afterEffect: async kind => {
-      if (!resume && kind === 'pr') throw Object.assign(new Error('Fixture interruption'), { interrupted: true });
+      if (!resume && kind === boundary) throw Object.assign(new Error('Fixture interruption'), { interrupted: true });
     },
   }), line => {
     const result = JSON.parse(line);
@@ -1440,8 +1440,15 @@ test('B: ledger recovers the PR URL from lookup for legacy merge-stage work', as
   assert.equal(await execute(false), 4);
   const statePath = join(f.config.stateDirectory, 'state.json');
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  assert.equal(state.current.stage, boundary === 'merge' ? 'merge' : 'pr');
+  assert.equal(f.records[0].state, boundary === 'merge' ? 'MERGED' : 'OPEN');
+  const identityHash = state.identityHash;
   state.current.stage = 'merge'; delete state.current.pr.url;
   writeFileSync(statePath, JSON.stringify(state));
+  if (boundary === 'merge') {
+    f.host.create = () => { assert.fail('Receipt recovery must not create another PR'); };
+    f.host.merge = () => { assert.fail('Receipt recovery must not merge again'); };
+  }
   assert.equal(await execute(true), 0);
   const rows = readFileSync(ledgerPath(env), 'utf8').trim().split('\n').map(line => JSON.parse(line) as RunStatistics);
   assert.equal(rows.length, 2); assert.notEqual(rows[0].runId, rows[1].runId);
@@ -1450,6 +1457,8 @@ test('B: ledger recovers the PR URL from lookup for legacy merge-stage work', as
   assert.deepEqual(rows[1].tasks[0].pr, { number: 1, url: 'https://example.org/pull/1' });
   assert.equal(f.records.length, 1); assert.equal(f.records[0].state, 'MERGED');
   const finished = JSON.parse(readFileSync(statePath, 'utf8'));
+  assert.equal(finished.current, null);
+  assert.equal(finished.identityHash, identityHash);
   assert.equal(finished.completed.A.pr.number, f.records[0].number);
   assert.equal(finished.completed.A.pr.url, f.records[0].url);
 });
