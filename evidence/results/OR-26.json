@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "id": "OR-26",
+  "taskHash": "98f938ffb8c79834e43d4443fc9966143ca40cb41e091933aa05b3b237c9fcb0",
+  "authority": "owner-2026-11-11-outcome-runner-codex-8",
+  "target": "main",
+  "specification": {
+    "openspec/changes/archive/2026-11-11-secret-scan-config/design.md": "09d996198425562a56273a7f7a8415d65ef1d134bc35bd3fbd2e553816c3db8b",
+    "openspec/changes/archive/2026-11-11-secret-scan-config/proposal.md": "52d62b052a75730121215732c9782c91854ce96f5fed2dc75266a9c0fdb00ef3",
+    "openspec/changes/archive/2026-11-11-secret-scan-config/specs/secret-scan-config/spec.md": "3668436b9a8e9b480e623a8f7a76ea907b3489695af8af9914462ea11e3ef519"
+  },
+  "review": {
+    "reviewer": "codex:01a1cc46-d6a0-72e3-b7d8-e2bf307aeb28",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": ".gitguardian.yaml",
+      "hash": "edca979ab975b501bd0be5ed70a24055350acc3339bbfa1867cf0c164f9d4013"
+    },
+    {
+      "path": "docs/secret-scanning.md",
+      "hash": "718b9d538df68f88956fff2f3c0d4884fae2dda21cadb421916b13f16775168b"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-secret-scan-config/design.md",
+      "hash": "09d996198425562a56273a7f7a8415d65ef1d134bc35bd3fbd2e553816c3db8b"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-secret-scan-config/proposal.md",
+      "hash": "52d62b052a75730121215732c9782c91854ce96f5fed2dc75266a9c0fdb00ef3"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-secret-scan-config/specs/secret-scan-config/spec.md",
+      "hash": "3668436b9a8e9b480e623a8f7a76ea907b3489695af8af9914462ea11e3ef519"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-11-secret-scan-config/tasks.md",
+      "hash": "d90940cfe23b521c83e57abc4290ba9e9fffd4d9fdffc1a2dbcfa2f25ccdc254"
+    },
+    {
+      "path": "openspec/specs/secret-scan-config/spec.md",
+      "hash": "d4faa9c780f177de9ffde105284384a6f59cdb796fddce8eb831c51618055cb2"
+    },
+    {
+      "path": "scripts/secret-scan-config.test.ts",
+      "hash": "53e76cf9a9ca12555a75b7d0b38af4b0bc1f4851268ae744fabcbc5969bb321f"
+    }
+  ],
+  "head": "82edd5261dcb2e3180829f612cdd4e4db6d57b42",
+  "base": "6ac30bf5cdb9b2ffaa7de898da790cf4dcf3b81c"
+}

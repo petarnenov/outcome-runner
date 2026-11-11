@@ -1,0 +1,5 @@
+version: 2
+secret:
+  ignored_matches:
+    - name: /etc/passwd test fixture
+      match: /etc/passwd
