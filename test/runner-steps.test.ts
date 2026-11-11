@@ -1,11 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { git } from '../src/git.ts';
-import type { PullRequest } from '../src/model.ts';
-import type { PullRequestHost } from '../src/runner.ts';
+import type { PullRequest, RunConfig } from '../src/model.ts';
+import { runQueue } from '../src/runner.ts';
+import type { PullRequestHost, RunOptions } from '../src/runner.ts';
 import type { HarnessAdapter, HarnessOptions, WorkerReply } from '../src/harness-adapter.ts';
+import { main } from './support/isolated-cli.ts';
 import { runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
 import type { RunnerFixture } from './support/runner-fixture.ts';
 
@@ -182,4 +186,104 @@ test('C (required): a target advanced before publish writes an integrate line be
   assert.equal((await f.run(f.config('two', { leaves: ['B'] }), { steps: second.steps })).status, 'exhausted');
   assert.ok(of(second.lines, 'B').includes('B push: pushing the tested head'));
   assert.ok(!second.lines.some(line => line.includes(' integrate: ')));
+});
+
+// Grade B
+
+test('B (required): a contended Git lock writes one wait line before the Git group and none when the lock is free', async t => {
+  const f = runnerFixture(t); const { lines, steps } = capture();
+  const marker = join(f.base, 'lock-held');
+  const child = spawn(process.execPath, [join(import.meta.dirname, 'support/git-lock-child.ts'), 'hold-ms', f.root, 'steps',
+    '2500', marker], { stdio: 'ignore' });
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  t.after(() => { child.kill(); });
+  while (!existsSync(marker)) await delay(20);
+  const result = await f.run(f.config('one', { leaves: ['A'] }), { steps });
+  assert.equal(await exited, 0);
+  assert.equal(result.status, 'exhausted');
+  const bodies = lines.map(body);
+  assert.deepEqual(bodies.filter(line => line.includes('git lock')), ['run git lock: waiting for the Git lock']);
+  const waited = bodies.indexOf('run git lock: waiting for the Git lock');
+  assert.ok(bodies.indexOf('run preflight: checking the test framework') < waited);
+  assert.ok(waited < bodies.indexOf('A claim: claiming the task'));
+  const free = capture();
+  assert.equal((await f.run(f.config('two', { leaves: ['B'] }), { steps: free.steps })).status, 'exhausted');
+  assert.ok(free.lines.length > 10);
+  assert.ok(!free.lines.some(line => line.includes('git lock')));
+});
+
+test('B (required): a target advance during the merge stage repeats the publish steps with (attempt 2)', async t => {
+  const f = runnerFixture(t); const { lines, steps } = capture();
+  let advanced = 0;
+  const result = await f.run(f.config('one', { leaves: ['A'] }), { steps,
+    afterEffect: async operation => { if (operation === 'pr') { advanced += 1; advanceTarget(f); } } });
+  assert.equal(result.status, 'exhausted'); assert.equal(advanced, 1);
+  const task = of(lines, 'A');
+  const start = task.indexOf('A wait: waiting for mergeability and checks of #1');
+  assert.deepEqual(task.slice(start), [
+    'A wait: waiting for mergeability and checks of #1',
+    'A integrate: integrating the advanced main (attempt 2)',
+    'A check: running 1/2: node (attempt 2)',
+    'A check: running 2/2: node (attempt 2)',
+    'A push: pushing the tested head (attempt 2)',
+    'A pull request: finding the pull request (attempt 2)',
+    'A pull request: reusing #1 (attempt 2)',
+    'A wait: waiting for mergeability and checks of #1 (attempt 2)',
+    'A merge: merging #1 (attempt 2)',
+    'A acceptance: recording the acceptance',
+    'A cleanup: removing the worktree and branches',
+  ]);
+  assert.ok(!lines.some(line => line.includes('resuming')));
+});
+
+test('B (required): a resumed run does not repeat completed steps and marks only its first line resuming', async t => {
+  const f = runnerFixture(t); const config = f.config('one', { leaves: ['A'] });
+  let interrupt = true;
+  const createAdapter = worker({ replace: async (_options, prompt) => {
+    if (interrupt && prompt.includes(IMPLEMENT)) {
+      interrupt = false; throw Object.assign(new Error('Interrupted'), { interrupted: true });
+    }
+    return undefined;
+  } });
+  const stopped = capture();
+  await assert.rejects(f.run(config, { steps: stopped.steps, createAdapter }), /Interrupted/u);
+  assert.equal(f.state('one').current.stage, 'work');
+  assert.ok(of(stopped.lines, 'A').includes('A planning review: starting the planning review session'));
+  assert.equal(body(stopped.lines.at(-1)!), 'run end: outcome unavailable');
+  const { lines, steps } = capture();
+  const result = await f.run(config, { steps, createAdapter });
+  assert.equal(result.status, 'exhausted');
+  const task = of(lines, 'A');
+  assert.equal(task[0], 'A implementation: resuming starting the implementation session (attempt 2)');
+  for (const step of ['claim', 'worktree', 'investigation', 'planning', 'planning check', 'planning review']) {
+    assert.ok(!task.some(line => line.startsWith(`A ${step}:`)), step);
+  }
+  assert.deepEqual(lines.filter(line => line.includes('resuming')).map(body), [task[0]]);
+  assert.ok(task.includes('A acceptance: recording the acceptance'));
+  assert.equal(body(lines.at(-1)!), 'run end: outcome exhausted');
+});
+
+/** Runs the CLI `main` over one fixture task with the given step output and returns stdout, exit code and receipt. */
+async function throughMain(f: RunnerFixture, steps: RunOptions['steps']) {
+  const { root: _root, stateDirectory: _state, ...invocation } = f.config('one', { leaves: ['A'] });
+  const path = join(f.base, 'invocation.json'); writeFileSync(path, JSON.stringify(invocation));
+  const stdout: string[] = [];
+  const code = await main(path, (config: RunConfig, options: RunOptions) =>
+    runQueue(config, f.options(config, { ...options, steps, now: () => Date.UTC(2026, 10, 11, 9, 5, 3) })),
+  line => { stdout.push(line); }, { cwd: f.root, env: { XDG_STATE_HOME: join(f.base, 'xdg'), OUTCOME_RUNNER_MASCOT: '0' },
+    mascot: () => {} });
+  const { head: _head, base: _base, ...receipt } = JSON.parse(git(f.remote, 'show', 'main:evidence/results/A.json'));
+  return { code, stdout, receipt };
+}
+
+test('B (required): stdout, exit code and receipt are identical with a capturing and a no-op step output', async t => {
+  const { lines, steps } = capture();
+  const captured = await throughMain(runnerFixture(t), steps);
+  const silent = await throughMain(runnerFixture(t), () => {});
+  assert.equal(captured.code, 0); assert.equal(silent.code, 0);
+  assert.deepEqual(captured.stdout, silent.stdout);
+  assert.deepEqual(captured.receipt, silent.receipt);
+  assert.equal(JSON.parse(captured.stdout.at(-1)!).status, 'exhausted');
+  assert.ok(lines.length > 20);
+  assert.ok(!captured.stdout.some(line => line.includes('[outcome-runner]')));
 });
