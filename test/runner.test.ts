@@ -1445,11 +1445,19 @@ for (const boundary of ['pr', 'merge'] as const) test(`B: ledger recovers the le
   const identityHash = state.identityHash;
   state.current.stage = 'merge'; delete state.current.pr.url;
   writeFileSync(statePath, JSON.stringify(state));
+  let recoveredPrLookups = 0;
   if (boundary === 'merge') {
+    const find = f.host.find;
+    f.host.find = branch => {
+      recoveredPrLookups++;
+      assert.equal(branch, state.current.branch);
+      return find(branch);
+    };
     f.host.create = () => { assert.fail('Receipt recovery must not create another PR'); };
     f.host.merge = () => { assert.fail('Receipt recovery must not merge again'); };
   }
   assert.equal(await execute(true), 0);
+  if (boundary === 'merge') assert.equal(recoveredPrLookups, 1);
   const rows = readFileSync(ledgerPath(env), 'utf8').trim().split('\n').map(line => JSON.parse(line) as RunStatistics);
   assert.equal(rows.length, 2); assert.notEqual(rows[0].runId, rows[1].runId);
   assert.equal(rows[1].status, 'exhausted'); assert.equal(rows[1].tasks.length, 1);
