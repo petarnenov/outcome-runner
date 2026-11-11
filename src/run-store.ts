@@ -37,6 +37,7 @@ export interface RunState {
   completed?: Record<string, Work>;
   blocked?: Record<string, BlockedEntry>;
   baselineDone?: string[];
+  statisticsSources?: import('./statistics.ts').Sources;
 }
 
 export class RunStore {

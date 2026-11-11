@@ -8,7 +8,7 @@ import type { CodexSelection } from '../src/harness.ts';
 import { ClaudeAdapter } from '../src/claude-adapter.ts';
 import { CodexAdapter } from '../src/codex-adapter.ts';
 import { RunStore } from '../src/run-store.ts';
-import { main } from '../src/cli.ts';
+import { main } from './support/isolated-cli.ts';
 import type { RunConfig } from '../src/model.ts';
 import type { HarnessOptions, ToolDefinition } from '../src/harness-adapter.ts';
 

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { git } from '../src/git.ts';
 import { hash } from '../src/model.ts';
 import type { Harness, RunConfig } from '../src/model.ts';
-import { main } from '../src/cli.ts';
+import { main } from './support/isolated-cli.ts';
 import { runQueue } from '../src/runner.ts';
 import type { PullRequestHost, RunOptions } from '../src/runner.ts';
 import { RunStore } from '../src/run-store.ts';

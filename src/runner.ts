@@ -1,3 +1,5 @@
+import { cancellable, tokenUsage } from './statistics.ts';
+import type { Sources, Statistics } from './statistics.ts';
 import { existsSync, mkdirSync, readFileSync, readdirSync, lstatSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { hostname } from 'node:os';
@@ -40,6 +42,8 @@ export interface RunResult {
 }
 
 export interface RunOptions {
+  statistics?: Statistics;
+  signal?: AbortSignal;
   now?: () => number;
   mergePolling?: import('./git.ts').MergePolling;
   host?: PullRequestHost;
@@ -101,12 +105,25 @@ export function packet(root: string, directory: string): Record<string, string> 
 export async function runQueue(requested: RunConfig, options: RunOptions = {}): Promise<RunResult> {
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
   // the lock, claims and worktrees.
-  await openspecPreflight(requested, options.openspec);
+  const statistics = options.statistics;
+  const signal = options.signal;
+  await cancellable(openspecPreflight(requested, { ...options.openspec, signal }), signal);
   // Selected values enter the configuration before it is hashed, so they are frozen exactly like flags.
   // A Codex selection reads Codex once; resolution reuses that read instead of opening another session.
-  const { config: selected, codex } = await selectHarness(requested, options.selection);
-  const config = await resolveHarness(selected, codex ? async () => codex : codexSelection);
+  let sources: Sources = {}; let harnessVersion: string | undefined;
+  const { config: selected, codex } = await cancellable(selectHarness(requested, {
+    ...options.selection, signal, sources: statistics?.sources,
+    onSetting: (key, value, source) => statistics?.setting(key, value, source),
+    onResolved: (config, resolvedSources, version) => {
+      sources = resolvedSources; harnessVersion = version;
+      if (config.harness) statistics?.setting('harness', config.harness, sources.harness ?? 'default');
+      if (version !== undefined) statistics?.setting('harnessCliVersion', version, sources.harness ?? 'default');
+    },
+  }), signal);
+  const config = await cancellable(resolveHarness(selected, codex ? async () => codex :
+    cwd => codexSelection(cwd, undefined, signal)), signal);
   validateConfig(config);
+  statistics?.resolved(config, sources, harnessVersion);
   const { afterEffect = async () => {}, report = () => {}, now = Date.now } = options;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
   const root = realpathSync(config.root); const project = config.project;
@@ -120,7 +137,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   const lock = new DatabaseSync(join(lockRoot, `${hash(primary)}.sqlite`));
   let store!: RunStore; let adapter: HarnessAdapter | null | undefined; let stopped = false;
   const ownershipFile = join(lockRoot, `${hash(primary)}-owner.json`);
-  const stop = () => { stopped = true; adapter?.close(); };
+  const stop = () => {
+    stopped = true;
+    if (store?.state.current) statistics?.decision(store.state.current, 'blocked', store.state.current, 'cancelled');
+    try { adapter?.close(); } catch { /* Cancellation still reaches the guarded CLI finalizer. */ }
+  };
+  signal?.addEventListener('abort', stop, { once: true });
   try {
     lock.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;');
     if (existsSync(ownershipFile)) {
@@ -148,14 +170,26 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       }
     });
     store = new RunStore(config.stateDirectory, { ...config, root, leaves: ids }, { repositoryRoot: root });
+    sources = store.state.statisticsSources ?? sources;
+    if (!store.state.statisticsSources) store.update({ statisticsSources: sources });
+    statistics?.resolved(config, sources, harnessVersion);
+    statistics?.setting('leaves', [...ids], sources.leaves ?? 'default');
     writeFileSync(ownershipFile, JSON.stringify(ownership), { mode: 0o600 });
     const host: PullRequestHost = options.host ?? new GitHubHost(root, project);
     const ledger = new ClaimLedger(root, project.target);
     if (!store.state.claimant) store.update({ claimant: randomUUID() });
     const claimant = store.state.claimant!;
     const commitSubject = (type: string, text: string) => `${type}(${project.commitScope ?? 'work-queue'}): ${text}${project.commitSuffix ?? ''}`;
-    const save = (fields: Partial<Work>) => store.update({ current: { ...store.state.current, ...fields } as Work });
+    const save = (fields: Partial<Work>) => {
+      const result = store.update({ current: { ...store.state.current, ...fields } as Work });
+      statistics?.decision(result.current!, 'blocked', result.current!);
+      return result;
+    };
     const activeWork = () => store.state.current as Work;
+    const rememberPr = (pr: PullRequest) => {
+      const previous = activeWork().pr;
+      save({ pr: { ...pr, url: pr.url ?? (previous?.number === pr.number ? previous.url : undefined) } });
+    };
     const authorized = (queue: Queue, id: string): Task => {
       const task = queue.tasks.find(item => item.id === id);
       if (!task || hash(task) !== config.authority.tasks[id]) throw new Error('Task source differs from frozen authority');
@@ -172,13 +206,25 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       }
       return true;
     };
-    const checks = (work: Work, definitions: CommandSpec[]): CheckRecord[] => definitions.map(check => {
-      const args = check.args.map(arg => arg.replaceAll('{change}', work.change)
-        .replaceAll('{target}', project.target).replaceAll('{scope}', work.scopes[0])
-        .replaceAll('{coverage}', String(config.coverage)));
-      const output = command(work.path, check.command, args);
-      return { command: check.command, args, outcome: 'passed', output: output.slice(-16000) };
-    });
+    const checks = (work: Work, definitions: CommandSpec[]): CheckRecord[] => {
+      const rows: CheckRecord[] = [];
+      const finalGate = definitions === project.checks && activeWork()?.stage === 'publish';
+      for (const check of definitions) {
+        const args = check.args.map(arg => arg.replaceAll('{change}', work.change)
+          .replaceAll('{target}', project.target).replaceAll('{scope}', work.scopes[0])
+          .replaceAll('{coverage}', String(config.coverage)));
+        try {
+          const output = command(work.path, check.command, args);
+          rows.push({ command: check.command, args, outcome: 'passed', output: output.slice(-16000) });
+        } catch (error) {
+          rows.push({ command: check.command, args, outcome: 'failed' });
+          if (finalGate) save({ finalChecks: rows });
+          throw error;
+        }
+        if (finalGate) save({ finalChecks: rows });
+      }
+      return rows;
+    };
     const commit = (work: Work): void => {
       git(work.path, 'add', '--', ...work.scopes, work.directory);
       if (git(work.path, 'diff', '--cached', '--name-only')) {
@@ -221,9 +267,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           { path: work.directory, mode: 'read' }, ...writable.map(path => ({ path, mode: 'write' }))],
         store, identity: { id: work.id, operation: work.operation, purpose },
         revalidate: async () => assertWork(activeWork()) });
-      adapter = createAdapter({ cwd: work.path, tools: [brokerTool, reportTool],
+      signal?.throwIfAborted();
+      let usage: ReturnType<Statistics['session']> | undefined;
+      adapter = createAdapter({ cwd: work.path, tools: [brokerTool, reportTool], onUsage: value => usage?.(value),
         onHandle: handle => save({ session: { purpose, ...handle } }),
         handleTool: async (name, input) => {
+          signal?.throwIfAborted();
           if (name === brokerTool.name && input.operation === 'run_checks') {
             if (!['work', 'review'].includes(purpose) || !activeWork().specification) {
               throw new Error('Product checks require a bound specification');
@@ -252,7 +301,13 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         } });
       try {
         if (adapter.probe().status !== 'interface-ready') throw new Error('Selected harness interface unavailable');
-        const reply = await adapter.startAction('OFF. Never ask a person anything. All output is private. ' +
+      const starts = activeWork().sessionStarts ?? Object.fromEntries(
+        (['investigate', 'plan', 'work', 'review'] as const).map(key =>
+          [key, (activeWork().sessions ?? []).filter(session => session.purpose === key).length]));
+      save({ sessionStarts: { ...starts, [purpose]: (starts[purpose] ?? 0) + 1 } });
+      usage = statistics?.session(work.id);
+
+        const reply = await cancellable(adapter.startAction('OFF. Never ask a person anything. All output is private. ' +
           'Use only backlog_tool operations read_file/write_file/context/run_checks and outcome_report. ' +
           'Read files with input {path,offset}; write with {path,content,expectedHash} from the read result. ' +
           'A read returns one page: repeat it with nextOffset until nextOffset is null. hash covers the whole file. ' +
@@ -261,18 +316,24 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           'run_checks takes input {} and runs only frozen project checks after specification binding; ' +
           'read their output through the checks section. ' +
           'Read applicable AGENTS.md. Report blockers privately. No shell or approval tools.\n' +
-          `Resolved coverage threshold: ${config.coverage}%.\n` + prompt);
+          `Resolved coverage threshold: ${config.coverage}%.\n` + prompt), signal);
+        for (const event of reply.events) {
+          if (event.type === 'token-usage') usage?.(tokenUsage({ inputTokens: event.inputTokens, outputTokens: event.outputTokens, totalTokens: event.totalTokens }));
+        }
         save({ sessions: [...(activeWork().sessions ?? []), {
           purpose, threadId: reply.threadId, events: reply.events, privateText: reply.text }] });
         if (!result || result.outcome === 'blocked') throw new Error(`Worker ${purpose} incomplete`);
         return { ...result, reviewer: `${config.harness}:${reply.threadId}` };
-      } finally { adapter.close(); adapter = null; }
+      } finally { try { adapter?.close(); } finally { adapter = null; } }
     };
-    process.once('SIGINT', stop); process.once('SIGTERM', stop);
+    process.on('SIGINT', stop); process.on('SIGTERM', stop);
     const recovery = Object.values(store.state.blocked ?? {}).map(entry => entry.work).filter(Boolean);
+    for (const work of recovery.filter(work => ids.includes(work.id))) statistics?.decision(work, 'blocked', work);
+    if (store.state.current) statistics?.decision(store.state.current, 'blocked', store.state.current);
     store.update({ blocked: {} });
     for (;;) {
       await yieldLoop();
+      if (signal?.aborted) stopped = true;
       const { target, queue } = refresh();
       const completed = { ...(store.state.completed ?? {}) };
       const done = new Set<string>();
@@ -303,9 +364,15 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           const claimedAt = recoverClaimTime(current);
           const acceptedAt = new Date(now()).toISOString();
           const completion = buildCompletion(current.review?.completion, claimedAt, acceptedAt);
-          const finished = { ...current, claimedAt, acceptedAt, completion, acceptedTarget: target };
+          let pr = current.pr;
+          if (pr && !pr.url) {
+            const found = await cancellable(Promise.resolve(host.find(current.branch)), signal);
+            if (found?.number === pr.number) pr = { ...pr, url: found.url };
+          }
+          const finished = { ...current, pr, claimedAt, acceptedAt, completion, acceptedTarget: target };
           store.update({ current: null, completed: { ...completed, [current.id]: finished } });
           completed[current.id] = finished;
+          statistics?.decision(finished, 'accepted', finished);
         } catch (error) {
           store.update({ blocked: { ...store.state.blocked, [current.id]: {
             reason: failureDetail(error), work: current } }, current: null });
@@ -317,6 +384,11 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       }
       const newlyAccepted = Object.keys(completed).filter(id => done.has(id) && !store.state.baselineDone!.includes(id));
       const remaining = ids.filter(id => !done.has(id));
+      for (const task of queue.tasks.filter(task => remaining.includes(task.id))) {
+        if (task.id === store.state.current?.id) statistics?.decision(task, 'blocked', store.state.current!);
+        else if (store.state.blocked?.[task.id]) statistics?.decision(task, 'blocked', store.state.blocked[task.id].work);
+        else statistics?.decision(task);
+      }
       if (config.maxAccepted && newlyAccepted.length >= config.maxAccepted) {
         if (!Object.keys(store.state.blocked!).length && !store.state.current && !recovery.length) release();
         return { status: 'limit-reached', ...resultData(newlyAccepted), remaining };
@@ -331,6 +403,11 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         const ledgerSnapshot = ledger.pull();
         const foreignClaims = [...ledgerSnapshot.claims.values()]
           .filter(claim => claim.claimant !== claimant && !done.has(claim.id));
+        for (const candidate of queue.tasks.filter(task => remaining.includes(task.id))) {
+          if (foreignClaims.some(claim => claim.id === candidate.id || scopesOverlap(claim.scopes, candidate.scopes))) {
+            statistics?.decision(candidate, 'claimed-elsewhere');
+          }
+        }
         const task = queue.tasks.filter(task => remaining.includes(task.id) && !store.state.blocked![task.id] &&
           task.dependencies.every(id => done.has(id)) &&
           !foreignClaims.some(claim => claim.id === task.id || scopesOverlap(claim.scopes, task.scopes)) &&
@@ -361,7 +438,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         if (work.stage === 'claim') {
           if (!existsSync(work.path)) {
             git(root, 'worktree', 'add', '-b', work.branch, work.path, work.base);
-            await afterEffect('claim', work);
+            await cancellable(afterEffect('claim', work), signal);
           }
           if (git(work.path, 'rev-parse', 'HEAD') !== work.base || git(work.path, 'status', '--porcelain')) {
             throw new Error('Initial worktree differs from recorded base');
@@ -414,7 +491,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
               'write (coverage-only) tests only as the graded test rules below allow. ' +
               workTestInstructions(config.coverage) + ' Preserve bound specs. ' +
               'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
-            await afterEffect('implementation', activeWork());
+            await cancellable(afterEffect('implementation', activeWork()), signal);
             assertWork(activeWork()); commit(work);
             try { save({ checks: checks(work, project.checks) }); }
             catch (error) { save({ findings: [failureDetail(error)] }); continue; }
@@ -467,18 +544,24 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             `Authority: ${config.authority.reference}\nTested head: ${now.head}\nTarget: ${now.testedTarget}\n` +
             `Checks: ${JSON.stringify(checkRecords(now.finalChecks!))}\n` +
             `Reviews: ${JSON.stringify(now.reviews!.map(reviewRecord))}\n`);
-          let pr = await host.find(work.branch);
-          if (!pr) { pr = await host.create(now, body); await afterEffect('pr', pr); }
+          let pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
+          if (pr) rememberPr(pr);
+          if (!pr) {
+            pr = await cancellable(Promise.resolve(host.create(now, body)), signal);
+            if (pr) rememberPr(pr);
+            await cancellable(afterEffect('pr', pr), signal);
+          }
           if (!pr || pr.state === 'CLOSED') throw new Error('PR unavailable or closed');
-          save({ pr, stage: 'merge' });
+          save({ stage: 'merge' });
         }
         if (activeWork().stage === 'merge') {
           const now = activeWork();
           const polling = options.mergePolling ?? {};
           const limit = polling.views ?? MERGE_STATE_VIEWS;
           for (let view = 1; ; view += 1) {
-            const pr = await host.find(work.branch);
+            const pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
             if (!pr) throw new Error('Recorded PR missing');
+            rememberPr(pr);
             if (pr.state === 'MERGED') break;
             if (pr.state !== 'OPEN') throw new Error('PR unavailable or closed');
             assertWork(now);
@@ -487,18 +570,22 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             }
             if (refresh().target !== now.testedTarget) { save({ stage: 'publish' }); break; }
             if (pr.headRefOid === now.head) {
-              await host.merge(pr, now.head!); await afterEffect('merge', pr);
+              await cancellable(Promise.resolve(host.merge(pr, now.head!)), signal); await cancellable(afterEffect('merge', pr), signal);
               break;
             }
             assertOriginHead(work.path, work.branch, now.head!);
             if (view >= limit) throw new Error('Checked head or target changed');
-            await (polling.delay ?? delay)(polling.pollMs ?? MERGE_STATE_POLL_MS);
+            await cancellable((polling.delay ?? delay)(polling.pollMs ?? MERGE_STATE_POLL_MS), signal);
           }
           if (activeWork().stage === 'publish') continue;
           const targetNow = refresh().target;
           if (!accepted(targetNow, authorized(refresh().queue, work.id))) throw new Error('Merged result lacks valid receipt');
         }
       } catch (error) {
+        if (stopped || signal?.aborted) {
+          statistics?.decision(activeWork(), 'blocked', activeWork(), 'cancelled');
+          return { status: 'cancelled', ...resultData(newlyAccepted), remaining };
+        }
         if ((error as InterruptedFailure).interrupted) throw error;
         store.update({ blocked: { ...store.state.blocked, [work.id]: {
           reason: (error as Error).message, work: activeWork() } }, current: null });
@@ -506,7 +593,12 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       }
     }
   } finally {
-    adapter?.close(); store?.close(); lock.close();
+    const cleanupErrors: unknown[] = [];
+    for (const close of [() => adapter?.close(), () => store?.close(), () => lock.close()]) {
+      try { close(); } catch (error) { cleanupErrors.push(error); }
+    }
+    signal?.removeEventListener('abort', stop);
     process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
+    if (cleanupErrors.length) throw cleanupErrors[0];
   }
 }

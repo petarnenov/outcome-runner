@@ -80,6 +80,7 @@ export interface WorkerReport {
 export interface ReviewRecord extends WorkerReport { reviewer: string; accepted?: boolean }
 
 export interface PullRequest {
+  url?: string;
   number: number;
   state: string;
   headRefOid: string;
@@ -112,6 +113,7 @@ export interface Work extends Task {
   review?: ReviewRecord;
   session?: SessionHandle & { purpose: Purpose };
   sessions?: WorkerSession[];
+  sessionStarts?: Partial<Record<Purpose, number>>;
   lastToolError?: { purpose: Purpose; input: unknown; message: string };
   lastReportAttempt?: { purpose: Purpose; input: unknown };
   head?: string;

@@ -180,3 +180,17 @@ test('Codex requests frozen model and effort and rejects a different actual mode
   await assert.rejects(wrong.adapter.startAction('wrong model'), /model/u);
   wrong.adapter.close();
 });
+
+test('B: Codex forwards only owned documented cumulative usage counters', async () => {
+  const reports: unknown[] = [];
+  const adapter = new CodexAdapter({ cwd: '/unused', tools: [brokerTool], handleTool: async () => {},
+    onUsage: usage => reports.push(usage) });
+  adapter.threadId = 'owned';
+  for (const [threadId, total] of [['foreign', { inputTokens: 99 }], ['owned', { inputTokens: 2, outputTokens: 3, totalTokens: 5 }],
+    ['owned', { inputTokens: 4, outputTokens: 5, totalTokens: 9, private: 'SECRET' }]] as const) {
+    await adapter.receive({ method: 'thread/tokenUsage/updated', params: { threadId, tokenUsage: { total } } } as unknown as CodexMessage);
+  }
+  assert.equal(reports.length, 2);
+  assert.deepEqual(reports.at(-1), { inputTokens: 4, outputTokens: 5, totalTokens: 9 });
+  assert.ok(!JSON.stringify(adapter.events).includes('SECRET'));
+});

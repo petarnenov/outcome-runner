@@ -556,6 +556,125 @@ implementation review enforce these rules before specification binding and
 acceptance. Retried and resumed sessions receive the same instructions and
 percentage from the frozen threshold.
 
+## Run statistics ledger
+
+Each runner execution appends one compact JSON object and newline to
+`$XDG_STATE_HOME/outcome-runner/runs.jsonl`. The default is
+`~/.local/state/outcome-runner/runs.jsonl`; unset, empty or relative
+`XDG_STATE_HOME` uses that default. The hash command never creates a ledger,
+even when hashing fails. A resumed invocation is a new execution with a new
+`runId`.
+
+Missing directories are created with mode 0700 and the ledger is created or
+secured with mode 0600. Prior bytes are preserved. Each complete record uses
+one write on an O_APPEND descriptor, including concurrent local executions.
+Persistence is best effort: path, open, permissions, serialization, short-write,
+append and close failures produce a safe stderr warning and preserve stdout,
+the task result and the original exit code. Short writes are never retried.
+
+Schema version 1 includes all the following fields. Null means unavailable or
+not reached; arrays are empty when no entries exist.
+
+| Field | Type and meaning |
+| --- | --- |
+| schemaVersion | integer literal 1 |
+| runId | string, fresh UUID per execution |
+| runnerVersion | string, executing package version, not a hardcoded release |
+| hostname | string, machine hostname |
+| repositoryTopLevel | string or null, canonical Git top-level path once discovered |
+| originUrl | string or null, origin remote once discovered; omit embedded credentials from URL userinfo |
+| targetBranch | string or null, resolved project target |
+| invocation | string or null, invocation name |
+| authorityReference | string or null, reference only |
+| startedAt | string, ISO 8601 UTC execution start |
+| endedAt | string, ISO 8601 UTC finalization time |
+| durationSeconds | number, nonnegative elapsed run seconds from a monotonic clock |
+| exitCode | integer, actual returned code (0, 3 or 4) |
+| status | exhausted, limit-reached, incomplete, cancelled or unavailable |
+| failureReason | string or null, safe failure reason code for unavailable, null otherwise |
+| settings | object described below |
+| tasks | array of task statistics described below |
+| tokenUsage | token usage object or null, described below |
+
+Every `settings` field is a `{value, source}` object. The source is
+`cli-flag`, `invocation-json`, `interactive-answer`, `default`, or null
+when unresolved. Flags override invocation JSON. An explicit nonempty answer
+is interactive; Enter accepting the suggestion is default. Harness configuration
+and catalog defaults also count as default.
+
+| Setting | Value type |
+| --- | --- |
+| harness | string (`claude` or `codex`) or null |
+| harnessCliVersion | string or null, observed from an existing probe; inherits harness source |
+| model | string or null |
+| effort | string or null |
+| coverage | integer 1–100 or null |
+| maxAccepted | positive integer or null; null/default means unbounded, null/null means unresolved |
+| leaves | string[] or null; effective selected task IDs, null/null before expansion |
+
+Saved provenance survives restart without changing frozen configuration or
+authority identity. Legacy state lacking provenance uses default attribution.
+Task statistics include only work or decisions of this execution, with one entry
+per task ID. Historical baseline acceptances and unrelated queue tasks are excluded.
+Acceptance supersedes earlier decisions. Owned unfinished work is blocked;
+foreign task/scope claims are claimed-elsewhere; pending dependencies, limits
+and cancellation leave selected unowned tasks not-started.
+
+Each `tasks` entry contains:
+
+| Field | Type and meaning |
+| --- | --- |
+| id | string, task ID |
+| change | string, task change name |
+| outcome | accepted, blocked, claimed-elsewhere or not-started |
+| lastStage | string or null; claim, investigate, plan, work, receipt, publish, pr or merge |
+| blockingReason | string or null; safe controller reason code when blocked |
+| durationSeconds | nonnegative number or null; OR-5 persisted claim-to-acceptance duration for accepted tasks |
+| complexityGrade | A, B, C, D, E or null |
+| completionSummary | string or null; OR-5 approved completion summary |
+| workerSessions | object with integer investigate, plan, work and review counts |
+| planningReviewRounds | integer |
+| implementationReviewRounds | integer |
+| planningFindingsPerRound | integer[] in review order |
+| implementationFindingsPerRound | integer[] in review order |
+| finalChecks | array of {command: string, args: string[], outcome: string} |
+| pr | {number: integer, url: string} or null |
+| tokenUsage | token usage object or null |
+
+`workerSessions.investigate`, `.plan`, `.work` and `.review` are
+nonnegative integer start counts, including sessions interrupted before reply.
+Review counts and ordered findings arrays describe known durable history once,
+including recovered history. `finalChecks[].command` is a string,
+`.args` is string[] and `.outcome` is a string (`passed` or `failed`);
+failed/thrown final gates retain actual failure outcomes without their output.
+`pr.number` is an integer and `pr.url` is a string when known; `pr` is
+null otherwise. Only accepted tasks have nonnull `durationSeconds`,
+`complexityGrade` and `completionSummary`, reused from the persisted approved
+completion.
+
+Run and task `tokenUsage` are null when no usage is reported, otherwise
+`{inputTokens: integer|null, outputTokens: integer|null, totalTokens: integer|null}`.
+All numeric components are nonnegative. These totals contain only sessions of
+this execution, with cumulative updates deduplicated per session. A component
+is null unless every relevant session reports it; missing usage is never
+estimated or counted as zero. Durable session/review counts can include older
+history, whereas token totals never include resumed historical usage.
+
+Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
+`cancelled` use 3; `unavailable` uses 4. Only unavailable has a nonnull
+`failureReason`: `openspec-missing`, `openspec-not-initialized`,
+`openspec-layout-created`, `harness-unavailable` or
+`startup-or-run-failed`. Blocked tasks use safe `blockingReason` codes
+`operation-incomplete` or `cancelled`. SIGINT and SIGTERM are handled
+during startup and work through one guarded finalizer; SIGKILL, power loss and
+crashes preventing cleanup cannot produce a termination record.
+
+The ledger contains allowlisted metadata only. Authority instruction text,
+worker prompts, private worker output and reports, findings text, check output,
+file contents, environment variables and raw errors are excluded. Origin URL
+userinfo credentials are removed. The approved completion summary is the
+intentional public summary, not a private worker report.
+
 ## Acceptance limits
 
 Git-host fixtures exercise real repository merges and receipt validation;

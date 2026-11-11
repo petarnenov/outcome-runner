@@ -109,7 +109,7 @@ export class GitHubHost {
   gh(...args: string[]): string { return command(this.root, 'gh', [...args, '--repo', this.project.repository!]); }
   find(branch: string): PullRequest | null {
     const rows: PullRequest[] = JSON.parse(this.gh('pr', 'list', '--state', 'all', '--head', branch,
-      '--base', this.project.target, '--json', 'number,state,headRefOid,baseRefName,headRefName'));
+      '--base', this.project.target, '--json', 'number,url,state,headRefOid,baseRefName,headRefName'));
     if (rows.length > 1) throw new Error('Multiple PRs match the outcome branch');
     const row = rows[0] as (PullRequest & { headRefName?: string }) | undefined;
     return row ? { ...row, branch: row.headRefName ?? branch } : null;

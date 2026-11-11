@@ -9,7 +9,10 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { git, command } from '../src/git.ts';
 import { hash, validateConfig, validateQueue } from '../src/model.ts';
 import type { CheckRecord, Harness, Project, PullRequest, Queue, ReviewRecord, RunConfig, Work, WorkerSession } from '../src/model.ts';
-import { main } from '../src/cli.ts';
+import { main } from './support/isolated-cli.ts';
+import { main as ledgerMain } from '../src/cli.ts';
+import { Statistics, ledgerPath } from '../src/statistics.ts';
+import type { RunStatistics } from '../src/statistics.ts';
 import { runQueue as runQueueWithPreflight } from '../src/runner.ts';
 import { PAGE_BYTES } from '../src/text-page.ts';
 import type { RunEvent, RunOptions } from '../src/runner.ts';
@@ -121,7 +124,7 @@ function realHarness(config: RunConfig) {
 }
 
 function scripted(options: ScriptedOptions): HarnessAdapter {
-  return { probe: () => ({ status: 'interface-ready' }), close() {}, async startAction(prompt) {
+  return { probe: () => ({ status: 'interface-ready' }), close() {}, async startAction(prompt: string) {
     const id = /Task ([A-D]);/u.exec(prompt)![1].toLowerCase();
     const directory = `openspec/changes/counter-${id}`;
     const write = async (path: string, content: string) => {
@@ -288,7 +291,7 @@ test('changed source and bound specification cannot gain execution authority', a
 
 test('CLI reports bounded success, incomplete work and unavailable configuration', async t => {
   const f = fixture(t); const configPath = join(f.base, 'config.json');
-  const { main } = await import('../src/cli.ts');
+  const { main } = await import('./support/isolated-cli.ts');
   const { root, stateDirectory, ...invocation } = f.config;
   writeFileSync(configPath, JSON.stringify(invocation));
   for (const [status, expected] of [['exhausted', 0], ['limit-reached', 0], ['incomplete', 3]] as [string, number][]) {
@@ -407,7 +410,7 @@ test('planning validation and review findings are repaired before implementation
       }
       return options.handleTool(name, input);
     } });
-    return { ...inner, async startAction(prompt) {
+    return { ...inner, async startAction(prompt: string) {
       const result = await inner.startAction(prompt);
       if (prompt.includes('Create proposal.md') && ++planning === 1) {
         writeFileSync(join(options.cwd, 'openspec/changes/counter-a/specs/finite-counter/spec.md'), '# Invalid delta\n');
@@ -584,7 +587,7 @@ test(`${process.env.OUTCOME_TEST_HARNESS ?? 'codex'}: real portable copy accepts
 test('standalone CLI keeps raw startup errors in private diagnostics', t => {
   const f = fixture(t);
   const child = spawnSync(process.execPath, [fileURLToPath(new URL('../bin/outcome-runner.ts', import.meta.url)),
-    join(f.base, 'missing-config')], { encoding: 'utf8' });
+    join(f.base, 'missing-config')], { encoding: 'utf8', env: { ...process.env, XDG_STATE_HOME: join(f.base, 'cli-ledger') } });
   assert.equal(child.status, 4);
   const result = JSON.parse(child.stdout); assert.equal(result.reason, 'startup-or-run-failed');
   const diagnostic = JSON.parse(readFileSync(result.diagnostics, 'utf8'));
@@ -914,6 +917,8 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
       if (!pr || !published) return pr;
       const stage = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8')).current.stage;
       if (stage !== 'merge') return pr;
+      // After the merge, a lookup recovers PR metadata for acceptance; it is not a merge view.
+      if (merges) return pr;
       const actual = scenario === 'missing-ref' ? oldHead : git(join(f.base, 'origin.git'), 'rev-parse', `refs/heads/${branch}`);
       // The first merge view observes the advanced target before the new publish.
       if (scenario === 'target-race' && actual === oldHead) return { ...pr };
@@ -1048,7 +1053,7 @@ test('report schema, optional reports and review prompts enforce the completion 
       assert.deepEqual(schema.properties.completion.required, ['summary', 'grade']);
       assert.deepEqual(schema.properties.completion.properties.grade.enum, ['A', 'B', 'C', 'D', 'E']);
       const inner = scripted(options as ScriptedOptions);
-      return { ...inner, async startAction(prompt) {
+      return { ...inner, async startAction(prompt: string) {
         if (prompt.includes('Review actual implementation')) {
           assert.match(prompt, /two or three English sentences/u);
           assert.match(prompt, /whole-task complexity: A \(most complex\), B, C, D, E \(easiest\)/u);
@@ -1166,4 +1171,304 @@ test('public completion uses the final review after repair and preserves three s
     assert.ok(!(key in receipt));
   }
   assert.ok(!('completion' in receipt.review));
+});
+
+test('C: ledger records accepted and blocked work with durable repair metrics and allowlisted final evidence', async t => {
+  const f = fixture(t); const env = { XDG_STATE_HOME: join(f.base, 'ledger-state') };
+  const { root: _root, stateDirectory: _state, ...invocation } = { ...f.config, leaves: ['A', 'D'] };
+  const path = join(f.base, 'ledger-invocation.json'); writeFileSync(path, JSON.stringify(invocation));
+  const stdout: RunEvent[] = []; let planningReviews = 0; let implementationReviews = 0;
+  const create = f.host.create;
+  f.host.create = work => ({ ...create(work), url: 'https://example.org/pull/1' });
+  const code = await ledgerMain(path, (config, options) => runQueue({ ...config, stateDirectory: f.config.stateDirectory }, {
+    ...options, host: f.host, createAdapter: adapterOptions => {
+      let prompt = '';
+      const adapter = scripted({ ...adapterOptions, handleTool: async (name, input) => {
+        if (name === 'outcome_report' && input.outcome === 'accepted') {
+          if (prompt.includes('Review planning artifacts') && ++planningReviews === 1 ||
+              prompt.includes('Review actual implementation') && ++implementationReviews === 1) {
+            input = { ...input, outcome: 'changes-required', summary: 'SECRET_PRIVATE_REPORT', findings: ['SECRET_FINDING'] };
+          }
+        }
+        return adapterOptions.handleTool(name, input, { threadId: 'ledger-fixture' });
+      } });
+      return { ...adapter, async startAction(text) {
+        prompt = text;
+        adapterOptions.onUsage?.({ inputTokens: 1, outputTokens: 1, totalTokens: 2 });
+        adapterOptions.onUsage?.({ inputTokens: 4, outputTokens: 5, totalTokens: 9 });
+        if (text.includes('Task D;')) throw new Error('SECRET_WORKER_FAILURE');
+        return adapter.startAction(text);
+      } };
+    },
+  }), line => stdout.push(JSON.parse(line)), { cwd: f.root, env });
+  assert.equal(code, 3);
+  const record = JSON.parse(readFileSync(ledgerPath(env), 'utf8')) as RunStatistics;
+  assert.equal(record.status, 'incomplete'); assert.deepEqual(record.settings.leaves, { value: ['A', 'D'], source: 'invocation-json' });
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+  assert.deepEqual(record.tasks.map(task => [task.id, task.outcome]), [['A', 'accepted'], ['D', 'blocked']]);
+  const [accepted, blocked] = record.tasks;
+  assert.equal(accepted.lastStage, 'merge'); assert.equal(accepted.blockingReason, null);
+  assert.equal(accepted.durationSeconds, state.completed.A.completion.durationSeconds);
+  assert.equal(accepted.completionSummary, state.completed.A.completion.summary);
+  assert.equal(accepted.complexityGrade, state.completed.A.completion.grade);
+  assert.deepEqual(accepted.workerSessions, { investigate: 1, plan: 2, work: 2, review: 4 });
+  assert.equal(accepted.planningReviewRounds, 2); assert.equal(accepted.implementationReviewRounds, 2);
+  assert.deepEqual(accepted.planningFindingsPerRound, [1, 0]);
+  assert.deepEqual(accepted.implementationFindingsPerRound, [1, 0]);
+  assert.equal(accepted.finalChecks.length, f.project.checks.length);
+  assert.ok(accepted.finalChecks.every(check => check.outcome === 'passed' && !('output' in check)));
+  assert.deepEqual(accepted.pr, { number: 1, url: 'https://example.org/pull/1' });
+  assert.deepEqual(accepted.tokenUsage, { inputTokens: 36, outputTokens: 45, totalTokens: 81 });
+  assert.equal(blocked.lastStage, 'investigate'); assert.equal(blocked.blockingReason, 'operation-incomplete');
+  assert.equal(blocked.durationSeconds, null); assert.equal(blocked.complexityGrade, null); assert.equal(blocked.completionSummary, null);
+  assert.equal(blocked.workerSessions.investigate, 1); assert.equal(state.blocked.D.work.sessions, undefined);
+  assert.deepEqual(record.tokenUsage, { inputTokens: 40, outputTokens: 50, totalTokens: 90 });
+  assert.ok(!JSON.stringify(record).includes('SECRET_')); assert.ok(!JSON.stringify(record).includes('Private text'));
+  assert.equal(stdout.at(-1)!.status, 'incomplete');
+});
+
+test('C: final gate failure persists the actual failed command without private output or fabricated passes', async t => {
+  const f = fixture(t); const statistics = new Statistics();
+  const counter = join(f.base, 'check-count');
+  const privateOutput = join(f.base, 'private-output'); writeFileSync(privateOutput, 'SECRET_CHECK_OUTPUT');
+  const script = "const f=require('node:fs'),p=process.argv[1];const n=f.existsSync(p)?Number(f.readFileSync(p)):0;" +
+    "f.writeFileSync(p,String(n+1));if(n>=2){console.log(f.readFileSync(process.argv[2],'utf8'));process.exit(1)}";
+  f.project.checks.push({ command: 'node', args: ['-e', script, counter, privateOutput] });
+  const result = await runQueue({ ...f.config, leaves: ['A'] }, { statistics, host: f.host, createAdapter: scripted });
+  assert.equal(result.status, 'incomplete'); const record = statistics.finish('incomplete', 3);
+  const task = record.tasks[0];
+  assert.equal(task.outcome, 'blocked'); assert.equal(task.lastStage, 'publish');
+  assert.equal(task.finalChecks.length, 3);
+  assert.deepEqual(task.finalChecks.at(-1), { command: 'node', args: ['-e', script, counter, privateOutput], outcome: 'failed' });
+  // The executable/arguments are intentional metadata; captured check output is not.
+  assert.ok(task.finalChecks.every(check => !('output' in check))); assert.equal(task.pr, null);
+  assert.ok(!JSON.stringify(record).includes('SECRET_CHECK_OUTPUT'));
+});
+
+test('C: foreign task and scope claims are distinguished from dependent pending leaves', async t => {
+  const f = fixture(t); const statistics = new Statistics();
+  const changed = structuredClone(f.queue); changed.tasks[3].scopes = ['src/a/nested'];
+  writeFileSync(join(f.root, f.project.queue), JSON.stringify(changed));
+  git(f.root, 'add', '.'); git(f.root, 'commit', '-m', 'test: overlap ledger fixture scopes');
+  git(f.root, 'push', 'origin', 'HEAD:proposal');
+  const claims = new ClaimLedger(f.root, f.project.target);
+  claims.acquire(claims.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'foreign', host: 'fixture' }, 'chore: claim A');
+  const result = await runQueue({ ...f.config, authority: { ...f.config.authority,
+    tasks: Object.fromEntries(changed.tasks.map(task => [task.id, hash(task)])) } }, {
+    statistics, host: f.host, createAdapter: () => { throw new Error('No worker expected'); },
+  });
+  assert.equal(result.status, 'incomplete');
+  const record = statistics.finish('incomplete', 3);
+  assert.deepEqual(record.tasks.map(task => [task.id, task.outcome]),
+    [['A', 'claimed-elsewhere'], ['B', 'not-started'], ['C', 'not-started'], ['D', 'claimed-elsewhere']]);
+  assert.ok(record.tasks.every(task => task.lastStage === null));
+});
+
+test('C: an acceptance limit records selected pending leaves and excludes baseline receipts on restart', async t => {
+  const f = fixture(t); const first = new Statistics();
+  const result = await runQueue({ ...f.config, maxAccepted: 1 }, { statistics: first, host: f.host, createAdapter: scripted });
+  assert.equal(result.status, 'limit-reached');
+  assert.deepEqual(first.finish('limit-reached', 0).tasks.map(task => [task.id, task.outcome]),
+    [['A', 'accepted'], ['B', 'not-started'], ['C', 'not-started'], ['D', 'not-started']]);
+  const baseline = new Statistics();
+  const other = machine(f, 'baseline-ledger');
+  const again = await runQueue({ ...other, leaves: ['A'] }, { statistics: baseline, host: f.host, createAdapter: scripted });
+  assert.equal(again.status, 'exhausted'); assert.deepEqual(baseline.finish('exhausted', 0).tasks, []);
+});
+
+test('B: resumed execution preserves selection provenance, original claim duration and durable task history', async t => {
+  const f = fixture(t); const env = { XDG_STATE_HOME: join(f.base, 'ledger-resume') };
+  const { root: _root, stateDirectory: _state, harness: _harness, model: _model, effort: _effort, ...invocation } = f.config;
+  const path = join(f.base, 'ledger-resume.json');
+  writeFileSync(path, JSON.stringify({ ...invocation, leaves: ['A'] }));
+  const create = f.host.create;
+  f.host.create = work => { const pr = create(work); pr.url = 'https://example.org/pull/' + pr.number; return pr; };
+  const answers = ['claude', '', 'high', '92']; let prompts = 0;
+  const start = Date.parse('2026-01-01T00:00:00Z');
+  const execute = (resume: boolean) => ledgerMain(path, (config, options) => runQueue({
+    ...config, stateDirectory: f.config.stateDirectory,
+  }, { ...options, now: () => start + (resume ? 10000 : 0), host: f.host,
+    selection: { ...passingSelection, interactive: true, say: () => {}, ask: async () => {
+      prompts++; assert.ok(!resume, 'saved selection must suppress prompts'); return answers.shift()!;
+    } },
+    createAdapter: options => {
+      const adapter = scripted(options);
+      return { ...adapter, async startAction(prompt: string) {
+        options.onUsage?.({ inputTokens: 2, outputTokens: 3, totalTokens: 5 });
+        return adapter.startAction(prompt);
+      } };
+    },
+    afterEffect: async kind => {
+      if (!resume && kind === 'pr') throw Object.assign(new Error('SECRET_INTERRUPTION'), { interrupted: true });
+    },
+  }), line => {
+    const result = JSON.parse(line);
+    if (result.diagnostics) t.after(() => rmSync(join(result.diagnostics, '..'), { recursive: true, force: true }));
+  }, { cwd: f.root, env });
+  assert.equal(await execute(false), 4); assert.equal(prompts, 4);
+  const statePath = join(f.config.stateDirectory, 'state.json');
+  const firstState = JSON.parse(readFileSync(statePath, 'utf8')); const hashBefore = firstState.identityHash;
+  assert.equal(await execute(true), 0); assert.equal(prompts, 4);
+  const rows = readFileSync(ledgerPath(env), 'utf8').trim().split('\n').map(line => JSON.parse(line) as RunStatistics);
+  assert.equal(rows.length, 2); assert.notEqual(rows[0].runId, rows[1].runId);
+  assert.deepEqual(rows[1].settings, rows[0].settings);
+  assert.equal(rows[1].settings.harness.source, 'interactive-answer');
+  assert.equal(rows[1].settings.model.source, 'default');
+  assert.equal(rows[1].settings.effort.source, 'interactive-answer');
+  assert.equal(rows[1].settings.coverage.source, 'interactive-answer');
+  assert.equal(rows[1].tasks[0].outcome, 'accepted');
+  assert.equal(rows[1].tasks[0].durationSeconds, 10);
+  const last = JSON.parse(readFileSync(statePath, 'utf8'));
+  assert.equal(last.identityHash, hashBefore); assert.deepEqual(last.identity.authority, firstState.identity.authority);
+  assert.deepEqual(rows[1].tasks[0].workerSessions, rows[0].tasks[0].workerSessions);
+  assert.deepEqual(rows[1].tasks[0].planningFindingsPerRound, [0]);
+  assert.deepEqual(rows[1].tasks[0].implementationFindingsPerRound, [0]);
+  assert.deepEqual(rows[0].tokenUsage, { inputTokens: 10, outputTokens: 15, totalTokens: 25 });
+  assert.equal(rows[1].tokenUsage, null); assert.equal(rows[1].tasks[0].tokenUsage, null);
+  assert.deepEqual(rows[1].tasks[0].finalChecks, last.completed.A.finalChecks.map(
+    ({ command, args, outcome }: CheckRecord) => ({ command, args, outcome })));
+  assert.equal(rows[1].tasks[0].completionSummary, last.completed.A.completion.summary);
+  assert.equal(rows[1].tasks[0].complexityGrade, last.completed.A.completion.grade);
+  // A legacy state without statistics-only provenance remains compatible.
+  delete last.statisticsSources; writeFileSync(statePath, JSON.stringify(last));
+  assert.equal(await execute(true), 0);
+  const legacy = JSON.parse(readFileSync(ledgerPath(env), 'utf8').trim().split('\n').at(-1)!) as RunStatistics;
+  assert.equal(legacy.settings.harness.source, 'default');
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).identityHash, hashBefore);
+});
+
+for (const phase of ['preflight', 'selection', 'work'] as const) {
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    test('B: ' + signal + ' during ' + phase + ' cancels once and cleans handlers', { timeout: 20000 }, async t => {
+      const f = fixture(t); const xdg = join(f.base, 'child-ledger');
+      const { root: _root, stateDirectory: _state, harness: _harness, model: _model, effort: _effort, ...invocation } = f.config;
+      const path = join(f.base, 'child-invocation.json'); writeFileSync(path, JSON.stringify({ ...invocation, leaves: ['A'] }));
+      const child = fork(fileURLToPath(new URL('./support/statistics-child.ts', import.meta.url)), [path, f.root, phase], {
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+          !['NODE_TEST_CONTEXT', 'NODE_TEST_WORKER_ID', 'NODE_OPTIONS'].includes(key))), XDG_STATE_HOME: xdg },
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      });
+      t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
+      let done: { code: number; closes: number; handlersClean: boolean } | undefined; let stderr = '';
+      child.stdout!.resume(); child.stderr!.on('data', chunk => { stderr += chunk; });
+      child.on('message', (message: { type: string; code: number; closes: number; handlersClean: boolean }) => {
+        if (message.type === 'ready') child.kill(signal); else if (message.type === 'done') done = message;
+      });
+      const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve =>
+        child.once('exit', (code, signal) => resolve({ code, signal })));
+      assert.deepEqual(exit, { code: 3, signal: null }, stderr);
+      assert.ok((done as { handlersClean: boolean } | undefined)?.handlersClean);
+      if (phase === 'work') assert.ok((done as { closes: number } | undefined)!.closes > 0);
+      const bytes = readFileSync(ledgerPath({ XDG_STATE_HOME: xdg }), 'utf8');
+      const lines = bytes.trim().split('\n'); assert.equal(lines.length, 1);
+      const record = JSON.parse(lines[0]) as RunStatistics;
+      assert.equal(record.status, 'cancelled'); assert.equal(record.exitCode, 3); assert.equal(record.failureReason, null);
+      assert.ok(!bytes.includes('SECRET_'));
+      if (phase === 'work') {
+        assert.equal(record.tasks.length, 1); assert.equal(record.tasks[0].outcome, 'blocked');
+        assert.equal(record.tasks[0].lastStage, 'investigate'); assert.equal(record.tasks[0].blockingReason, 'cancelled');
+        assert.equal(record.tasks[0].workerSessions.investigate, 1); assert.equal(record.tasks[0].durationSeconds, null);
+      } else {
+        assert.deepEqual(record.tasks, []); assert.deepEqual(record.settings.leaves, { value: null, source: null });
+      }
+    });
+  }
+}
+
+test('A: repeated cancellation races worker rejection and cleanup without duplicate ledger writes', { timeout: 20000 }, async t => {
+  const f = fixture(t); const xdg = join(f.base, 'racing-ledger');
+  const { root: _root, stateDirectory: _state, ...invocation } = f.config;
+  const path = join(f.base, 'racing-invocation.json'); writeFileSync(path, JSON.stringify({ ...invocation, leaves: ['A'] }));
+  const child = fork(fileURLToPath(new URL('./support/statistics-child.ts', import.meta.url)), [path, f.root, 'race'], {
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+      !['NODE_TEST_CONTEXT', 'NODE_TEST_WORKER_ID', 'NODE_OPTIONS'].includes(key))), XDG_STATE_HOME: xdg },
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
+  child.stdout!.resume(); let stderr = ''; child.stderr!.on('data', chunk => { stderr += chunk; });
+  let clean = false;
+  child.on('message', (message: { type: string; handlersClean?: boolean }) => {
+    if (message.type === 'ready') child.send('race'); else if (message.type === 'done') clean = message.handlersClean!;
+  });
+  const code = await new Promise<number | null>(resolve => child.once('exit', code => resolve(code)));
+  assert.equal(code, 3, stderr); assert.ok(clean);
+  const lines = readFileSync(ledgerPath({ XDG_STATE_HOME: xdg }), 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1); const record = JSON.parse(lines[0]) as RunStatistics;
+  assert.equal(record.status, 'cancelled'); assert.equal(record.tasks[0].blockingReason, 'cancelled');
+  assert.equal(record.tasks[0].lastStage, 'investigate'); assert.ok(!lines[0].includes('SECRET_'));
+});
+
+test('C: ledger retains an existing closed PR while refusing creation and merge', async t => {
+  const f = fixture(t); const env = { XDG_STATE_HOME: join(f.base, 'closed-pr-ledger') };
+  const { root: _root, stateDirectory: _state, ...invocation } = { ...f.config, leaves: ['A'] };
+  const path = join(f.base, 'closed-pr-invocation.json'); writeFileSync(path, JSON.stringify(invocation));
+  const pr: PullRequest = { number: 42, url: 'https://example.org/pull/42', state: 'CLOSED',
+    headRefOid: '0'.repeat(40), baseRefName: f.project.target };
+  f.host.find = () => pr;
+  f.host.create = () => { assert.fail('Existing closed PR must not create another PR'); };
+  f.host.merge = () => { assert.fail('Closed PR must not merge'); };
+  const code = await ledgerMain(path, (config, options) => runQueue({
+    ...config, stateDirectory: f.config.stateDirectory,
+  }, { ...options, host: f.host, createAdapter: scripted }), () => {}, { cwd: f.root, env });
+  assert.equal(code, 3);
+  const lines = readFileSync(ledgerPath(env), 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1);
+  const record = JSON.parse(lines[0]) as RunStatistics;
+  assert.equal(record.status, 'incomplete'); assert.equal(record.tasks.length, 1);
+  assert.equal(record.tasks[0].outcome, 'blocked'); assert.equal(record.tasks[0].lastStage, 'pr');
+  assert.deepEqual(record.tasks[0].pr, { number: pr.number, url: pr.url });
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+  assert.match(state.blocked.A.reason, /closed/u);
+  assert.equal(f.records.length, 0);
+});
+
+for (const boundary of ['pr', 'merge'] as const) test(`B: ledger recovers the legacy PR URL after interruption at ${boundary}`, async t => {
+  const f = fixture(t); const env = { XDG_STATE_HOME: join(f.base, 'legacy-pr-ledger') };
+  const { root: _root, stateDirectory: _state, ...invocation } = { ...f.config, leaves: ['A'] };
+  const path = join(f.base, 'legacy-pr-invocation.json'); writeFileSync(path, JSON.stringify(invocation));
+  const create = f.host.create;
+  f.host.create = work => { const pr = create(work); pr.url = 'https://example.org/pull/' + pr.number; return pr; };
+  const execute = (resume: boolean) => ledgerMain(path, (config, options) => runQueue({
+    ...config, stateDirectory: f.config.stateDirectory,
+  }, { ...options, host: f.host,
+    createAdapter: resume ? () => { throw new Error('Merge recovery must not start a worker'); } : scripted,
+    afterEffect: async kind => {
+      if (!resume && kind === boundary) throw Object.assign(new Error('Fixture interruption'), { interrupted: true });
+    },
+  }), line => {
+    const result = JSON.parse(line);
+    if (result.diagnostics) t.after(() => rmSync(join(result.diagnostics, '..'), { recursive: true, force: true }));
+  }, { cwd: f.root, env });
+  assert.equal(await execute(false), 4);
+  const statePath = join(f.config.stateDirectory, 'state.json');
+  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  assert.equal(state.current.stage, boundary === 'merge' ? 'merge' : 'pr');
+  assert.equal(f.records[0].state, boundary === 'merge' ? 'MERGED' : 'OPEN');
+  const identityHash = state.identityHash;
+  state.current.stage = 'merge'; delete state.current.pr.url;
+  writeFileSync(statePath, JSON.stringify(state));
+  let recoveredPrLookups = 0;
+  if (boundary === 'merge') {
+    const find = f.host.find;
+    f.host.find = branch => {
+      recoveredPrLookups++;
+      assert.equal(branch, state.current.branch);
+      return find(branch);
+    };
+    f.host.create = () => { assert.fail('Receipt recovery must not create another PR'); };
+    f.host.merge = () => { assert.fail('Receipt recovery must not merge again'); };
+  }
+  assert.equal(await execute(true), 0);
+  if (boundary === 'merge') assert.equal(recoveredPrLookups, 1);
+  const rows = readFileSync(ledgerPath(env), 'utf8').trim().split('\n').map(line => JSON.parse(line) as RunStatistics);
+  assert.equal(rows.length, 2); assert.notEqual(rows[0].runId, rows[1].runId);
+  assert.equal(rows[1].status, 'exhausted'); assert.equal(rows[1].tasks.length, 1);
+  assert.equal(rows[1].tasks[0].outcome, 'accepted'); assert.equal(rows[1].tasks[0].lastStage, 'merge');
+  assert.deepEqual(rows[1].tasks[0].pr, { number: 1, url: 'https://example.org/pull/1' });
+  assert.equal(f.records.length, 1); assert.equal(f.records[0].state, 'MERGED');
+  const finished = JSON.parse(readFileSync(statePath, 'utf8'));
+  assert.equal(finished.current, null);
+  assert.equal(finished.identityHash, identityHash);
+  assert.equal(finished.completed.A.pr.number, f.records[0].number);
+  assert.equal(finished.completed.A.pr.url, f.records[0].url);
 });

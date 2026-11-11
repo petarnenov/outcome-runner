@@ -1,3 +1,4 @@
+import { tokenUsage } from './statistics.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { Interface } from 'node:readline';
@@ -26,6 +27,7 @@ interface CodexMessage {
   error?: { code: number };
   result?: unknown;
   params: {
+    tokenUsage?: { total?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } };
     threadId: string;
     tool: string;
     arguments: ToolInput;
@@ -66,6 +68,7 @@ export class CodexAdapter implements HarnessAdapter {
   tools: ToolDefinition[];
   handleTool: HarnessOptions['handleTool'];
   onHandle: NonNullable<HarnessOptions['onHandle']>;
+  onUsage?: HarnessOptions['onUsage'];
   executable: string;
   model: string | null;
   effort: string | null;
@@ -83,9 +86,9 @@ export class CodexAdapter implements HarnessAdapter {
   finalText?: string;
   turn?: PendingTurn | null;
 
-  constructor({ cwd, tools, handleTool, onHandle = async () => {}, executable = 'codex',
+  constructor({ cwd, tools, handleTool, onHandle = async () => {}, onUsage, executable = 'codex',
     model = null, effort = null, mcpServers = [], spawnProcess = spawn, environment = process.env }: CodexAdapterOptions) {
-    this.model = model; this.effort = effort;
+    this.model = model; this.effort = effort; this.onUsage = onUsage;
     this.cwd = cwd; this.tools = tools; this.handleTool = handleTool; this.onHandle = onHandle;
     this.executable = executable; this.mcpServers = mcpServers; this.spawnProcess = spawnProcess;
     this.environment = codexEnvironment(environment);
@@ -189,6 +192,11 @@ export class CodexAdapter implements HarnessAdapter {
       }
       return;
     }
+    if (message.method === 'thread/tokenUsage/updated' && message.params?.threadId === this.threadId) {
+      const usage = tokenUsage(message.params.tokenUsage?.total ?? {});
+      this.onUsage?.(usage);
+      if (usage) this.events.push({ type: 'token-usage', ...usage });
+    }
     if (message.method === 'item/completed' && message.params?.threadId === this.threadId) {
       const item = message.params.item;
       if (item.type === 'agentMessage') this.finalText = item.text;
@@ -239,5 +247,5 @@ export class CodexAdapter implements HarnessAdapter {
     if (this.threadId && this.turnId) await this.rpc('turn/interrupt', {
       threadId: this.threadId, turnId: this.turnId });
   }
-  close(): void { this.connected = false; this.child?.stdin.end(); this.child?.kill('SIGTERM'); this.lines?.close(); }
+  close(): void { this.fail(new Error('Codex action closed')); this.connected = false; this.child?.stdin.end(); this.child?.kill('SIGTERM'); this.lines?.close(); }
 }

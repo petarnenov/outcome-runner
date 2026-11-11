@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { git } from '../src/git.ts';
-import { main } from '../src/cli.ts';
+import { main } from './support/isolated-cli.ts';
 import { runQueue } from '../src/runner.ts';
 import type { RunConfig } from '../src/model.ts';
 import { OPENSPEC_INSTALL, PreflightError, configAtOrigin, defaultPreflightDeps, isInteractive, openspecPreflight,
