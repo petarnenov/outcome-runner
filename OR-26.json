@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "OR-26",
+  "taskHash": "98f938ffb8c79834e43d4443fc9966143ca40cb41e091933aa05b3b237c9fcb0",
+  "scopes": [
+    ".gitguardian.yaml",
+    "scripts",
+    "docs"
+  ],
+  "claimant": "80cc64bf-8d72-4f3f-813a-64e67b433fe9",
+  "host": "GEO-PetarPetrov",
+  "branch": "outcome/OR-26-58f49ce074b6",
+  "claimedAt": "2026-11-11T20:15:30.599Z"
+}
