@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunStore } from '../src/run-store.ts';
+import type { InvocationIdentity } from '../src/invocation-identity.ts';
 import { CodexFiles } from '../src/codex-files.ts';
 import { PAGE_BYTES } from '../src/text-page.ts';
 import type { BrokerInput } from '../src/harness-adapter.ts';
@@ -13,7 +14,7 @@ import type { BrokerInput } from '../src/harness-adapter.ts';
 function fixture(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), 'off-broker-'));
   const root = join(directory, 'work'); mkdirSync(root);
-  const store = new RunStore(join(directory, 'state'), { leaves: ['A'], invocation: 'test' });
+  const store = new RunStore(join(directory, 'state'), { leaves: ['A'], invocation: 'test' } as unknown as InvocationIdentity);
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
   let current = true;
   const broker = new CodexFiles({ root, scopes: [{ mode: 'write', path: 'src' }],

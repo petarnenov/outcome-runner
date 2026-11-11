@@ -5,8 +5,11 @@ import { join, relative, resolve } from 'node:path';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { hash } from './model.ts';
-import type { Work } from './model.ts';
+import type { RunConfig, Work } from './model.ts';
+import { compareIdentity, invocationIdentity } from './invocation-identity.ts';
+import type { InvocationIdentity } from './invocation-identity.ts';
 
+/** The legacy (schema 1) identity: the whole resolved configuration with `root` and `leaves`. */
 export interface RunIdentity { leaves: string[]; [detail: string]: unknown }
 
 export interface OperationResult { status: string; acceptanceId?: string; [detail: string]: unknown }
@@ -25,10 +28,23 @@ export interface BlockedEntry { reason: string; paths?: string[]; work: Work }
 /** The record `outcome-runner dispose` leaves: when it last disposed and the unaccepted work it disposed. */
 export interface DisposedRecord { at: string; tasks: Record<string, Work> }
 
+/** A recorded change of an unfinished invocation; receipts written afterwards list them in `invocationChanges`. */
+export type InvocationChange =
+  | { kind: 'identity-upgraded'; from: 1; to: 2; at: string }
+  | { kind: 'setting-added'; setting: string; at: string }
+  | { kind: 'tasks-added'; tasks: string[]; at: string };
+
 export interface RunState {
   version: number;
+  /** `2` for the projected identity; absent for legacy state whose identity is the whole configuration. */
+  identitySchema?: 2;
   identityHash: string;
-  identity: RunIdentity;
+  identity: InvocationIdentity | RunIdentity;
+  /** The key of operation ids: the identity hash under which the invocation started. */
+  operationKey?: string;
+  /** The required settings recorded for this invocation: their dot path and the hash of their value. */
+  settings?: Record<string, string>;
+  changes?: InvocationChange[];
   frozen: string[];
   operations: Record<string, Operation>;
   accepted: Record<string, string>;
@@ -44,6 +60,14 @@ export interface RunState {
   statisticsSources?: import('./statistics.ts').Sources;
   disposed?: DisposedRecord;
 }
+
+export interface RunStoreOptions {
+  repositoryRoot?: string | null;
+  /** The clock of the change records; default `Date.now`. */
+  now?: () => number;
+}
+
+const INCOMPATIBLE = 'Run state is incompatible; reconcile it without discarding history';
 
 /** Writes `state` to `<directory>/state.json` atomically: a synced temporary file renamed over it, then a synced directory. */
 export function writeStateFile(directory: string, state: RunState): void {
@@ -61,10 +85,14 @@ export class RunStore {
   file: string;
   lock: DatabaseSync;
   state!: RunState;
+  now: () => number;
+  /** Whether this store created the state file. */
+  created = false;
 
-  constructor(directory: string, identity: RunIdentity,
-    { repositoryRoot = null }: { repositoryRoot?: string | null } = {}) {
+  constructor(directory: string, identity: InvocationIdentity,
+    { repositoryRoot = null, now = Date.now }: RunStoreOptions = {}) {
     this.directory = resolve(directory);
+    this.now = now;
     if (!Array.isArray(identity?.leaves) || !identity.leaves.length ||
         identity.leaves.some(id => typeof id !== 'string' || !id) ||
         new Set(identity.leaves).size !== identity.leaves.length) {
@@ -93,26 +121,55 @@ export class RunStore {
     this.lock = new DatabaseSync(lockFile);
     try {
       this.lock.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;');
+      let opened: Partial<RunState> = {};
       if (existsSync(this.file)) {
         this.state = JSON.parse(readFileSync(this.file, 'utf8'));
-        if (this.state.version !== 2 || this.state.identityHash !== hash(identity) ||
-            !this.state.operations || Array.isArray(this.state.operations) ||
-            !this.state.accepted || Array.isArray(this.state.accepted) ||
-            hash(this.state.frozen) !== hash(identity.leaves) ||
-            !Number.isSafeInteger(this.state.sequence) || typeof this.state.cancelled !== 'boolean') {
-          throw new Error('Run state is incompatible; reconcile it without discarding history');
-        }
+        opened = this.open(identity);
       } else {
-        this.state = { version: 2, identityHash: hash(identity), identity: structuredClone(identity),
-          frozen: [...identity.leaves], operations: {}, accepted: {},
+        const identityHash = hash(identity);
+        this.state = { version: 2, identitySchema: 2, identityHash, identity: structuredClone(identity),
+          operationKey: identityHash, frozen: [...identity.leaves], operations: {}, accepted: {},
           status: 'starting', cancelled: false, sequence: 0 };
+        this.created = true;
       }
-      this.update({ owner: { host: hostname(), pid: process.pid,
+      this.update({ ...opened, owner: { host: hostname(), pid: process.pid,
         startedAt: new Date(performance.timeOrigin).toISOString(), token: randomUUID() } });
     } catch (error) {
       this.lock.close();
       throw error;
     }
+  }
+
+  /**
+   * Checks existing state against `next` without writing and returns the fields to update: an intact legacy identity
+   * is migrated, and added tasks update the identity. Anything else incompatible throws.
+   */
+  private open(next: InvocationIdentity): Partial<RunState> {
+    const state = this.state;
+    if (state?.version !== 2 || !state.operations || typeof state.operations !== 'object' ||
+        Array.isArray(state.operations) || !state.accepted || typeof state.accepted !== 'object' ||
+        Array.isArray(state.accepted) || !Number.isSafeInteger(state.sequence) || typeof state.cancelled !== 'boolean' ||
+        !state.identity || typeof state.identity !== 'object' || !Array.isArray(state.identity.leaves) ||
+        !Array.isArray(state.frozen) || state.changes !== undefined && !Array.isArray(state.changes)) {
+      throw new Error(INCOMPATIBLE);
+    }
+    const legacy = state.identitySchema === undefined;
+    if (!legacy && state.identitySchema !== 2) throw new Error(INCOMPATIBLE);
+    // The recorded identity must be intact before it is trusted.
+    if (state.identityHash !== hash(state.identity) || hash(state.frozen) !== hash(state.identity.leaves)) {
+      throw new Error(INCOMPATIBLE);
+    }
+    const stored = legacy ? invocationIdentity(state.identity as unknown as RunConfig & { leaves: string[] }) :
+      state.identity as InvocationIdentity;
+    const comparison = compareIdentity(stored, next);
+    if (comparison.kind === 'incompatible') throw new Error(INCOMPATIBLE);
+    if (!legacy && comparison.kind === 'same') return {};
+    const at = new Date(this.now()).toISOString();
+    const changes: InvocationChange[] = [...(state.changes ?? [])];
+    if (legacy) changes.push({ kind: 'identity-upgraded', from: 1, to: 2, at });
+    if (comparison.kind === 'tasks-added') changes.push({ kind: 'tasks-added', tasks: comparison.tasks, at });
+    return { identitySchema: 2, identity: structuredClone(next), identityHash: hash(next), frozen: [...next.leaves],
+      operationKey: state.operationKey ?? state.identityHash, changes };
   }
 
   update(fields: Partial<RunState>): RunState {
@@ -122,8 +179,25 @@ export class RunStore {
     return next;
   }
 
+  /**
+   * Records the required settings present in the invocation (dot path to value hash). A new state records them
+   * without a change; on resume, every path not recorded before appends a `setting-added` change. Values are never
+   * stored.
+   */
+  recordSettings(present: Record<string, string>): RunState {
+    const known = this.state.settings ?? {};
+    if (this.created) {
+      return this.state.settings && hash(known) === hash(present) ? this.state : this.update({ settings: present });
+    }
+    const added = Object.keys(present).filter(path => !Object.hasOwn(known, path)).sort();
+    if (!added.length) return this.state;
+    const at = new Date(this.now()).toISOString();
+    return this.update({ settings: { ...known, ...present }, changes: [...(this.state.changes ?? []),
+      ...added.map(setting => ({ kind: 'setting-added', setting, at }) as InvocationChange)] });
+  }
+
   intend(action: unknown, fingerprint: string): Operation {
-    const id = `run-${hash({ identity: this.state.identityHash, action, fingerprint })}`;
+    const id = `run-${hash({ identity: this.state.operationKey ?? this.state.identityHash, action, fingerprint })}`;
     if (!this.state.operations[id]) {
       this.update({ operations: { ...this.state.operations,
         [id]: { id, action, fingerprint, status: 'intended' } } });

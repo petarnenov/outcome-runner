@@ -15,6 +15,9 @@ import { command, git, gitPage, fileAt, hasRef, receiptAt, GitHubHost, assertOri
 import { lockRootOf, withGitLock } from './git-lock.ts';
 import { pageOffset, readPage } from './text-page.ts';
 import { RunStore } from './run-store.ts';
+import { invocationIdentity, missingSetting, MissingSettingError, REQUIRED_SETTINGS,
+  settingAt } from './invocation-identity.ts';
+import type { RequiredSetting } from './invocation-identity.ts';
 import { buildCompletion, validCompletion } from './completion.ts';
 import { ClaimLedger } from './claims.ts';
 import type { Claim, LedgerSnapshot } from './claims.ts';
@@ -98,6 +101,8 @@ export interface RunOptions {
   runCommand?: CommandRunner;
   /** Receives each step line (with its newline) before the step starts; the default writes to stderr. */
   steps?: StepOutput;
+  /** Settings the invocation file must contain; the default is `REQUIRED_SETTINGS`. */
+  requiredSettings?: readonly RequiredSetting[];
 }
 
 interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
@@ -339,13 +344,18 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
 }
 
 async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog): Promise<RunResult> {
+  // A setting this runner requires and the invocation lacks refuses the run before any preflight, lock, state,
+  // ownership file, claim or worktree is touched.
+  const required = options.requiredSettings ?? REQUIRED_SETTINGS;
+  const lacking = missingSetting(requested, required);
+  if (lacking) throw new MissingSettingError(lacking);
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
   // the test framework analysis, the lock, claims and worktrees.
   const statistics = options.statistics;
   const signal = options.signal;
   step('run', 'preflight', 'checking OpenSpec');
   await cancellable(openspecPreflight(requested, { ...options.openspec, signal }), signal);
-  // Selected values enter the configuration before it is hashed, so they are frozen exactly like flags.
+  // Selected values enter the configuration before the identity is projected, so they are frozen exactly like flags.
   // A Codex selection reads Codex once; resolution reuses that read instead of opening another session.
   let sources: Sources = {}; let harnessVersion: string | undefined;
   step('run', 'preflight', 'checking the harness version');
@@ -407,14 +417,14 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       throw Object.assign(new Error(`This invocation is already running in another process (${(error as Error).message})`),
         { reason: 'invocation-running' });
     }
+    // Identity compatibility is the run store's decision; only another state directory's unreleased file refuses.
     if (existsSync(ownershipFile)) {
       const previous = JSON.parse(readFileSync(ownershipFile, 'utf8'));
-      if (!previous.released && (previous.identity !== hash(config) ||
-          previous.stateDirectory !== resolve(config.stateDirectory))) {
+      if (!previous.released && previous.stateDirectory !== resolve(config.stateDirectory)) {
         throw new Error('Another durable invocation owns unfinished work in this repository');
       }
     }
-    const ownership = { identity: hash(config), stateDirectory: resolve(config.stateDirectory), released: false };
+    const ownership = { identity: '', stateDirectory: resolve(config.stateDirectory), released: false };
     let released = false;
     const release = () => {
       writeFileSync(ownershipFile, JSON.stringify({ ...ownership, released: true }));
@@ -449,13 +459,19 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         .map(([id, dependencies]) => `${id} needs ${dependencies.join(', ')}`).join('; ')}`),
       { reason: 'dependencies-outside-invocation', details: { missing: missingByTask } });
     }
-    store = new RunStore(config.stateDirectory, { ...config, root, leaves: ids }, { repositoryRoot: root });
+    // Only what the owner authorised enters the identity, so newer runner defaults never change it.
+    const identity = invocationIdentity({ ...config, root, leaves: ids });
+    ownership.identity = hash(identity);
+    store = new RunStore(config.stateDirectory, identity, { repositoryRoot: root, now });
     // A disposed invocation is never resumed, so its kept work is never picked up without a claim. The refusal
     // precedes the ownership file; the store is closed by the finally below.
     if (store.state.disposed) {
       throw Object.assign(new Error('This invocation was disposed; start new work with a new invocation name'),
         { reason: 'invocation-disposed' });
     }
+    // Required settings are recorded by path and value hash only; one added on resume is recorded as a change.
+    store.recordSettings(Object.fromEntries(required.map(setting =>
+      [setting.path, hash(settingAt(requested, setting.path))])));
     const stateFile = join(store.directory, 'state.json');
     sources = store.state.statisticsSources ?? sources;
     if (!store.state.statisticsSources) store.update({ statisticsSources: sources });
@@ -1126,11 +1142,14 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             throw new Error('Empty or out-of-scope result manifest');
           }
           const manifest = paths.map(path => ({ path, hash: digest(readFileSync(join(work.path, path))) }));
+          // The changes recorded for the invocation so far (runner upgrade, added settings or tasks) are listed.
+          const changes = store.state.changes ?? [];
           const receipt = { version: 1, id: work.id, taskHash: work.taskHash,
             authority: config.authority.reference, target: project.target, specification: now.specification,
             review: { ...reviewRecord(now.review!), accepted: true },
             checks: checkRecords(now.documentationChecks ?? now.checks!), manifest,
-            head: git(work.path, 'rev-parse', 'HEAD'), base: now.base };
+            head: git(work.path, 'rev-parse', 'HEAD'), base: now.base,
+            ...(changes.length ? { invocationChanges: structuredClone(changes) } : {}) };
           const path = join(work.path, receiptPath(work.id)); mkdirSync(dirname(path), { recursive: true });
           writeFileSync(path, JSON.stringify(receipt, null, 2) + '\n');
           taskStep(work.id, 'commit', 'committing the receipt');

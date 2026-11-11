@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "id": "OR-21",
+  "taskHash": "45e18a1b4ff343748ccc7554693904d75542651d118b192bbb634ee376bd8f8b",
+  "authority": "owner-2026-11-11-outcome-runner-or-18-24",
+  "target": "main",
+  "specification": {
+    "openspec/changes/archive/2026-11-12-evolve-invocation/design.md": "fb9349cd59be99d045c62f5a44db74303de9ea2f5f770580630503a9d82ba112",
+    "openspec/changes/archive/2026-11-12-evolve-invocation/proposal.md": "e5d9b3ffff63f76375b5daffb0bf13b01b86dac6a68b5bc08efbf4d56eb7f0b5",
+    "openspec/changes/archive/2026-11-12-evolve-invocation/specs/invocation-evolution/spec.md": "58ba51a3618317de10c828a3b261d5e6f78ad98760bd1a97cb38d61c69d2492a"
+  },
+  "review": {
+    "reviewer": "claude:352785d3-b01e-4701-aa88-966adb18b6a9",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "441aa1634600ba7fe9e6c2eb433050633d6c47fa68df8bde3d54b9e9debde7f2"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-evolve-invocation/design.md",
+      "hash": "fb9349cd59be99d045c62f5a44db74303de9ea2f5f770580630503a9d82ba112"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-evolve-invocation/proposal.md",
+      "hash": "e5d9b3ffff63f76375b5daffb0bf13b01b86dac6a68b5bc08efbf4d56eb7f0b5"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-evolve-invocation/specs/invocation-evolution/spec.md",
+      "hash": "58ba51a3618317de10c828a3b261d5e6f78ad98760bd1a97cb38d61c69d2492a"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-evolve-invocation/tasks.md",
+      "hash": "b6d70ca9b33e249edb2d59871caa0e08b7766e9d1ca4297a40cc6d5b4169e711"
+    },
+    {
+      "path": "openspec/specs/invocation-evolution/spec.md",
+      "hash": "0cab2a14eebb33b885211a937a402e851b6b88d168e424a98c3a2108416aeba1"
+    },
+    {
+      "path": "src/cli.ts",
+      "hash": "052877b0e2508c45239886e6bc95ea102f311e390b75507a9555f84072672fca"
+    },
+    {
+      "path": "src/git.ts",
+      "hash": "40981a7be58ea4b7a7508245e5250660d63599b9cb81f88d80f9662e28d256d4"
+    },
+    {
+      "path": "src/invocation-identity.ts",
+      "hash": "94f984628f1b0d38986eb70043e090434338519bf9c7ac24f910f6c0e5c5fb90"
+    },
+    {
+      "path": "src/run-store.ts",
+      "hash": "5e289fb02c51aa787c177a5862302d88673b65fea45c28b710731c62dfb644b6"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "cf56643d9c9ba2f37bdae909471529048f6e1f8052046bed6ef6ee53ca23c782"
+    },
+    {
+      "path": "src/statistics.ts",
+      "hash": "2e850630298ad4470131985d3f39094885785da6351cbfa7f7660925b9c0c066"
+    },
+    {
+      "path": "test/harness-selection.test.ts",
+      "hash": "29a645cb5ff2a5cab2f2777f547cdb3e85c486e54b5435dfb38bf61f2bfd9aca"
+    },
+    {
+      "path": "test/invocation-evolution.test.ts",
+      "hash": "4f0ae66f604496daf05d9d8b403ad02881294555bc1afe2fd1af2e8679d91a3c"
+    },
+    {
+      "path": "test/runner-claude.test.ts",
+      "hash": "baf5ad522186f4eef682fdf444079eb5859d1a36390d708f4e94b556c9e67c93"
+    },
+    {
+      "path": "test/runner-files.test.ts",
+      "hash": "66c9c7a75b749beabe6c31469f6c50601812986608a0069e6ee90e3235a9b486"
+    },
+    {
+      "path": "test/runner-harness.test.ts",
+      "hash": "49b0255df3bcebadb5828761b9ab173876897ec1631790d13bda1bc84453e832"
+    },
+    {
+      "path": "test/runner-store.test.ts",
+      "hash": "5cf9ed9b8fc5acd66b72ff7fbbc47da33d122bb3bccbc3e9e4009ceb06394d48"
+    },
+    {
+      "path": "test/runner-transport.test.ts",
+      "hash": "774e9714f17ed6ac398dbee17fdf876670a4a1e9d62047bdee98191f99bb87a2"
+    },
+    {
+      "path": "test/runner.test.ts",
+      "hash": "567d0fe7da2969e1bd93fbf5ef1cd61a778411e37ef8d0894676a34473a3c6cb"
+    }
+  ],
+  "head": "88c2ab6e30fc629c593d9192c2d5c58d01a5b0f9",
+  "base": "6d6b5a617d5006a6c451f4350953db7bf3111f87"
+}

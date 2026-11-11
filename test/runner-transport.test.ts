@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { CodexAdapter, codexEnvironment, codexRestrictions } from '../src/codex-adapter.ts';
 import type { SessionHandle, ToolInput, WorkerProcess, WorkerReply } from '../src/harness-adapter.ts';
 import { RunStore } from '../src/run-store.ts';
+import type { InvocationIdentity } from '../src/invocation-identity.ts';
 import { CodexFiles, brokerTool } from '../src/codex-files.ts';
 import type { FakeChild } from './support/types.ts';
 
@@ -70,7 +71,8 @@ test('installed Codex uses scoped broker across actual session resume', {
 }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'off-codex-live-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const store = new RunStore(join(directory, 'state'), { invocation: 'live-smoke', leaves: ['A'] });
+  const store = new RunStore(join(directory, 'state'),
+    { invocation: 'live-smoke', leaves: ['A'] } as unknown as InvocationIdentity);
   t.after(() => store.close());
   const broker = new CodexFiles({ root: directory, scopes: [{ mode: 'write', path: 'output' }],
     store, identity: { worker: 'codex-smoke', generation: 1 }, revalidate: async () => true });

@@ -5,9 +5,11 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSyn
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { RunStore } from '../src/run-store.ts';
-import type { OperationResult, RunIdentity } from '../src/run-store.ts';
+import type { OperationResult } from '../src/run-store.ts';
+import type { InvocationIdentity } from '../src/invocation-identity.ts';
 
-const identity = { leaves: ['A'], invocation: 'one' };
+// A partial identity: the store compares identities and needs only the leaves to be valid.
+const identity = { leaves: ['A'], invocation: 'one' } as unknown as InvocationIdentity;
 function directory(t: TestContext) {
   const path = mkdtempSync(join(tmpdir(), 'codex-state-'));
   t.after(() => rmSync(path, { recursive: true, force: true })); return path;
@@ -36,7 +38,7 @@ test('state survives restart, excludes concurrent owners and counts only accepte
 test('state rejects unsafe locations, links and invalid frozen universes', t => {
   const root = directory(t); const repository = join(root, 'repo'); mkdirSync(repository);
   for (const leaves of [undefined, [], [''], ['A', 'A']]) {
-    assert.throws(() => new RunStore(join(root, 'bad'), { leaves } as RunIdentity), /nonempty/u);
+    assert.throws(() => new RunStore(join(root, 'bad'), { leaves } as unknown as InvocationIdentity), /nonempty/u);
   }
   assert.throws(() => new RunStore(join(repository, 'state'), identity, { repositoryRoot: repository }), /outside/u);
   const alias = join(root, 'alias'); symlinkSync(repository, alias);
