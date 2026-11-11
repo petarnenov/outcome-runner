@@ -1395,3 +1395,59 @@ test('A: repeated cancellation races worker rejection and cleanup without duplic
   assert.equal(record.status, 'cancelled'); assert.equal(record.tasks[0].blockingReason, 'cancelled');
   assert.equal(record.tasks[0].lastStage, 'investigate'); assert.ok(!lines[0].includes('SECRET_'));
 });
+
+test('C: ledger retains an existing closed PR while refusing creation and merge', async t => {
+  const f = fixture(t); const env = { XDG_STATE_HOME: join(f.base, 'closed-pr-ledger') };
+  const { root: _root, stateDirectory: _state, ...invocation } = { ...f.config, leaves: ['A'] };
+  const path = join(f.base, 'closed-pr-invocation.json'); writeFileSync(path, JSON.stringify(invocation));
+  const pr = { number: 42, url: 'https://example.org/pull/42', state: 'CLOSED' };
+  f.host.find = () => pr;
+  f.host.create = () => { assert.fail('Existing closed PR must not create another PR'); };
+  f.host.merge = () => { assert.fail('Closed PR must not merge'); };
+  const code = await ledgerMain(path, (config, options) => runQueue({
+    ...config, stateDirectory: f.config.stateDirectory,
+  }, { ...options, host: f.host, createAdapter: scripted }), () => {}, { cwd: f.root, env });
+  assert.equal(code, 3);
+  const lines = readFileSync(ledgerPath(env), 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1);
+  const record = JSON.parse(lines[0]) as RunStatistics;
+  assert.equal(record.status, 'incomplete'); assert.equal(record.tasks.length, 1);
+  assert.equal(record.tasks[0].outcome, 'blocked'); assert.equal(record.tasks[0].lastStage, 'pr');
+  assert.deepEqual(record.tasks[0].pr, { number: pr.number, url: pr.url });
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+  assert.match(state.blocked.A.reason, /closed/u);
+  assert.equal(f.records.length, 0);
+});
+
+test('B: ledger recovers the PR URL from lookup for legacy merge-stage work', async t => {
+  const f = fixture(t); const env = { XDG_STATE_HOME: join(f.base, 'legacy-pr-ledger') };
+  const { root: _root, stateDirectory: _state, ...invocation } = { ...f.config, leaves: ['A'] };
+  const path = join(f.base, 'legacy-pr-invocation.json'); writeFileSync(path, JSON.stringify(invocation));
+  const create = f.host.create;
+  f.host.create = work => { const pr = create(work); pr.url = 'https://example.org/pull/' + pr.number; return pr; };
+  const execute = (resume: boolean) => ledgerMain(path, (config, options) => runQueue({
+    ...config, stateDirectory: f.config.stateDirectory,
+  }, { ...options, host: f.host,
+    createAdapter: resume ? () => { throw new Error('Merge recovery must not start a worker'); } : scripted,
+    afterEffect: async kind => {
+      if (!resume && kind === 'pr') throw Object.assign(new Error('Fixture interruption'), { interrupted: true });
+    },
+  }), line => {
+    const result = JSON.parse(line);
+    if (result.diagnostics) t.after(() => rmSync(join(result.diagnostics, '..'), { recursive: true, force: true }));
+  }, { cwd: f.root, env });
+  assert.equal(await execute(false), 4);
+  const statePath = join(f.config.stateDirectory, 'state.json');
+  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  state.current.stage = 'merge'; delete state.current.pr.url;
+  writeFileSync(statePath, JSON.stringify(state));
+  assert.equal(await execute(true), 0);
+  const rows = readFileSync(ledgerPath(env), 'utf8').trim().split('\n').map(line => JSON.parse(line) as RunStatistics);
+  assert.equal(rows.length, 2); assert.notEqual(rows[0].runId, rows[1].runId);
+  assert.equal(rows[1].status, 'exhausted'); assert.equal(rows[1].tasks.length, 1);
+  assert.equal(rows[1].tasks[0].outcome, 'accepted'); assert.equal(rows[1].tasks[0].lastStage, 'merge');
+  assert.deepEqual(rows[1].tasks[0].pr, { number: 1, url: 'https://example.org/pull/1' });
+  assert.equal(f.records.length, 1); assert.equal(f.records[0].state, 'MERGED');
+  const finished = JSON.parse(readFileSync(statePath, 'utf8'));
+  assert.deepEqual(finished.completed.A.pr, f.records[0]);
+});

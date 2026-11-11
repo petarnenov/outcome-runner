@@ -186,6 +186,10 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       return result;
     };
     const activeWork = () => store.state.current as Work;
+    const rememberPr = (pr: PullRequest) => {
+      const previous = activeWork().pr;
+      save({ pr: { ...pr, url: pr.url ?? (previous?.number === pr.number ? previous.url : undefined) } });
+    };
     const authorized = (queue: Queue, id: string): Task => {
       const task = queue.tasks.find(item => item.id === id);
       if (!task || hash(task) !== config.authority.tasks[id]) throw new Error('Task source differs from frozen authority');
@@ -536,13 +540,14 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             `Checks: ${JSON.stringify(checkRecords(now.finalChecks!))}\n` +
             `Reviews: ${JSON.stringify(now.reviews!.map(reviewRecord))}\n`);
           let pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
+          if (pr) rememberPr(pr);
           if (!pr) {
             pr = await cancellable(Promise.resolve(host.create(now, body)), signal);
-            if (pr) save({ pr });
+            if (pr) rememberPr(pr);
             await cancellable(afterEffect('pr', pr), signal);
           }
           if (!pr || pr.state === 'CLOSED') throw new Error('PR unavailable or closed');
-          save({ pr, stage: 'merge' });
+          save({ stage: 'merge' });
         }
         if (activeWork().stage === 'merge') {
           const now = activeWork();
@@ -551,6 +556,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           for (let view = 1; ; view += 1) {
             const pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
             if (!pr) throw new Error('Recorded PR missing');
+            rememberPr(pr);
             if (pr.state === 'MERGED') break;
             if (pr.state !== 'OPEN') throw new Error('PR unavailable or closed');
             assertWork(now);
