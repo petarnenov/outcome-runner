@@ -1,3 +1,9 @@
+## 0.11.1 - 2026-11-11
+
+### Fixes
+
+- let workers delete files inside their write scope (1559662)
+
 ## 0.11.0 - 2026-11-11
 
 ### Features
