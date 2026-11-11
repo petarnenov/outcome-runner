@@ -412,6 +412,12 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       { reason: 'dependencies-outside-invocation', details: { missing: missingByTask } });
     }
     store = new RunStore(config.stateDirectory, { ...config, root, leaves: ids }, { repositoryRoot: root });
+    // A disposed invocation is never resumed, so its kept work is never picked up without a claim. The refusal
+    // precedes the ownership file; the store is closed by the finally below.
+    if (store.state.disposed) {
+      throw Object.assign(new Error('This invocation was disposed; start new work with a new invocation name'),
+        { reason: 'invocation-disposed' });
+    }
     const stateFile = join(store.directory, 'state.json');
     sources = store.state.statisticsSources ?? sources;
     if (!store.state.statisticsSources) store.update({ statisticsSources: sources });

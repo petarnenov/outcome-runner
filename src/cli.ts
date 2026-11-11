@@ -5,11 +5,12 @@ import { Statistics, appendStatistics, safeFailure } from './statistics.ts';
 import type { LedgerEffects, Status } from './statistics.ts';
 import { git } from './git.ts';
 import { runQueue } from './runner.ts';
-import type { RunEvent, RunOptions } from './runner.ts';
+import type { PullRequestHost, RunEvent, RunOptions } from './runner.ts';
 import { hash, validateQueue, resolveCoverage } from './model.ts';
 import type { Harness, RunConfig } from './model.ts';
 import { harnesses } from './harness-catalog.ts';
 import { resolveRunPaths } from './run-paths.ts';
+import { disposeInvocation } from './dispose.ts';
 import { playMascot } from '../mascot/mascot.ts';
 import type { MascotMood } from '../mascot/mascot.ts';
 import { runMascot, taskMascot } from './mascot-events.ts';
@@ -28,6 +29,13 @@ export interface MainOptions {
   ledger?: { env?: NodeJS.ProcessEnv; home?: string; stderr?: (line: string) => void; effects?: LedgerEffects };
   /** Mascot player; the default plays `mascot/mascot.ts` on stderr. */
   mascot?: MascotPlayer;
+}
+
+export interface DisposeCommandOptions {
+  /** Only `--remove-work`, at most once. */
+  args?: string[]; cwd?: string; env?: NodeJS.ProcessEnv;
+  /** The pull request host; the default is the GitHub host of the project. */
+  host?: PullRequestHost;
 }
 
 const writeOutput: Output = line => process.stdout.write(line);
@@ -142,6 +150,27 @@ export async function main(path: string, runner: Runner = runQueue, output: Outp
   return code;
 }
 
+/**
+ * `outcome-runner dispose <invocation file> [--remove-work]`: resolves the invocation like a run, disposes of it and
+ * prints the summary as one JSON line (exit 0). A refusal or failure prints the `unavailable` line (exit 4). It plays
+ * no mascot and records no statistics, because it is not a run.
+ */
+export async function dispose(path: string, output: Output = writeOutput,
+  { args = [], cwd, env, host }: DisposeCommandOptions = {}): Promise<number> {
+  try {
+    if (args.length > 1 || args.some(arg => arg !== '--remove-work')) {
+      throw new Error(`Expected only --remove-work, at most once; rejected ${JSON.stringify(args)}`);
+    }
+    const config = resolveRunPaths(readJson(path), { cwd, env });
+    const summary = await disposeInvocation(config, { removeWork: args.length === 1, host });
+    output(JSON.stringify(summary) + '\n');
+    return 0;
+  } catch (error) {
+    reportFailure(error, output);
+    return 4;
+  }
+}
+
 export function printTaskHashes(queuePath: string, output: Output = writeOutput): number {
   try {
     const { tasks } = validateQueue(readJson(queuePath));
@@ -153,6 +182,10 @@ export function printTaskHashes(queuePath: string, output: Output = writeOutput)
   }
 }
 
-export function run([command, ...rest]: string[]): number | Promise<number> {
+/** Entry points of the subcommands; the parameter exists so tests can check the dispatch. */
+export interface Commands { dispose: typeof dispose }
+
+export function run([command, ...rest]: string[], commands: Commands = { dispose }): number | Promise<number> {
+  if (command === 'dispose') return commands.dispose(rest[0], undefined, { args: rest.slice(1) });
   return command === 'hash' ? printTaskHashes(rest[0]) : main(command, runQueue, undefined, { args: rest });
 }

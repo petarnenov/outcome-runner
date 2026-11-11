@@ -58,16 +58,32 @@ export class ClaimLedger {
 
   // A plain push is the compare-and-swap; false means another claim won.
   acquire({ head }: Pick<LedgerSnapshot, 'head'>, claim: Claim, message: string): boolean {
+    return this.withLock(() => this.push(head, this.commitClaim(head, claim, message)));
+  }
+
+  /**
+   * Removes the claims `ids` in one commit on top of the snapshot head, pushed with the compare-and-swap of
+   * `acquire`. Returns false when the remote head moved; makes no commit when `ids` is empty or the ledger is empty.
+   */
+  release({ head }: Pick<LedgerSnapshot, 'head'>, ids: string[], message: string): boolean {
+    if (!ids.length || !head) return true;
     return this.withLock(() => {
-      const commit = this.commitClaim(head, claim, message);
-      try {
-        git(this.root, 'push', 'origin', `${commit}:${this.ref}`);
-        return true;
-      } catch (error) {
-        if (this.remoteHead() !== head) return false;
-        throw error;
-      }
+      const removed = new Set(ids.map(id => `${id}.json`));
+      const entries = git(this.root, 'ls-tree', head).split('\n').filter(Boolean)
+        .filter(entry => !removed.has(entry.slice(entry.indexOf('\t') + 1)));
+      const tree = gitWithInput(this.root, entries.map(entry => `${entry}\n`).join(''), 'mktree');
+      return this.push(head, git(this.root, 'commit-tree', tree, '-p', head, '-m', message));
     });
+  }
+
+  private push(head: string | null, commit: string): boolean {
+    try {
+      git(this.root, 'push', 'origin', `${commit}:${this.ref}`);
+      return true;
+    } catch (error) {
+      if (this.remoteHead() !== head) return false;
+      throw error;
+    }
   }
 
   commitClaim(head: string | null, claim: Claim, message: string): string {

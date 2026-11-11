@@ -21,6 +21,9 @@ export interface Operation {
 
 export interface BlockedEntry { reason: string; work: Work }
 
+/** The record `outcome-runner dispose` leaves: when it last disposed and the unaccepted work it disposed. */
+export interface DisposedRecord { at: string; tasks: Record<string, Work> }
+
 export interface RunState {
   version: number;
   identityHash: string;
@@ -38,6 +41,18 @@ export interface RunState {
   blocked?: Record<string, BlockedEntry>;
   baselineDone?: string[];
   statisticsSources?: import('./statistics.ts').Sources;
+  disposed?: DisposedRecord;
+}
+
+/** Writes `state` to `<directory>/state.json` atomically: a synced temporary file renamed over it, then a synced directory. */
+export function writeStateFile(directory: string, state: RunState): void {
+  const temporary = join(directory, `state-${randomUUID()}.tmp`);
+  const fd = openSync(temporary, 'wx', 0o600);
+  try { writeFileSync(fd, `${JSON.stringify(state)}\n`); fsyncSync(fd); }
+  finally { closeSync(fd); }
+  renameSync(temporary, join(directory, 'state.json'));
+  const dir = openSync(directory, 'r');
+  try { fsyncSync(dir); } finally { closeSync(dir); }
 }
 
 export class RunStore {
@@ -101,13 +116,7 @@ export class RunStore {
 
   update(fields: Partial<RunState>): RunState {
     const next = { ...this.state, ...fields, sequence: this.state.sequence + 1 };
-    const temporary = join(this.directory, `state-${randomUUID()}.tmp`);
-    const fd = openSync(temporary, 'wx', 0o600);
-    try { writeFileSync(fd, `${JSON.stringify(next)}\n`); fsyncSync(fd); }
-    finally { closeSync(fd); }
-    renameSync(temporary, this.file);
-    const dir = openSync(this.directory, 'r');
-    try { fsyncSync(dir); } finally { closeSync(dir); }
+    writeStateFile(this.directory, next);
     this.state = next;
     return next;
   }
