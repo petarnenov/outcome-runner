@@ -51,7 +51,8 @@ export interface RunOptions {
   host?: PullRequestHost;
   createAdapter?: (options: HarnessOptions) => HarnessAdapter;
   afterEffect?: (operation: string, subject: Work | PullRequest | null) => Promise<void>;
-  report?: (event: RunEvent) => void;
+  /** Reports a task event; `detail` is private (for example the blocked reason) and is never serialized. */
+  report?: (event: RunEvent, detail?: { reason?: string }) => void;
   /** Injectable effects of the OpenSpec preflight; omitted fields use the real process, TTY and filesystem. */
   openspec?: Partial<PreflightDeps>;
   /** Injectable prompts, harness probes, Codex reader and recorded state of the harness selection. */
@@ -595,7 +596,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
         if ((error as InterruptedFailure).interrupted) throw error;
         store.update({ blocked: { ...store.state.blocked, [work.id]: {
           reason: (error as Error).message, work: activeWork() } }, current: null });
-        report({ status: 'blocked', id: work.id });
+        // The reason reaches only the stderr mascot caption; the serialized event stays unchanged.
+        report({ status: 'blocked', id: work.id }, { reason: (error as Error).message });
       }
     }
   } finally {
