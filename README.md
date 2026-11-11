@@ -141,6 +141,9 @@ Save it as, for example, `~/invocations/my-project-1.json`:
   with `{coverage}` in an argument.
 - If a fresh worktree needs dependencies, add
   `"setup": [{ "command": "npm", "args": ["ci"] }]` to `project`.
+- The OpenSpec change is archived before the Pull Request with
+  `openspec archive {change} --yes`; set `project.archive` to use another
+  command. See [Documentation and archive](#documentation-and-archive).
 - Without `leaves`, every task in `authority.tasks` runs.
 - Leave out `coverage` (and `harness`, `model`, `effort`) to be asked for it
   when the run starts from a terminal; see [Harness selection](#harness-selection).
@@ -472,6 +475,13 @@ configuration. Claims are never taken over automatically. After confirming that
 a machine stopped and will not resume, delete its claim file on the claims branch
 in a normal commit and push.
 
+Each task goes through these stages, and every stage is saved in the run state
+before its next step starts: claim, investigation, planning and planning review,
+implementation and implementation review, then documentation, documentation
+review, project checks, archive, receipt, publish, Pull Request and merge. See
+[Documentation and archive](#documentation-and-archive) for the stages after the
+implementation review.
+
 ## Project and authority
 
 Commit a version 1 queue containing `tasks`. Each task has `id`, `title`,
@@ -489,11 +499,12 @@ covering owner instruction. Do not transfer grants between projects.
 
 The `project` object supplies repository-relative `queue`, `changes`, `receipts`,
 Git `target`, explicit PR `repository`, mandatory `planningCheck`, nonempty
-`checks` and optional `setup`, `commitScope` and `commitSuffix`. Commands have fixed `command` and `args` fields.
+`checks` and optional `setup`, `archive`, `commitScope` and `commitSuffix`. Commands have fixed `command` and `args` fields.
 Arguments may contain `{coverage}`, `{change}`, `{target}` and `{scope}` (the first authorized product scope). They run as argument arrays,
 not worker-supplied shell strings. The owner must review these commands and
 include every project-required gate. A check exiting successfully is evidence
-only for what that check actually validates.
+only for what that check actually validates. The `archive` command accepts only
+the `{change}` placeholder; see [Documentation and archive](#documentation-and-archive).
 
 Normal branch protection applies. A suitable planning check is
 `openspec validate {change} --strict`. Fresh package worktrees need the project's
@@ -580,9 +591,10 @@ blocked dependencies or protected merges return incomplete without asking a
 person anything. Independent work may proceed only without overlapping held
 scopes. Receipts validate outputs at their first accepted target commit; later ordinary
 changes preserve historical acceptance. Removed or altered receipts do not prove
-completion. A target that advanced without touching the task scopes or change
-directory is merged into the result and all final checks run again. A target
-change inside that scope is reported incomplete.
+completion. A target that advanced without touching the task scopes, the change
+directory, the archived change directory or the `openspec/specs` files written by
+the archive is merged into the result and all final checks run again. A target
+change inside any of them is reported incomplete.
 
 ## Completion summaries
 
@@ -643,6 +655,72 @@ The controller does not parse `tasks.md`; the planning review and the
 implementation review enforce these rules before specification binding and
 acceptance. Retried and resumed sessions receive the same instructions and
 percentage from the frozen threshold.
+
+## Documentation and archive
+
+After the implementation review is accepted, a task runs these stages, in this
+order, before its receipt, publish, Pull Request and merge:
+
+| Stage | What happens |
+|---|---|
+| `document` | A worker session with the selected harness, model and effort updates the documentation inside the task scopes |
+| `document-review` | An independent review session checks the documentation changes |
+| `final-checks` | The project checks run again and must pass |
+| `archive` | The OpenSpec change is archived and its spec deltas are applied |
+
+Each stage is saved in the run state before the next step starts. A restart
+continues at the saved stage without repeating a completed step: a restart in
+`document-review` reviews the recorded documentation without another
+documentation session, a restart in `final-checks` does not review the
+documentation again, and the archive never runs twice.
+
+**Documentation.** Documentation files are README files, Markdown files (`.md`
+and `.mdx`) and files under `docs` or `doc` directories. The documentation
+session may write only documentation files inside the task scopes; every other
+write or delete is refused. It updates them so that they match the implemented
+behaviour and the task criteria. Documentation outside the scopes that needs
+changes is reported as findings and listed in the Pull Request body under
+`Documentation outside scope`. The documentation commit contains only
+documentation files inside the scopes.
+
+**Documentation review.** A fresh review session checks the documentation
+changes against the implementation, the criteria and the scopes, and accepts
+only with zero findings. Findings go back to a new documentation session. Like
+planning and implementation it allows at most 4 rounds; after that the task is
+blocked with `Documentation review remains unresolved`. After acceptance the
+project `checks` run again (`final-checks`); a failure blocks the task before
+the archive.
+
+**Archive.** The runner archives the change with the project command
+`archive`, run as an argument array (never through a shell) in the task
+worktree, with `{change}` replaced by the task change name. When `project.archive`
+is not set the command is `openspec archive {change} --yes`:
+
+```json
+"archive": { "command": "openspec", "args": ["archive", "{change}", "--yes"] }
+```
+
+The archive moves the change directory to
+`<changes>/archive/<YYYY-MM-DD>-<change>` (for example
+`openspec/changes/archive/2026-11-11-implement-finite-counter`) and applies the
+spec deltas to `openspec/specs` (the `specs` directory next to `<changes>`). The
+runner commits both on the task branch. A failing archive command blocks the
+task with its bounded failure output.
+
+After the archive, the specification binding follows the files: every bound
+path is re-keyed to the same file in the archived change directory, and each
+file must exist there with the same hash. Otherwise the task is blocked with
+`Archived specification differs from binding`. Later integrity checks (receipt,
+publish and merge) use the archived paths.
+
+**Receipt and Pull Request.** The result manifest accepts paths inside the task
+scopes, the archived change directory and the `openspec/specs` files written by
+the archive; any other path blocks the task. The receipt records the archived
+specification paths. Receipts written before this stage, with unarchived
+specification paths, stay valid. The Pull Request body lists the updated
+documentation files under `Documentation updated`, the archived change directory
+under `Archived change`, and, when there are any, the findings under
+`Documentation outside scope`.
 
 ## Run statistics ledger
 
@@ -715,7 +793,7 @@ Each `tasks` entry contains:
 | id | string, task ID |
 | change | string, task change name |
 | outcome | accepted, blocked, claimed-elsewhere or not-started |
-| lastStage | string or null; claim, investigate, plan, work, receipt, publish, pr or merge |
+| lastStage | string or null; claim, investigate, plan, work, document, document-review, final-checks, archive, receipt, publish, pr or merge |
 | blockingReason | string or null; safe controller reason code when blocked |
 | durationSeconds | nonnegative number or null; OR-5 persisted claim-to-acceptance duration for accepted tasks |
 | complexityGrade | A, B, C, D, E or null |
@@ -731,6 +809,8 @@ Each `tasks` entry contains:
 
 `workerSessions.investigate`, `.plan`, `.work` and `.review` are
 nonnegative integer start counts, including sessions interrupted before reply.
+Documentation sessions and documentation reviews are not counted there, but
+their token usage is part of `tokenUsage`.
 Review counts and ordered findings arrays describe known durable history once,
 including recovered history. `finalChecks[].command` is a string,
 `.args` is string[] and `.outcome` is a string (`passed` or `failed`);
@@ -840,7 +920,9 @@ selection's answers, harness probes and Codex reader, so no test starts a real
 `claude` or `codex`. The test framework preflight is scripted the same way: a
 scripted analysis session, answers, install executor, snapshots and in-memory
 file writes, so no test starts a real harness, runs a package manager or uses a
-real TTY. The mascot tests inject a recording player through `main`, so they
+real TTY. The archive command runs through an injectable command runner, so
+tests archive with a scripted command and never run `openspec archive`. The
+mascot tests inject a recording player through `main`, so they
 need no real terminal or timers. The `live:*` scripts exercise a real
 harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
 
