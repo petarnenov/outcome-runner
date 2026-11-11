@@ -217,6 +217,18 @@ test('scripted prompts carry graded instructions at a non-default threshold thro
   assert.equal(new Set(byKind(prompts, 'planningReview')).size, 1);
 });
 
+// B: every worker prompt explains the write path under the read-only sandbox and that binding is the runner's job.
+test('scripted prompts explain the read-only sandbox write path and runner-owned binding', async t => {
+  const f = fixture(t); const prompts: { kind: Kind; prompt: string }[] = [];
+  const result = await runQueue(f.config, { ...passingOptions, host: f.host, createAdapter: recorder(prompts) });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.ok(byKind(prompts, 'work').length && byKind(prompts, 'document').length);
+  for (const { prompt } of prompts) {
+    assert.ok(prompt.includes('a read-only sandbox is never a blocker'));
+    assert.ok(prompt.includes('work and document sessions always start after binding'));
+  }
+});
+
 // B: the default threshold appears in every worker prompt, including investigation.
 test('scripted prompts state the default 85% threshold in every purpose', async t => {
   const f = fixture(t); const prompts: { kind: Kind; prompt: string }[] = [];
