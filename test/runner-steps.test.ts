@@ -12,6 +12,7 @@ import type { HarnessAdapter, HarnessOptions, WorkerReply } from '../src/harness
 import { main } from './support/isolated-cli.ts';
 import { runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
 import type { RunnerFixture } from './support/runner-fixture.ts';
+import { separateArchive } from './support/scripted-archive.ts';
 
 /** Collects step lines without their newline. */
 function capture() {
@@ -286,4 +287,114 @@ test('B (required): stdout, exit code and receipt are identical with a capturing
   assert.equal(JSON.parse(captured.stdout.at(-1)!).status, 'exhausted');
   assert.ok(lines.length > 20);
   assert.ok(!captured.stdout.some(line => line.includes('[outcome-runner]')));
+});
+
+// Grade A
+
+/** The step line expected immediately before each session, by a distinctive part of its prompt. */
+const SESSIONS: [string, string][] = [
+  ['Inspect current files', 'A investigation: starting the investigation session'],
+  ['Create proposal.md', 'A planning: starting the planning session'],
+  ['Review planning artifacts', 'A planning review: starting the planning review session'],
+  [IMPLEMENT, 'A implementation: starting the implementation session'],
+  ['Review actual implementation', 'A review: starting the implementation review session'],
+  ['Update the documentation inside', 'A documentation: starting the documentation session'],
+  ['Review the documentation changes', 'A documentation review: starting the documentation review session'],
+];
+
+test('A (required): an accepted task writes the ordered step lines, each before the first effect of its step', async t => {
+  const f = runnerFixture(t);
+  const project = { ...f.project, setup: [{ command: 'node', args: ['-e', ''] }] };
+  const config = f.config('one', { leaves: ['A'], project });
+  const events: string[] = []; const lines: string[] = []; const effectsPending: [string, boolean][] = [];
+  const current = () => f.state('one').current;
+  // Each step line checks that the effect of its step has not happened yet.
+  const before: Record<string, () => boolean> = {
+    'A claim: claiming the task': () => git(f.remote, 'for-each-ref', 'refs/heads/work-queue-claims-main') === '',
+    'A worktree: preparing the worktree': () => !existsSync(current().path),
+    'A commit: committing the implementation': () => !git(current().path, 'log', '--format=%s').includes('implement A'),
+    'A receipt: recording the receipt': () => !existsSync(join(current().path, 'evidence/results/A.json')),
+    'A push: pushing the tested head': () => git(f.remote, 'for-each-ref', `refs/heads/${current().branch}`) === '',
+    'A merge: merging #1': () => git(f.remote, 'ls-tree', 'main', 'evidence/results/A.json') === '',
+    'A acceptance: recording the acceptance': () => !f.state('one').completed?.A,
+    'A cleanup: removing the worktree and branches': () => existsSync(f.state('one').completed.A.path),
+  };
+  const steps = (line: string) => {
+    lines.push(line.slice(0, -1)); const text = body(line.slice(0, -1)); events.push(`step ${text}`);
+    if (before[text]) effectsPending.push([text, before[text]()]);
+  };
+  const createAdapter = worker({ replace: async (_options, prompt) => {
+    events.push(`session ${SESSIONS.find(([marker]) => prompt.includes(marker))![0]}`); return undefined;
+  } });
+  const scripted = f.hostFor('main');
+  const host: PullRequestHost = {
+    find: branch => { events.push('host find'); return scripted.find(branch); },
+    create: (work, text) => { events.push('host create'); return scripted.create(work, text); },
+    merge: (pr, head) => { events.push('host merge'); return scripted.merge(pr, head); },
+  };
+  const archive = separateArchive();
+  const runCommand = (cwd: string, program: string, args: string[]) => { events.push('command archive'); return archive(cwd, program, args); };
+  const result = await f.run(config, { steps, createAdapter, host, runCommand });
+  assert.equal(result.status, 'exhausted');
+  assert.deepEqual(lines.map(body), [
+    'run start: invocation=one harness=claude model=claude-opus-5-5 effort=medium',
+    'run preflight: checking OpenSpec',
+    'run preflight: checking the harness version',
+    'run preflight: checking the test framework',
+    'A claim: claiming the task',
+    'A worktree: preparing the worktree',
+    'A setup: running 1/1: node',
+    'A investigation: starting the investigation session',
+    'A planning: starting the planning session',
+    'A planning check: validating the planning artifacts',
+    'A planning review: starting the planning review session',
+    'A implementation: starting the implementation session',
+    'A commit: committing the implementation',
+    'A check: running 1/2: node',
+    'A check: running 2/2: node',
+    'A review: starting the implementation review session',
+    'A documentation: starting the documentation session',
+    'A commit: committing the documentation',
+    'A documentation review: starting the documentation review session',
+    'A final checks: running the final checks',
+    'A check: running 1/2: node',
+    'A check: running 2/2: node',
+    'A archive: archiving the change',
+    'A commit: committing the archive',
+    'A receipt: recording the receipt',
+    'A commit: committing the receipt',
+    'A check: running 1/2: node',
+    'A check: running 2/2: node',
+    'A push: pushing the tested head',
+    'A pull request: finding the pull request',
+    'A pull request: creating the pull request',
+    'A wait: waiting for mergeability and checks of #1',
+    'A merge: merging #1',
+    'A acceptance: recording the acceptance',
+    'A cleanup: removing the worktree and branches',
+    'run end: outcome exhausted',
+  ]);
+  for (const line of lines) {
+    assert.match(line, /^\[outcome-runner\] \d{2}:\d{2}:\d{2} (?:run|A) [a-z]+(?: [a-z]+)?: \S.*$/u, line);
+    assert.ok(line.length <= 120, line); assert.ok(!line.includes('resuming'), line);
+  }
+  assert.equal(effectsPending.length, Object.keys(before).length);
+  for (const [text, pending] of effectsPending) assert.ok(pending, `the effect of "${text}" happened before its line`);
+  // Every session, archive command and host call follows the step line of its step in the shared event log.
+  const lastStep = (index: number) => events.slice(0, index).reverse().find(event => event.startsWith('step '))!.slice(5);
+  events.forEach((event, index) => {
+    if (event.startsWith('session ')) {
+      const [, expected] = SESSIONS.find(([marker]) => event === `session ${marker}`)!;
+      assert.equal(lastStep(index), expected, event);
+    }
+    if (event === 'command archive') assert.equal(lastStep(index), 'A archive: archiving the change');
+    if (event === 'host create') assert.equal(lastStep(index), 'A pull request: creating the pull request');
+    if (event === 'host merge') assert.equal(lastStep(index), 'A merge: merging #1');
+    if (event === 'host find') {
+      assert.ok(['A pull request: finding the pull request', 'A wait: waiting for mergeability and checks of #1',
+        'A acceptance: recording the acceptance'].includes(lastStep(index)), lastStep(index));
+    }
+  });
+  assert.equal(events.filter(event => event.startsWith('session ')).length, SESSIONS.length);
+  assert.equal(events.filter(event => event === 'command archive').length, 1);
 });
