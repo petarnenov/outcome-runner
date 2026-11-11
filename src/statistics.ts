@@ -72,7 +72,7 @@ export function appendStatistics(record: RunStatistics, { env = process.env, hom
   } catch { warn('outcome-runner: could not persist run statistics ledger.\n'); }
   finally {
     if (fd !== undefined) {
-      try { effects.close(fd); } catch { stderr('outcome-runner: could not close run statistics ledger.\n'); }
+      try { effects.close(fd); } catch { warn('outcome-runner: could not close run statistics ledger.\n'); }
     }
   }
 }
@@ -113,12 +113,15 @@ export class Statistics {
         effort: pair(), coverage: pair(), maxAccepted: pair(), leaves: pair() }, tasks: [], tokenUsage: null };
   }
   metadata(config: RunConfig, root: string, origin: string | null): void {
+    if (this.finished) return;
     this.record.repositoryTopLevel = root; this.record.originUrl = origin === null ? null : cleanOrigin(origin);
     this.record.targetBranch = typeof config.project?.target === 'string' ? config.project.target : null;
     this.record.invocation = typeof config.invocation === 'string' ? config.invocation : null;
     this.record.authorityReference = typeof config.authority?.reference === 'string' ? config.authority.reference : null;
   }
   setting<K extends Setting>(key: K, value: Settings[K]['value'], source: Source): void {
+    if (this.finished) return;
+    if (!['cli-flag', 'invocation-json', 'interactive-answer', 'default'].includes(source)) source = 'default';
     (this.record.settings[key] as Pair<typeof value>) = { value, source }; this.sources[key] = source;
   }
   resolved(config: RunConfig, sources: Sources, version?: string): void {

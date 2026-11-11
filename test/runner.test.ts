@@ -587,7 +587,7 @@ test(`${process.env.OUTCOME_TEST_HARNESS ?? 'codex'}: real portable copy accepts
 test('standalone CLI keeps raw startup errors in private diagnostics', t => {
   const f = fixture(t);
   const child = spawnSync(process.execPath, [fileURLToPath(new URL('../bin/outcome-runner.ts', import.meta.url)),
-    join(f.base, 'missing-config')], { encoding: 'utf8' });
+    join(f.base, 'missing-config')], { encoding: 'utf8', env: { ...process.env, XDG_STATE_HOME: join(f.base, 'cli-ledger') } });
   assert.equal(child.status, 4);
   const result = JSON.parse(child.stdout); assert.equal(result.reason, 'startup-or-run-failed');
   const diagnostic = JSON.parse(readFileSync(result.diagnostics, 'utf8'));
@@ -1273,3 +1273,101 @@ test('C: an acceptance limit records selected pending leaves and excludes baseli
   const again = await runQueue({ ...other, leaves: ['A'] }, { statistics: baseline, host: f.host, createAdapter: scripted });
   assert.equal(again.status, 'exhausted'); assert.deepEqual(baseline.finish('exhausted', 0).tasks, []);
 });
+
+test('B: resumed execution preserves selection provenance, original claim duration and durable task history', async t => {
+  const f = fixture(t); const env = { XDG_STATE_HOME: join(f.base, 'ledger-resume') };
+  const { root: _root, stateDirectory: _state, harness: _harness, model: _model, effort: _effort, ...invocation } = f.config;
+  const path = join(f.base, 'ledger-resume.json');
+  writeFileSync(path, JSON.stringify({ ...invocation, leaves: ['A'] }));
+  const create = f.host.create;
+  f.host.create = work => { const pr = create(work); pr.url = 'https://example.org/pull/' + pr.number; return pr; };
+  const answers = ['claude', '', 'high', '92']; let prompts = 0;
+  const start = Date.parse('2026-01-01T00:00:00Z');
+  const execute = (resume: boolean) => ledgerMain(path, (config, options) => runQueue({
+    ...config, stateDirectory: f.config.stateDirectory,
+  }, { ...options, now: () => start + (resume ? 10000 : 0), host: f.host,
+    selection: { ...passingSelection, interactive: true, say: () => {}, ask: async () => {
+      prompts++; assert.ok(!resume, 'saved selection must suppress prompts'); return answers.shift()!;
+    } },
+    createAdapter: options => {
+      const adapter = scripted(options);
+      return { ...adapter, async startAction(prompt) {
+        options.onUsage?.({ inputTokens: 2, outputTokens: 3, totalTokens: 5 });
+        return adapter.startAction(prompt);
+      } };
+    },
+    afterEffect: async kind => {
+      if (!resume && kind === 'pr') throw Object.assign(new Error('SECRET_INTERRUPTION'), { interrupted: true });
+    },
+  }), line => {
+    const result = JSON.parse(line);
+    if (result.diagnostics) t.after(() => rmSync(join(result.diagnostics, '..'), { recursive: true, force: true }));
+  }, { cwd: f.root, env });
+  assert.equal(await execute(false), 4); assert.equal(prompts, 4);
+  const statePath = join(f.config.stateDirectory, 'state.json');
+  const firstState = JSON.parse(readFileSync(statePath, 'utf8')); const hashBefore = firstState.identityHash;
+  assert.equal(await execute(true), 0); assert.equal(prompts, 4);
+  const rows = readFileSync(ledgerPath(env), 'utf8').trim().split('\n').map(line => JSON.parse(line) as RunStatistics);
+  assert.equal(rows.length, 2); assert.notEqual(rows[0].runId, rows[1].runId);
+  assert.deepEqual(rows[1].settings, rows[0].settings);
+  assert.equal(rows[1].settings.harness.source, 'interactive-answer');
+  assert.equal(rows[1].settings.model.source, 'default');
+  assert.equal(rows[1].settings.effort.source, 'interactive-answer');
+  assert.equal(rows[1].settings.coverage.source, 'interactive-answer');
+  assert.equal(rows[1].tasks[0].outcome, 'accepted');
+  assert.equal(rows[1].tasks[0].durationSeconds, 10);
+  const last = JSON.parse(readFileSync(statePath, 'utf8'));
+  assert.equal(last.identityHash, hashBefore); assert.deepEqual(last.identity.authority, firstState.identity.authority);
+  assert.deepEqual(rows[1].tasks[0].workerSessions, rows[0].tasks[0].workerSessions);
+  assert.deepEqual(rows[1].tasks[0].planningFindingsPerRound, [0]);
+  assert.deepEqual(rows[1].tasks[0].implementationFindingsPerRound, [0]);
+  assert.deepEqual(rows[0].tokenUsage, { inputTokens: 10, outputTokens: 15, totalTokens: 25 });
+  assert.equal(rows[1].tokenUsage, null); assert.equal(rows[1].tasks[0].tokenUsage, null);
+  assert.deepEqual(rows[1].tasks[0].finalChecks, last.completed.A.finalChecks.map(
+    ({ command, args, outcome }: CheckRecord) => ({ command, args, outcome })));
+  assert.equal(rows[1].tasks[0].completionSummary, last.completed.A.completion.summary);
+  assert.equal(rows[1].tasks[0].complexityGrade, last.completed.A.completion.grade);
+  // A legacy state without statistics-only provenance remains compatible.
+  delete last.statisticsSources; writeFileSync(statePath, JSON.stringify(last));
+  assert.equal(await execute(true), 0);
+  const legacy = JSON.parse(readFileSync(ledgerPath(env), 'utf8').trim().split('\n').at(-1)!) as RunStatistics;
+  assert.equal(legacy.settings.harness.source, 'default');
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).identityHash, hashBefore);
+});
+
+for (const phase of ['preflight', 'selection', 'work'] as const) {
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    test('B: ' + signal + ' during ' + phase + ' cancels once and cleans handlers', { timeout: 20000 }, async t => {
+      const f = fixture(t); const xdg = join(f.base, 'child-ledger');
+      const { root: _root, stateDirectory: _state, harness: _harness, model: _model, effort: _effort, ...invocation } = f.config;
+      const path = join(f.base, 'child-invocation.json'); writeFileSync(path, JSON.stringify({ ...invocation, leaves: ['A'] }));
+      const child = fork(fileURLToPath(new URL('./support/statistics-child.ts', import.meta.url)), [path, f.root, phase], {
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+          !['NODE_TEST_CONTEXT', 'NODE_TEST_WORKER_ID', 'NODE_OPTIONS'].includes(key))), XDG_STATE_HOME: xdg },
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      });
+      t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
+      let done: { code: number; closes: number; handlersClean: boolean } | undefined; let stderr = '';
+      child.stdout!.resume(); child.stderr!.on('data', chunk => { stderr += chunk; });
+      child.on('message', (message: { type: string; code: number; closes: number; handlersClean: boolean }) => {
+        if (message.type === 'ready') child.kill(signal); else if (message.type === 'done') done = message;
+      });
+      const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve =>
+        child.once('exit', (code, signal) => resolve({ code, signal })));
+      assert.deepEqual(exit, { code: 3, signal: null }, stderr);
+      assert.ok(done?.handlersClean); if (phase === 'work') assert.ok(done!.closes > 0);
+      const bytes = readFileSync(ledgerPath({ XDG_STATE_HOME: xdg }), 'utf8');
+      const lines = bytes.trim().split('\n'); assert.equal(lines.length, 1);
+      const record = JSON.parse(lines[0]) as RunStatistics;
+      assert.equal(record.status, 'cancelled'); assert.equal(record.exitCode, 3); assert.equal(record.failureReason, null);
+      assert.ok(!bytes.includes('SECRET_'));
+      if (phase === 'work') {
+        assert.equal(record.tasks.length, 1); assert.equal(record.tasks[0].outcome, 'blocked');
+        assert.equal(record.tasks[0].lastStage, 'investigate'); assert.equal(record.tasks[0].blockingReason, 'cancelled');
+        assert.equal(record.tasks[0].workerSessions.investigate, 1); assert.equal(record.tasks[0].durationSeconds, null);
+      } else {
+        assert.deepEqual(record.tasks, []); assert.deepEqual(record.settings.leaves, { value: null, source: null });
+      }
+    });
+  }
+}

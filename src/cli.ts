@@ -72,15 +72,16 @@ export async function main(path: string, runner: Runner = runQueue, output: Outp
     if (flags.coverage !== undefined) config.coverage = resolveCoverage(Number(flags.coverage));
     const result = await runner(config, { statistics, signal: cancellation.signal,
       report: event => output(JSON.stringify(event) + '\n') });
-    status = cancellation.signal.aborted ? 'cancelled' : result.status as Status;
-    if (cancellation.signal.aborted) result.status = 'cancelled';
+    const terminalResult = cancellation.signal.aborted ? { ...result, status: 'cancelled' } : result;
+    status = terminalResult.status as Status;
     code = ['exhausted', 'limit-reached'].includes(status) ? 0 : 3;
-    output(JSON.stringify(result) + '\n');
+    output(JSON.stringify(terminalResult) + '\n');
   } catch (error) {
     if (cancellation.signal.aborted) {
       status = 'cancelled'; code = 3;
       output(JSON.stringify({ status: 'cancelled', accepted: [], remaining: [], completions: {} }) + '\n');
     } else {
+      status = 'unavailable';
       reason = safeFailure((error as { reason?: unknown })?.reason);
       code = reportFailure(error, output);
     }

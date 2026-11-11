@@ -1,5 +1,5 @@
 import { cancellable } from './statistics.ts';
-import type { Sources } from './statistics.ts';
+import type { Setting, Settings, Source, Sources } from './statistics.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isatty } from 'node:tty';
@@ -33,6 +33,7 @@ export interface SelectionDeps {
   /** Returns the selection recorded in an existing invocation state, or null. */
   signal?: AbortSignal;
   sources?: Sources;
+  onSetting?: (key: Setting, value: Settings[Setting]['value'], source: Source) => void;
   onResolved?: (config: RunConfig, sources: Sources, version?: string) => void;
   recorded: (stateDirectory: string) => Partial<Selection> | null;
 }
@@ -151,6 +152,7 @@ export async function selectHarness(config: RunConfig, overrides: Partial<Select
     selected.harness ??= recorded.harness; selected.model ??= recorded.model; selected.effort ??= recorded.effort;
     if (selected.coverage === undefined) selected.coverage = recorded.coverage;
   }
+  const observe = (key: Setting, value: Settings[Setting]['value']) => deps.onSetting?.(key, value, sources[key] ?? 'default');
   const prompting = deps.interactive && !recorded;
   const choose = async (label: 'Harness' | 'Model' | 'Effort', options: readonly string[], preselected: string): Promise<string> => {
     deps.say(`${label} options: ${options.map((option, index) => `${index + 1}) ${option}`).join('  ')}\n`);
@@ -158,9 +160,9 @@ export async function selectHarness(config: RunConfig, overrides: Partial<Select
       const answer = (await cancellable(deps.ask(`${label} [${preselected}]: `), deps.signal)).trim();
       const key = label.toLowerCase() as 'harness' | 'model' | 'effort';
       sources[key] = answer ? 'interactive-answer' : 'default';
-      if (!answer) return preselected;
-      if (options.includes(answer)) return answer;
-      if (/^\d+$/u.test(answer) && Number(answer) >= 1 && Number(answer) <= options.length) return options[Number(answer) - 1];
+      const chosen = !answer ? preselected : options.includes(answer) ? answer :
+        /^\d+$/u.test(answer) && Number(answer) >= 1 && Number(answer) <= options.length ? options[Number(answer) - 1] : undefined;
+      if (chosen !== undefined) { observe(key, chosen); return chosen; }
       deps.say(`Choose one of ${options.join(', ')} or press Enter for ${preselected}.\n`);
     }
   };
@@ -175,6 +177,10 @@ export async function selectHarness(config: RunConfig, overrides: Partial<Select
   if (!harnesses.includes(selected.harness)) return { config: selected };
   if (!available.includes(selected.harness)) refuse(`Harness ${selected.harness} is unavailable`);
 
+  observe('harness', selected.harness);
+  const observed = statuses.find(status => status.harness === selected.harness);
+  if (observed?.version !== undefined) observe('harnessCliVersion', observed.version);
+  deps.onResolved?.(selected, sources, observed?.version);
   const codex = selected.harness === 'codex' ? await cancellable(deps.readCodex(config.root), deps.signal) : undefined;
   const catalog: Catalog = codex ? codex.catalog : claudeCatalog;
   if (prompting && selected.model === undefined) {
@@ -182,10 +188,12 @@ export async function selectHarness(config: RunConfig, overrides: Partial<Select
     const preselected = codex ? codexDefaultModel(codex, models) : defaultSelection.model;
     if (preselected !== undefined) selected.model = await choose('Model', models, preselected);
   }
+  if (selected.model && catalog.has(selected.model)) observe('model', selected.model);
   const efforts = selected.model === undefined ? undefined : catalog.get(selected.model);
   if (prompting && selected.effort === undefined && efforts?.length) {
     selected.effort = await choose('Effort', efforts, defaultEffort(efforts, selected.model!, codex)!);
   }
+  if (selected.effort && efforts?.includes(selected.effort)) observe('effort', selected.effort);
   if (prompting && selected.coverage === undefined) {
     for (;;) {
       const answer = (await cancellable(deps.ask(`Coverage threshold (1-100) [${DEFAULT_COVERAGE}]: `), deps.signal)).trim();
@@ -197,7 +205,9 @@ export async function selectHarness(config: RunConfig, overrides: Partial<Select
   }
   if (!codex) { selected.model ??= defaultSelection.model; selected.effort ??= defaultSelection.effort; }
   if (selected.coverage === undefined) selected.coverage = DEFAULT_COVERAGE;
-  const observed = statuses.find(status => status.harness === selected.harness);
+  if (selected.model && catalog.has(selected.model)) observe('model', selected.model);
+  if (selected.effort && selected.model && catalog.get(selected.model)?.includes(selected.effort)) observe('effort', selected.effort);
+  if (Number.isInteger(selected.coverage) && selected.coverage >= 1 && selected.coverage <= 100) observe('coverage', selected.coverage);
   deps.onResolved?.(selected, sources, observed?.version);
   return codex ? { config: selected, codex } : { config: selected };
 }

@@ -113,6 +113,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   let sources: Sources = {}; let harnessVersion: string | undefined;
   const { config: selected, codex } = await cancellable(selectHarness(requested, {
     ...options.selection, signal, sources: statistics?.sources,
+    onSetting: (key, value, source) => statistics?.setting(key, value, source),
     onResolved: (config, resolvedSources, version) => {
       sources = resolvedSources; harnessVersion = version;
       if (config.harness) statistics?.setting('harness', config.harness, sources.harness ?? 'default');
@@ -121,8 +122,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   }), signal);
   const config = await cancellable(resolveHarness(selected, codex ? async () => codex :
     cwd => codexSelection(cwd, undefined, signal)), signal);
-  statistics?.resolved(config, sources, harnessVersion);
   validateConfig(config);
+  statistics?.resolved(config, sources, harnessVersion);
   const { afterEffect = async () => {}, report = () => {}, now = Date.now } = options;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
   const root = realpathSync(config.root); const project = config.project;
@@ -136,8 +137,10 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   const lock = new DatabaseSync(join(lockRoot, `${hash(primary)}.sqlite`));
   let store!: RunStore; let adapter: HarnessAdapter | null | undefined; let stopped = false;
   const ownershipFile = join(lockRoot, `${hash(primary)}-owner.json`);
-  const stop = () => { stopped = true; adapter?.close();
+  const stop = () => {
+    stopped = true;
     if (store?.state.current) statistics?.decision(store.state.current, 'blocked', store.state.current, 'cancelled');
+    try { adapter?.close(); } catch { /* Cancellation still reaches the guarded CLI finalizer. */ }
   };
   signal?.addEventListener('abort', stop, { once: true });
   try {
@@ -475,7 +478,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
               'write (coverage-only) tests only as the graded test rules below allow. ' +
               workTestInstructions(config.coverage) + ' Preserve bound specs. ' +
               'Address private findings: ' + JSON.stringify(activeWork().findings ?? []));
-            await afterEffect('implementation', activeWork());
+            await cancellable(afterEffect('implementation', activeWork()), signal);
             assertWork(activeWork()); commit(work);
             try { save({ checks: checks(work, project.checks) }); }
             catch (error) { save({ findings: [failureDetail(error)] }); continue; }
@@ -529,7 +532,11 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             `Checks: ${JSON.stringify(checkRecords(now.finalChecks!))}\n` +
             `Reviews: ${JSON.stringify(now.reviews!.map(reviewRecord))}\n`);
           let pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
-          if (!pr) { pr = await cancellable(Promise.resolve(host.create(now, body)), signal); await afterEffect('pr', pr); }
+          if (!pr) {
+            pr = await cancellable(Promise.resolve(host.create(now, body)), signal);
+            if (pr) save({ pr });
+            await cancellable(afterEffect('pr', pr), signal);
+          }
           if (!pr || pr.state === 'CLOSED') throw new Error('PR unavailable or closed');
           save({ pr, stage: 'merge' });
         }
@@ -538,7 +545,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
           const polling = options.mergePolling ?? {};
           const limit = polling.views ?? MERGE_STATE_VIEWS;
           for (let view = 1; ; view += 1) {
-            const pr = await host.find(work.branch);
+            const pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
             if (!pr) throw new Error('Recorded PR missing');
             if (pr.state === 'MERGED') break;
             if (pr.state !== 'OPEN') throw new Error('PR unavailable or closed');
@@ -548,7 +555,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
             }
             if (refresh().target !== now.testedTarget) { save({ stage: 'publish' }); break; }
             if (pr.headRefOid === now.head) {
-              await cancellable(Promise.resolve(host.merge(pr, now.head!)), signal); await afterEffect('merge', pr);
+              await cancellable(Promise.resolve(host.merge(pr, now.head!)), signal); await cancellable(afterEffect('merge', pr), signal);
               break;
             }
             assertOriginHead(work.path, work.branch, now.head!);

@@ -245,3 +245,20 @@ test('nonzero transport diagnostics retain a bounded private stderr tail', async
   });
   adapter.close();
 });
+
+test('B: Claude reports deduplicated assistant usage before completion and result usage even on failure', async () => {
+  const reports: unknown[] = [];
+  const adapter = make({ onUsage: usage => reports.push(usage) }); adapter.child = { pid: 1 } as WorkerProcess;
+  await adapter.observeMessage(init() as ClaudeMessage);
+  const assistant = (id: string, input: number, output: number) => ({ type: 'assistant', session_id: session,
+    message: { id, model: 'claude-opus-5-5', usage: { input_tokens: input, output_tokens: output }, content: 'SECRET' } });
+  await adapter.observeMessage(assistant('one', 2, 3) as ClaudeMessage);
+  await adapter.observeMessage(assistant('one', 4, 5) as ClaudeMessage);
+  await adapter.observeMessage(assistant('one', 4, 5) as ClaudeMessage);
+  await adapter.observeMessage(assistant('two', 6, 7) as ClaudeMessage);
+  assert.deepEqual(reports.at(-1), { inputTokens: 10, outputTokens: 12, totalTokens: null });
+  await assert.rejects(adapter.observeMessage(result({ is_error: true,
+    usage: { input_tokens: 15, output_tokens: 20, arbitrary: 'SECRET' } }) as ClaudeMessage));
+  assert.deepEqual(reports.at(-1), { inputTokens: 15, outputTokens: 20, totalTokens: null });
+  assert.ok(!JSON.stringify(reports).includes('SECRET'));
+});

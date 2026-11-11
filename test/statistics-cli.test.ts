@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fork } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { main, printTaskHashes } from '../src/cli.ts';
 import { git } from '../src/git.ts';
 import { resolveHarness } from '../src/harness.ts';
@@ -140,3 +142,30 @@ for (const failure of ['EACCES', 'invalid-parent'] as const) {
     });
   }
 }
+
+test('B: two concurrent fake runs append two complete independently parseable lines', { timeout: 20000 }, async t => {
+  const f = fixture(t); const children: import('node:child_process').ChildProcess[] = []; let ready = 0;
+  const run = () => {
+    const child = fork(fileURLToPath(new URL('./support/statistics-child.ts', import.meta.url)), [f.path, f.root, 'append'], {
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+        !['NODE_TEST_CONTEXT', 'NODE_TEST_WORKER_ID', 'NODE_OPTIONS'].includes(key))), XDG_STATE_HOME: f.env.XDG_STATE_HOME },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    children.push(child); child.stdout!.resume(); child.stderr!.resume();
+    t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
+    child.on('message', (message: { type: string }) => {
+      if (message.type === 'ready' && ++ready === 2) children.forEach(child => child.send('go'));
+    });
+    return new Promise<void>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code, signal) => {
+        try { assert.equal(code, 0); assert.equal(signal, null); resolve(); } catch (error) { reject(error); }
+      });
+    });
+  };
+  await Promise.all([run(), run()]);
+  const bytes = readFileSync(ledgerPath(f.env), 'utf8'); assert.ok(bytes.endsWith('\n'));
+  const records = f.records(); assert.equal(records.length, 2);
+  assert.notEqual(records[0].runId, records[1].runId);
+  assert.ok(records.every(record => record.exitCode === 0 && record.status === 'exhausted'));
+});

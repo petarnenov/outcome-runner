@@ -208,3 +208,25 @@ test('C: decisions deduplicate by ID, final acceptance wins, and legacy session 
   assert.deepEqual(record.tasks[0].planningFindingsPerRound, [0, 1]);
   assert.deepEqual(record.tasks[0].implementationFindingsPerRound, [2, 0]);
 });
+
+test('B: partial selection retains only resolved fields when an unanswered prompt is cancelled', async () => {
+  const statistics = collector().statistics; const controller = new AbortController();
+  await assert.rejects(selectHarness({ ...config, harness: 'claude', model: 'claude-sonnet-5-5' }, {
+    signal: controller.signal, interactive: true, recorded: () => null,
+    probe: harness => ({ harness, available: true, version: 'scripted' }), say: () => {},
+    ask: async question => {
+      if (question.startsWith('Effort')) return 'high';
+      controller.abort(new Error('cancelled')); return new Promise<string>(() => {});
+    },
+    onSetting: (key, value, source) => statistics.setting(key, value, source),
+    onResolved: (config, sources, version) => {
+      statistics.setting('harness', config.harness!, sources.harness!);
+      if (version) statistics.setting('harnessCliVersion', version, sources.harness!);
+    },
+  }));
+  const record = statistics.finish('cancelled', 3);
+  assert.deepEqual(record.settings.model, { value: 'claude-sonnet-5-5', source: 'invocation-json' });
+  assert.deepEqual(record.settings.effort, { value: 'high', source: 'interactive-answer' });
+  assert.deepEqual(record.settings.coverage, { value: null, source: null });
+  assert.deepEqual(record.settings.leaves, { value: null, source: null });
+});

@@ -1,4 +1,4 @@
-import { tokenUsage } from './statistics.ts';
+import { sumUsage, tokenUsage } from './statistics.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createServer } from 'node:http';
@@ -18,6 +18,7 @@ interface RpcRequest {
   params: { protocolVersion: string; name: string; arguments: ToolInput };
 }
 
+interface ClaudeUsage { input_tokens?: number; output_tokens?: number }
 interface ClaudeMessage {
   type: string;
   subtype?: string;
@@ -30,7 +31,7 @@ interface ClaudeMessage {
   skills: unknown[];
   slash_commands: unknown[];
   plugins: { name: string; path: string }[];
-  message?: { model?: string };
+  message?: { id?: string; model?: string; usage?: ClaudeUsage };
   is_error?: boolean;
   modelUsage?: Record<string, { canonicalModel: string }>;
   result?: string;
@@ -57,6 +58,7 @@ export class ClaudeAdapter implements HarnessAdapter {
   environment: NodeJS.ProcessEnv;
   events: AdapterEvent[];
   certified: boolean;
+  private messageUsage = new Map<string, ReturnType<typeof tokenUsage>>();
   token!: string;
   server!: Server;
   child!: WorkerProcess;
@@ -162,24 +164,31 @@ export class ClaudeAdapter implements HarnessAdapter {
       throw new Error('Unexpected Claude hook activity');
     } else if (message.type === 'assistant') {
       if (message.message?.model && message.message.model !== this.model) throw new Error('Claude model changed');
+      if (this.certified && message.session_id === this.threadId && message.message?.id) {
+        this.messageUsage.set(message.message.id, tokenUsage({
+          inputTokens: message.message.usage?.input_tokens, outputTokens: message.message.usage?.output_tokens }));
+        const usage = sumUsage([...this.messageUsage.values()]);
+        this.onUsage?.(usage);
+        if (usage) this.events.push({ type: 'token-usage', ...usage });
+      }
       this.events.push({ type: 'assistant' });
     } else if (message.type === 'result') {
+      if (this.certified && message.session_id === this.threadId && message.usage) {
+        const usage = tokenUsage({ inputTokens: message.usage.input_tokens, outputTokens: message.usage.output_tokens });
+        this.onUsage?.(usage);
+        if (usage) this.events.push({ type: 'token-usage', ...usage });
+      }
       if (!this.certified || message.session_id !== this.threadId || message.is_error ||
           message.subtype !== 'success' || !message.modelUsage || !Object.keys(message.modelUsage).length ||
           Object.values(message.modelUsage).some(value => value.canonicalModel !== this.model)) {
         throw new Error('Claude worker did not complete with the pinned model');
       }
-      const usage = tokenUsage({ inputTokens: message.usage?.input_tokens,
-        outputTokens: message.usage?.output_tokens,
-        totalTokens: undefined });
-      this.onUsage?.(usage);
-      if (usage) this.events.push({ type: 'token-usage', ...usage });
       this.result = { status: 'worker-returned', threadId: this.threadId, text: message.result ?? '', events: this.events };
     }
   }
   async startAction(prompt: string, handle: SessionHandle | null = null): Promise<WorkerReply> {
     if (handle && !/^[a-f0-9-]{36}$/u.test(handle.threadId ?? '')) throw new Error('Invalid Claude resume identity');
-    this.result = null; this.events = []; this.certified = false;
+    this.result = null; this.events = []; this.certified = false; this.messageUsage.clear();
     this.expectedSession = handle?.threadId; this.stderrTail = '';
     const url = await this.serve();
     return new Promise((resolve, reject) => {
