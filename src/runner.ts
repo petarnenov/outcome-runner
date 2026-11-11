@@ -292,9 +292,9 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
           const claimedAt = recoverClaimTime(current);
           const acceptedAt = new Date(now()).toISOString();
           const completion = buildCompletion(current.review?.completion, claimedAt, acceptedAt);
-          completed[current.id] = { ...current, claimedAt, acceptedAt, completion, acceptedTarget: target };
-          store.update({ current: null, completed });
-          report({ status: 'accepted', id: current.id, ...completion });
+          const finished = { ...current, claimedAt, acceptedAt, completion, acceptedTarget: target };
+          store.update({ current: null, completed: { ...completed, [current.id]: finished } });
+          completed[current.id] = finished;
         } catch (error) {
           store.update({ blocked: { ...store.state.blocked, [current.id]: {
             reason: failureDetail(error), work: current } }, current: null });
@@ -302,6 +302,7 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}) {
           return { status: 'incomplete', ...resultData(acceptedIds), remaining: ids.filter(id => !done.has(id)),
             blockers: { [current.id]: { stage: current.stage, reason: 'operation-incomplete', diagnostics: join(store.directory, 'state.json') } } };
         }
+        report({ status: 'accepted', id: current.id, ...completed[current.id].completion });
       }
       const newlyAccepted = Object.keys(completed).filter(id => done.has(id) && !store.state.baselineDone!.includes(id));
       const remaining = ids.filter(id => !done.has(id));
