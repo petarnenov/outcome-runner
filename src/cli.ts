@@ -72,7 +72,8 @@ export async function main(path: string, runner: Runner = runQueue, output: Outp
     if (flags.coverage !== undefined) config.coverage = resolveCoverage(Number(flags.coverage));
     const result = await runner(config, { statistics, signal: cancellation.signal,
       report: event => output(JSON.stringify(event) + '\n') });
-    status = result.status as Status;
+    status = cancellation.signal.aborted ? 'cancelled' : result.status as Status;
+    if (cancellation.signal.aborted) result.status = 'cancelled';
     code = ['exhausted', 'limit-reached'].includes(status) ? 0 : 3;
     output(JSON.stringify(result) + '\n');
   } catch (error) {

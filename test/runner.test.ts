@@ -10,6 +10,9 @@ import { git, command } from '../src/git.ts';
 import { hash, validateConfig, validateQueue } from '../src/model.ts';
 import type { CheckRecord, Harness, Project, PullRequest, Queue, ReviewRecord, RunConfig, Work, WorkerSession } from '../src/model.ts';
 import { main } from './support/isolated-cli.ts';
+import { main as ledgerMain } from '../src/cli.ts';
+import { Statistics, ledgerPath } from '../src/statistics.ts';
+import type { RunStatistics } from '../src/statistics.ts';
 import { runQueue as runQueueWithPreflight } from '../src/runner.ts';
 import { PAGE_BYTES } from '../src/text-page.ts';
 import type { RunEvent, RunOptions } from '../src/runner.ts';
@@ -1166,4 +1169,107 @@ test('public completion uses the final review after repair and preserves three s
     assert.ok(!(key in receipt));
   }
   assert.ok(!('completion' in receipt.review));
+});
+
+test('C: ledger records accepted and blocked work with durable repair metrics and allowlisted final evidence', async t => {
+  const f = fixture(t); const env = { XDG_STATE_HOME: join(f.base, 'ledger-state') };
+  const { root: _root, stateDirectory: _state, ...invocation } = { ...f.config, leaves: ['A', 'D'] };
+  const path = join(f.base, 'ledger-invocation.json'); writeFileSync(path, JSON.stringify(invocation));
+  const stdout: RunEvent[] = []; let planningReviews = 0; let implementationReviews = 0;
+  const create = f.host.create;
+  f.host.create = work => ({ ...create(work), url: 'https://example.org/pull/1' });
+  const code = await ledgerMain(path, (config, options) => runQueue({ ...config, stateDirectory: f.config.stateDirectory }, {
+    ...options, host: f.host, createAdapter: adapterOptions => {
+      let prompt = '';
+      const adapter = scripted({ ...adapterOptions, handleTool: async (name, input) => {
+        if (name === 'outcome_report' && input.outcome === 'accepted') {
+          if (prompt.includes('Review planning artifacts') && ++planningReviews === 1 ||
+              prompt.includes('Review actual implementation') && ++implementationReviews === 1) {
+            input = { ...input, outcome: 'changes-required', summary: 'SECRET_PRIVATE_REPORT', findings: ['SECRET_FINDING'] };
+          }
+        }
+        return adapterOptions.handleTool(name, input, { threadId: 'ledger-fixture' });
+      } });
+      return { ...adapter, async startAction(text) {
+        prompt = text;
+        adapterOptions.onUsage?.({ inputTokens: 1, outputTokens: 1, totalTokens: 2 });
+        adapterOptions.onUsage?.({ inputTokens: 4, outputTokens: 5, totalTokens: 9 });
+        if (text.includes('Task D;')) throw new Error('SECRET_WORKER_FAILURE');
+        return adapter.startAction(text);
+      } };
+    },
+  }), line => stdout.push(JSON.parse(line)), { cwd: f.root, env });
+  assert.equal(code, 3);
+  const record = JSON.parse(readFileSync(ledgerPath(env), 'utf8')) as RunStatistics;
+  assert.equal(record.status, 'incomplete'); assert.deepEqual(record.settings.leaves, { value: ['A', 'D'], source: 'invocation-json' });
+  const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
+  assert.deepEqual(record.tasks.map(task => [task.id, task.outcome]), [['A', 'accepted'], ['D', 'blocked']]);
+  const [accepted, blocked] = record.tasks;
+  assert.equal(accepted.lastStage, 'merge'); assert.equal(accepted.blockingReason, null);
+  assert.equal(accepted.durationSeconds, state.completed.A.completion.durationSeconds);
+  assert.equal(accepted.completionSummary, state.completed.A.completion.summary);
+  assert.equal(accepted.complexityGrade, state.completed.A.completion.grade);
+  assert.deepEqual(accepted.workerSessions, { investigate: 1, plan: 2, work: 2, review: 4 });
+  assert.equal(accepted.planningReviewRounds, 2); assert.equal(accepted.implementationReviewRounds, 2);
+  assert.deepEqual(accepted.planningFindingsPerRound, [1, 0]);
+  assert.deepEqual(accepted.implementationFindingsPerRound, [1, 0]);
+  assert.equal(accepted.finalChecks.length, f.project.checks.length);
+  assert.ok(accepted.finalChecks.every(check => check.outcome === 'passed' && !('output' in check)));
+  assert.deepEqual(accepted.pr, { number: 1, url: 'https://example.org/pull/1' });
+  assert.deepEqual(accepted.tokenUsage, { inputTokens: 36, outputTokens: 45, totalTokens: 81 });
+  assert.equal(blocked.lastStage, 'investigate'); assert.equal(blocked.blockingReason, 'operation-incomplete');
+  assert.equal(blocked.durationSeconds, null); assert.equal(blocked.complexityGrade, null); assert.equal(blocked.completionSummary, null);
+  assert.equal(blocked.workerSessions.investigate, 1); assert.equal(state.blocked.D.work.sessions, undefined);
+  assert.deepEqual(record.tokenUsage, { inputTokens: 40, outputTokens: 50, totalTokens: 90 });
+  assert.ok(!JSON.stringify(record).includes('SECRET_')); assert.ok(!JSON.stringify(record).includes('Private text'));
+  assert.equal(stdout.at(-1)!.status, 'incomplete');
+});
+
+test('C: final gate failure persists the actual failed command without private output or fabricated passes', async t => {
+  const f = fixture(t); const statistics = new Statistics();
+  const counter = join(f.base, 'check-count');
+  const privateOutput = join(f.base, 'private-output'); writeFileSync(privateOutput, 'SECRET_CHECK_OUTPUT');
+  const script = "const f=require('node:fs'),p=process.argv[1];const n=f.existsSync(p)?Number(f.readFileSync(p)):0;" +
+    "f.writeFileSync(p,String(n+1));if(n>=2){console.log(f.readFileSync(process.argv[2],'utf8'));process.exit(1)}";
+  f.project.checks.push({ command: 'node', args: ['-e', script, counter, privateOutput] });
+  const result = await runQueue({ ...f.config, leaves: ['A'] }, { statistics, host: f.host, createAdapter: scripted });
+  assert.equal(result.status, 'incomplete'); const record = statistics.finish('incomplete', 3);
+  const task = record.tasks[0];
+  assert.equal(task.outcome, 'blocked'); assert.equal(task.lastStage, 'publish');
+  assert.equal(task.finalChecks.length, 3);
+  assert.deepEqual(task.finalChecks.at(-1), { command: 'node', args: ['-e', script, counter, privateOutput], outcome: 'failed' });
+  // The executable/arguments are intentional metadata; captured check output is not.
+  assert.ok(task.finalChecks.every(check => !('output' in check))); assert.equal(task.pr, null);
+  assert.ok(!JSON.stringify(record).includes('SECRET_CHECK_OUTPUT'));
+});
+
+test('C: foreign task and scope claims are distinguished from dependent pending leaves', async t => {
+  const f = fixture(t); const statistics = new Statistics();
+  const changed = structuredClone(f.queue); changed.tasks[3].scopes = ['src/a/nested'];
+  writeFileSync(join(f.root, f.project.queue), JSON.stringify(changed));
+  git(f.root, 'add', '.'); git(f.root, 'commit', '-m', 'test: overlap ledger fixture scopes');
+  git(f.root, 'push', 'origin', 'HEAD:proposal');
+  const claims = new ClaimLedger(f.root, f.project.target);
+  claims.acquire(claims.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'foreign', host: 'fixture' }, 'chore: claim A');
+  const result = await runQueue({ ...f.config, authority: { ...f.config.authority,
+    tasks: Object.fromEntries(changed.tasks.map(task => [task.id, hash(task)])) } }, {
+    statistics, host: f.host, createAdapter: () => { throw new Error('No worker expected'); },
+  });
+  assert.equal(result.status, 'incomplete');
+  const record = statistics.finish('incomplete', 3);
+  assert.deepEqual(record.tasks.map(task => [task.id, task.outcome]),
+    [['A', 'claimed-elsewhere'], ['B', 'not-started'], ['C', 'not-started'], ['D', 'claimed-elsewhere']]);
+  assert.ok(record.tasks.every(task => task.lastStage === null));
+});
+
+test('C: an acceptance limit records selected pending leaves and excludes baseline receipts on restart', async t => {
+  const f = fixture(t); const first = new Statistics();
+  const result = await runQueue({ ...f.config, maxAccepted: 1 }, { statistics: first, host: f.host, createAdapter: scripted });
+  assert.equal(result.status, 'limit-reached');
+  assert.deepEqual(first.finish('limit-reached', 0).tasks.map(task => [task.id, task.outcome]),
+    [['A', 'accepted'], ['B', 'not-started'], ['C', 'not-started'], ['D', 'not-started']]);
+  const baseline = new Statistics();
+  const other = machine(f, 'baseline-ledger');
+  const again = await runQueue({ ...other, leaves: ['A'] }, { statistics: baseline, host: f.host, createAdapter: scripted });
+  assert.equal(again.status, 'exhausted'); assert.deepEqual(baseline.finish('exhausted', 0).tasks, []);
 });

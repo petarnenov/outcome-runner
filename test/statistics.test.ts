@@ -192,3 +192,19 @@ test('D: every persistence failure and short writes are safely reported without 
     }
   }
 });
+
+test('C: decisions deduplicate by ID, final acceptance wins, and legacy session history is counted once', () => {
+  const statistics = collector().statistics; const work = { id: 'A', change: 'a', stage: 'merge',
+    sessions: [{ purpose: 'work' }, { purpose: 'review' }], completion: { summary: 'Approved.', grade: 'E', durationSeconds: 5 },
+    planningReviews: [{ findings: [] }, { findings: ['private'] }], reviews: [{ findings: ['one', 'two'] }, { findings: [] }],
+  } as unknown as Work;
+  statistics.decision(work, 'blocked', work);
+  statistics.decision(work, 'claimed-elsewhere');
+  statistics.decision(work, 'accepted', work);
+  statistics.decision(work, 'blocked', work);
+  const record = statistics.finish('exhausted', 0);
+  assert.equal(record.tasks.length, 1); assert.equal(record.tasks[0].outcome, 'accepted');
+  assert.deepEqual(record.tasks[0].workerSessions, { investigate: 0, plan: 0, work: 1, review: 1 });
+  assert.deepEqual(record.tasks[0].planningFindingsPerRound, [0, 1]);
+  assert.deepEqual(record.tasks[0].implementationFindingsPerRound, [2, 0]);
+});
