@@ -20,6 +20,8 @@ import { selectHarness } from './harness-selection.ts';
 import type { SelectionDeps } from './harness-selection.ts';
 import { openspecPreflight } from './openspec-preflight.ts';
 import type { PreflightDeps } from './openspec-preflight.ts';
+import { testFrameworkPreflight } from './test-framework-preflight.ts';
+import type { TestFrameworkDeps } from './test-framework-preflight.ts';
 import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions } from './test-grading.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
@@ -54,6 +56,8 @@ export interface RunOptions {
   openspec?: Partial<PreflightDeps>;
   /** Injectable prompts, harness probes, Codex reader and recorded state of the harness selection. */
   selection?: Partial<SelectionDeps>;
+  /** Injectable session, worktree, prompts, installs, writes and snapshots of the test framework preflight. */
+  testFramework?: Partial<TestFrameworkDeps>;
 }
 
 interface CommandFailure extends Error { stderr?: string | Buffer }
@@ -104,7 +108,7 @@ export function packet(root: string, directory: string): Record<string, string> 
 
 export async function runQueue(requested: RunConfig, options: RunOptions = {}): Promise<RunResult> {
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
-  // the lock, claims and worktrees.
+  // the test framework analysis, the lock, claims and worktrees.
   const statistics = options.statistics;
   const signal = options.signal;
   await cancellable(openspecPreflight(requested, { ...options.openspec, signal }), signal);
@@ -126,6 +130,8 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   statistics?.resolved(config, sources, harnessVersion);
   const { afterEffect = async () => {}, report = () => {}, now = Date.now } = options;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
+  // One read-only analysis of origin/<target> with the resolved harness, model and effort precedes the lock and claims.
+  await cancellable(testFrameworkPreflight(config, { createAdapter, signal, ...options.testFramework }), signal);
   const root = realpathSync(config.root); const project = config.project;
   const primary = dirname(resolve(root, git(root, 'rev-parse', '--git-common-dir')));
   let stateAncestor = resolve(config.stateDirectory); const missing: string[] = [];

@@ -32,9 +32,11 @@ export interface RunStatistics {
   settings: Settings; tasks: TaskStatistics[]; tokenUsage: TokenUsage | null;
 }
 
+export const SAFE_FAILURE_REASONS: readonly string[] = ['openspec-missing', 'openspec-not-initialized', 'openspec-layout-created',
+  'harness-unavailable', 'test-framework-missing', 'test-framework-analysis-failed', 'test-framework-prepared'];
+
 export const safeFailure = (reason: unknown): string =>
-  ['openspec-missing', 'openspec-not-initialized', 'openspec-layout-created', 'harness-unavailable']
-    .includes(typeof reason === 'string' ? reason : '') ? reason as string : 'startup-or-run-failed';
+  SAFE_FAILURE_REASONS.includes(typeof reason === 'string' ? reason : '') ? reason as string : 'startup-or-run-failed';
 
 export function cleanOrigin(origin: string): string | null {
   try {
