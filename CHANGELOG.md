@@ -1,3 +1,15 @@
+## 0.16.0 - 2026-11-11
+
+### Features
+
+- implement OR-18 (e35be78)
+- implement OR-18 (863dc62)
+- implement OR-18 (099ae48)
+- implement OR-18 (c148df8)
+- implement OR-18 (989966f)
+- implement OR-26 (2ef826f)
+- implement OR-26 (ef268c3)
+
 ## 0.15.0 - 2026-11-11
 
 ### Features
