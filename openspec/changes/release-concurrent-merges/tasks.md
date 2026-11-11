@@ -7,11 +7,11 @@
 - [x] Bind this specification in a later work session before product writes or frozen checks.
 
 ## Implementation (after binding)
-- [ ] Preserve shared release concurrency group, cancellation disabled and release-event skip in .github/workflows/release.yml.
-- [ ] Add scripts publication orchestration around the local-only release generator: refresh main/tags, isolated attempt state, validation of each selected base, atomic publication and three total attempts.
-- [ ] Recompute after main advancement; discard only owned unpublished artifacts; preserve existing tag objects and published changelog history.
-- [ ] Gate notes/output on confirmed successful publication; handle no-op, terminal rejection, exhaustion and ambiguous publication outcomes.
-- [ ] Update docs/releasing.md with combined/consecutive releases, pending-run coalescing, retry bounds and recovery.
+- [x] Preserve shared release concurrency group, cancellation disabled and release-event skip in .github/workflows/release.yml.
+- [x] Add scripts publication orchestration around the local-only release generator: refresh main/tags, isolated attempt state, validation of each selected base, atomic publication and three total attempts.
+- [x] Recompute after main advancement; discard only owned unpublished artifacts; preserve existing tag objects and published changelog history.
+- [x] Gate notes/output on confirmed successful publication; handle no-op, terminal rejection, exhaustion and ambiguous publication outcomes.
+- [x] Update docs/releasing.md with combined/consecutive releases, pending-run coalescing, retry bounds and recovery.
 
 ## Tests (easiest E to hardest A)
 Each item is one planned test or explicitly parameterized test family. Grades measure fixture/control complexity: E easiest, A most complex. All cases below are required by source criteria or delta scenarios; none may be skipped when coverage is already sufficient. Implement grade by grade starting with E. Add only useful (coverage-only) tests at the appropriate grade if needed until all 85% coverage gates pass; required tests are always written, including grades above the grade where coverage first passes.
@@ -28,7 +28,15 @@ Each item is one planned test or explicitly parameterized test family. Grades me
 - [x] **A (required) T10 — Two close merges, combined schedule:** merge both branches before refresh; assert one release contains both commits, queued stale-event run exits successfully without a push, and no duplicate section/tag exists. Maps criteria 1/3 and “Two close merges share a release”.
 
 ## Verification and completion (after binding)
-- [ ] Run npm test and retain existing 85% line, branch and function thresholds; all required tests must pass irrespective of coverage.
-- [ ] Run frozen project checks, inspect all checks output and fix in-scope failures; preserve required typecheck and existing release regression coverage.
-- [ ] Review source criteria 1–5 against T1–T10 and local Git evidence; do not require hosted Actions observations.
-- [ ] Confirm edits stay within .github, scripts and docs for implementation and record remaining limitations honestly.
+- [x] Run npm test and retain existing 85% line, branch and function thresholds; all required tests must pass irrespective of coverage.
+- [x] Run frozen project checks, inspect all checks output and fix in-scope failures; preserve required typecheck and existing release regression coverage.
+- [x] Review source criteria 1–5 against T1–T10 and local Git evidence; do not require hosted Actions observations.
+- [x] Confirm edits stay within .github, scripts and docs for implementation and record remaining limitations honestly.
+
+## Local verification evidence
+
+Required tests T1–T10 were implemented in E, D, C, B, A order, with frozen checks after each grade. All required tests ran even though the global coverage gate already passed at E; no coverage-only tests were added. Final frozen typecheck and the package's npm-test command passed: 455 passed, 0 failed, 6 existing live-test skips; global coverage 99.05% lines, 94.67% branches, 95.03% functions.
+
+Real bare-origin/independent-clone fixtures establish patch-to-minor recomputation, immutable tags, no-op and notes recovery, three-attempt exhaustion, consecutive v1.2.4/v1.2.5 releases, and one combined v1.2.4 release followed by a no-push no-op. Workflow assertions establish serialization configuration; no hosted Actions observations were used. GitHub notes calls are stubbed in local tests. Initial event-checkout checks and pinned OpenSpec ordering remain; the orchestrator independently validates every freshly selected main base.
+
+Implementation changes are confined to .github, scripts and docs. Bound proposal, design and delta specification remain unchanged; only this task checklist records completion.
