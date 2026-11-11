@@ -1400,7 +1400,8 @@ test('C: ledger retains an existing closed PR while refusing creation and merge'
   const f = fixture(t); const env = { XDG_STATE_HOME: join(f.base, 'closed-pr-ledger') };
   const { root: _root, stateDirectory: _state, ...invocation } = { ...f.config, leaves: ['A'] };
   const path = join(f.base, 'closed-pr-invocation.json'); writeFileSync(path, JSON.stringify(invocation));
-  const pr = { number: 42, url: 'https://example.org/pull/42', state: 'CLOSED' };
+  const pr: PullRequest = { number: 42, url: 'https://example.org/pull/42', state: 'CLOSED',
+    headRefOid: '0'.repeat(40), baseRefName: f.project.target };
   f.host.find = () => pr;
   f.host.create = () => { assert.fail('Existing closed PR must not create another PR'); };
   f.host.merge = () => { assert.fail('Closed PR must not merge'); };
