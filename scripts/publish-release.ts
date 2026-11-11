@@ -31,6 +31,9 @@ export function publish(cwd: string, hooks: Hooks = {}): string {
     for (const key of ['user.name', 'user.email']) {
       git('config', key, command(cwd, 'git', ['config', key]));
     }
+    if (process.env.GH_TOKEN) {
+      git('config', 'credential.https://github.com.helper', '!gh auth git-credential');
+    }
     git('config', 'commit.gpgsign', 'false');
     git('config', 'tag.gpgsign', 'false');
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -64,7 +67,7 @@ export function publish(cwd: string, hooks: Hooks = {}): string {
         const publishedTag = refs.get('refs/tags/' + tag);
         // A transport error may follow an accepted push. Confirm both refs, including
         // a later descendant of the generated release, before creating notes.
-        git('fetch', 'origin', 'refs/heads/main:refs/remotes/origin/main');
+        git('fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main');
         const contains = (ancestor: string, descendant: string): boolean => {
           try { git('merge-base', '--is-ancestor', ancestor, descendant); return true; }
           catch { return false; }
