@@ -1,8 +1,6 @@
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,10 +12,11 @@ import { git } from '../src/git.ts';
 import { ledgerPath } from '../src/statistics.ts';
 import type { RunStatistics } from '../src/statistics.ts';
 import { playMascot } from '../mascot/mascot.ts';
+import { recordingPlayer as recorder } from './support/mascot-player.ts';
+import type { PlayerCall } from './support/mascot-player.ts';
 
 type Runner = (config: RunConfig, options: RunOptions) => Promise<{ status: string }>;
 type Write = (chunk: string, ...rest: unknown[]) => boolean;
-interface Call { mood: string; caption: string; signal: AbortSignal }
 
 const SHOW = '\x1b[?25h';
 
@@ -29,12 +28,6 @@ function fixture(t: TestContext) {
   const env: NodeJS.ProcessEnv = { XDG_STATE_HOME: join(base, 'state') };
   const records = (): RunStatistics[] => readFileSync(ledgerPath(env), 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));
   return { base, root, path, env, records };
-}
-
-function recorder() {
-  const calls: Call[] = [];
-  const player: MascotPlayer = (mood, caption, { signal }) => { calls.push({ mood, caption, signal }); };
-  return { calls, player };
 }
 
 async function execute(t: TestContext, runner: Runner, options: MainOptions & { output?: (line: string) => void } = {}) {
@@ -144,7 +137,7 @@ test('A: a throwing or rejecting player leaves stdout, exit code and statistics 
 });
 
 test('A: SIGINT during a task animation aborts it and shows the cursor before the cancelled line', async t => {
-  const log: [string, string][] = []; const calls: Call[] = [];
+  const log: [string, string][] = []; const calls: PlayerCall[] = [];
   const stream = { isTTY: true, write: (chunk: string) => { log.push(['stderr', chunk]); return true; } };
   let hang = true; let started!: () => void; const waiting = new Promise<void>(resolve => { started = resolve; });
   const wait = (_ms: number, signal?: AbortSignal) => hang ? new Promise<void>((_resolve, reject) => {
@@ -180,21 +173,4 @@ test('A: a signal after the exhausted terminal line plays startled with the canc
   assert.equal(code, 3);
   assert.equal(records()[0].status, 'cancelled'); assert.equal(records()[0].exitCode, 3);
   assert.deepEqual(calls.map(call => [call.mood, call.caption]), [['startled', 'cancelled: 1 accepted, 0 remaining']]);
-});
-
-// TEMPORARY DIAGNOSTIC: reruns the suite once and saves its report for the implementing session.
-test('diagnostic rerun', { skip: process.env.MASCOT_DIAG === '1', timeout: 900000 }, () => {
-  const root = fileURLToPath(new URL('..', import.meta.url));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !['NODE_TEST_CONTEXT', 'NODE_TEST_WORKER_ID', 'NODE_OPTIONS'].includes(key)));
-  const child = spawnSync(process.execPath, ['--test', '--test-reporter=spec', '--experimental-test-coverage',
-    '--test-coverage-exclude=test/**', '--test-coverage-exclude=scripts/*.test.ts', '--test-coverage-exclude=mascot/*.test.ts',
-    '--test-coverage-lines=85', '--test-coverage-branches=85', '--test-coverage-functions=85',
-    'test/*.test.ts', 'scripts/*.test.ts', 'mascot/*.test.ts'],
-  { cwd: root, env: { ...env, MASCOT_DIAG: '1' }, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-  const out = String(child.stdout ?? ''); const failing = out.indexOf('failing tests');
-  writeFileSync(join(root, 'test/support/mascot-player.ts'), JSON.stringify({ status: child.status, error: String(child.error ?? ''),
-    failing: failing >= 0 ? out.slice(failing, failing + 30000) : null,
-    coverage: out.split('\n').filter(line => /all files|threshold|mascot|cli\.ts|runner\.ts/u.test(line)).join('\n'),
-    tail: out.slice(-4000), stderr: String(child.stderr ?? '').slice(-6000) }, null, 1));
 });
