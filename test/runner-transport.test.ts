@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';

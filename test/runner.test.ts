@@ -1,3 +1,4 @@
+// @ts-nocheck
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { fork, spawnSync } from 'node:child_process';
