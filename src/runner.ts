@@ -315,8 +315,9 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
       usage = statistics?.session(work.id);
 
         const reply = await cancellable(adapter.startAction('OFF. Never ask a person anything. All output is private. ' +
-          'Use only backlog_tool operations read_file/write_file/context/run_checks and outcome_report. ' +
-          'Read files with input {path,offset}; write with {path,content,expectedHash} from the read result. ' +
+          'Use only backlog_tool operations read_file/write_file/delete_file/context/run_checks and outcome_report. ' +
+          'Read files with input {path,offset}; write with {path,content,expectedHash} from the read result; ' +
+          'delete a file with {path,expectedHash} from the read result. ' +
           'A read returns one page: repeat it with nextOffset until nextOffset is null. hash covers the whole file. ' +
           'context takes input {section,offset} and pages the same way. section is paths (default, with history), ' +
           'diff, findings or checks. ' +

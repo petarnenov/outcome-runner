@@ -1,12 +1,12 @@
 import { closeSync, createReadStream, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync,
-  readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+  readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BinaryLike } from 'node:crypto';
 import { hash, safePath } from './model.ts';
 import { pageOffset, readPage } from './text-page.ts';
 import type { RunStore } from './run-store.ts';
-import type { ToolDefinition, ToolInput } from './harness-adapter.ts';
+import type { BrokerInput, ToolDefinition, ToolInput } from './harness-adapter.ts';
 
 export interface FileScope { path: string; mode: string }
 
@@ -30,7 +30,7 @@ const inside = (root: string, path: string): boolean => {
 };
 export const brokerTool: ToolDefinition = {
   type: 'function', name: 'backlog_tool',
-  description: 'Read or write an authorized file; no command execution or human interaction.',
+  description: 'Read, write or delete an authorized file; no command execution or human interaction.',
   inputSchema: { type: 'object', additionalProperties: false,
     properties: { operation: { type: 'string' }, input: { type: 'object' } },
     required: ['operation', 'input'] },
@@ -82,32 +82,57 @@ export class CodexFiles<Identity = unknown> {
       if (!existsSync(target)) return { content: null, hash: null };
       return { ...await readPage(createReadStream(target), offset), hash: await fileDigest(target) };
     }
-    if (operation === 'write_file') {
-      if (typeof input.content !== 'string' || input.content.length > 4 * 1024 * 1024 ||
-          input.expectedHash !== null && !/^[a-f0-9]{64}$/u.test(input.expectedHash ?? '')) {
-        throw new Error('Write requires bounded content and expected prior hash');
-      }
-      const target = this.path(input.path, true);
-      const contentHash = digest(input.content);
-      const op = this.store.intend({ tool: operation, identity: this.identity,
-        path: input.path, contentHash, expectedHash: input.expectedHash }, hash(input));
-      const existing = existsSync(target) ? digest(readFileSync(target)) : null;
-      if (existing !== contentHash) {
-        if (existing !== input.expectedHash) throw new Error('Scoped file changed before write');
-        mkdirSync(dirname(target), { recursive: true });
-        this.path(input.path, true);
-        const temporary = join(dirname(target), `.backlog-${randomUUID()}.tmp`);
-        const mode = existsSync(target) ? lstatSync(target).mode & 0o777 : 0o644;
-        const fd = openSync(temporary, 'wx', 0o600);
-        try { writeFileSync(fd, input.content); fchmodSync(fd, mode); fsyncSync(fd); } finally { closeSync(fd); }
-        renameSync(temporary, target);
-        const dir = openSync(dirname(target), 'r');
-        try { fsyncSync(dir); } finally { closeSync(dir); }
-      }
-      const result = { status: 'completed', path: input.path, contentHash };
-      this.store.outcome(op.id, result);
-      return result;
-    }
+    if (operation === 'write_file') return this.writeFile(input);
+    if (operation === 'delete_file') return this.deleteFile(input);
     throw new Error('Unknown fixed operation');
   }
+
+  private writeFile(input: BrokerInput) {
+    if (typeof input.content !== 'string' || input.content.length > 4 * 1024 * 1024 ||
+        input.expectedHash !== null && !/^[a-f0-9]{64}$/u.test(input.expectedHash ?? '')) {
+      throw new Error('Write requires bounded content and expected prior hash');
+    }
+    const target = this.path(input.path, true);
+    const contentHash = digest(input.content);
+    const op = this.store.intend({ tool: 'write_file', identity: this.identity,
+      path: input.path, contentHash, expectedHash: input.expectedHash }, hash(input));
+    const existing = existsSync(target) ? digest(readFileSync(target)) : null;
+    if (existing !== contentHash) {
+      if (existing !== input.expectedHash) throw new Error('Scoped file changed before write');
+      mkdirSync(dirname(target), { recursive: true });
+      this.path(input.path, true);
+      const temporary = join(dirname(target), `.backlog-${randomUUID()}.tmp`);
+      const mode = existsSync(target) ? lstatSync(target).mode & 0o777 : 0o644;
+      const fd = openSync(temporary, 'wx', 0o600);
+      try { writeFileSync(fd, input.content); fchmodSync(fd, mode); fsyncSync(fd); } finally { closeSync(fd); }
+      renameSync(temporary, target);
+      syncDirectory(dirname(target));
+    }
+    const result = { status: 'completed', path: input.path, contentHash };
+    this.store.outcome(op.id, result);
+    return result;
+  }
+
+  // A missing file counts as deleted, so replaying the same request after a restart is harmless.
+  private deleteFile(input: BrokerInput) {
+    if (!/^[a-f0-9]{64}$/u.test(input.expectedHash ?? '')) {
+      throw new Error('Delete requires the expected prior hash');
+    }
+    const target = this.path(input.path, true);
+    const op = this.store.intend({ tool: 'delete_file', identity: this.identity,
+      path: input.path, expectedHash: input.expectedHash }, hash(input));
+    if (existsSync(target)) {
+      if (digest(readFileSync(target)) !== input.expectedHash) throw new Error('Scoped file changed before delete');
+      unlinkSync(target);
+      syncDirectory(dirname(target));
+    }
+    const result = { status: 'completed', path: input.path, contentHash: null };
+    this.store.outcome(op.id, result);
+    return result;
+  }
+}
+
+function syncDirectory(path: string): void {
+  const dir = openSync(path, 'r');
+  try { fsyncSync(dir); } finally { closeSync(dir); }
 }

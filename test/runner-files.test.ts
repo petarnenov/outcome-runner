@@ -1,7 +1,7 @@
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +32,49 @@ test('scoped writes have durable intent, preserve expected content and replay on
     input: { ...request.input, content: 'two' } }), /changed before write/);
   f.fence();
   await assert.rejects(() => f.broker.call('backlog_tool', request), /Owner or authority/);
+});
+
+test('scoped deletes check the expected hash, have durable intent and replay once', async t => {
+  const f = fixture(t);
+  mkdirSync(join(f.root, 'src')); writeFileSync(join(f.root, 'src/old.txt'), 'old');
+  const expectedHash = createHash('sha256').update('old').digest('hex');
+  const request = { operation: 'delete_file', input: { path: 'src/old.txt', expectedHash } };
+  const result = await f.broker.call('backlog_tool', request);
+  assert.deepEqual(result, { status: 'completed', path: 'src/old.txt', contentHash: null });
+  assert.equal(existsSync(join(f.root, 'src/old.txt')), false);
+  assert.deepEqual(await f.broker.call('backlog_tool', request), result);
+  assert.equal(Object.keys(f.store.state.operations).length, 1);
+  f.fence();
+  await assert.rejects(() => f.broker.call('backlog_tool', request), /Owner or authority/);
+});
+
+test('a delete refuses a changed file, a missing hash and paths outside the write scope', async t => {
+  const f = fixture(t);
+  mkdirSync(join(f.root, 'src')); writeFileSync(join(f.root, 'src/kept.txt'), 'changed');
+  writeFileSync(join(f.root, 'outside.txt'), 'outside');
+  const staleHash = createHash('sha256').update('original').digest('hex');
+  await assert.rejects(f.broker.call('backlog_tool', { operation: 'delete_file',
+    input: { path: 'src/kept.txt', expectedHash: staleHash } }), /changed before delete/u);
+  for (const expectedHash of [undefined, null, 'invalid']) {
+    await assert.rejects(f.broker.call('backlog_tool', { operation: 'delete_file',
+      input: { path: 'src/kept.txt', expectedHash } as BrokerInput }), /expected prior hash/u);
+  }
+  await assert.rejects(f.broker.call('backlog_tool', { operation: 'delete_file',
+    input: { path: 'outside.txt', expectedHash: staleHash } }), /outside reserved scope/u);
+  assert.equal(readFileSync(join(f.root, 'src/kept.txt'), 'utf8'), 'changed');
+  assert.equal(readFileSync(join(f.root, 'outside.txt'), 'utf8'), 'outside');
+});
+
+test('a read-only scope cannot delete', async t => {
+  const f = fixture(t);
+  const directory = mkdtempSync(join(tmpdir(), 'off-broker-read-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  writeFileSync(join(directory, 'kept.txt'), 'kept');
+  const readOnly = new CodexFiles({ root: directory, scopes: [{ mode: 'read', path: 'kept.txt' }],
+    store: f.store, identity: { worker: 'codex-test', generation: 1 }, revalidate: async () => true });
+  await assert.rejects(readOnly.call('backlog_tool', { operation: 'delete_file',
+    input: { path: 'kept.txt', expectedHash: createHash('sha256').update('kept').digest('hex') } }), /outside reserved scope/u);
+  assert.equal(readFileSync(join(directory, 'kept.txt'), 'utf8'), 'kept');
 });
 
 test('broker denies traversal, symlink escape, native tools and human-input calls', async t => {
