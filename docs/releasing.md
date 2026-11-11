@@ -34,16 +34,18 @@ To create a local release, use Node 24 and `node scripts/release.ts` from the re
 
 ## Automated publication
 
-A push to main starts .github/workflows/release.yml unless its head is a release commit. The release concurrency group queues jobs without canceling a running job. Each job checks out the exact pushed SHA with all history and tags, uses Node 24, runs npm ci, typecheck and tests, then creates a local release with the Actions bot identity.
+A push to main starts .github/workflows/release.yml unless its head is a release commit. The constant release concurrency group serializes runs through publication with cancellation disabled. GitHub supports pending-run coalescing and does not guarantee FIFO: a newer pending event can replace an older pending event. Close merges produce consecutive releases or one combined release containing both changes.
 
-The workflow's test step requires OpenSpec CLI `@fission-ai/openspec@1.17.0` because the suite invokes `openspec validate` through the runner's planning check. After typecheck and before tests, the workflow installs it globally with `npm install -g @fission-ai/openspec@1.17.0`, then runs `openspec --version` in a separate step. Installation or version-check failures stop the job before tests. Update the pinned CLI version in `.github/workflows/release.yml` and keep this documentation in sync.
+The workflow uses Node 24 and installs the pinned OpenSpec prerequisite with `npm install -g @fission-ai/openspec@1.17.0`, then checks `openspec --version`. It invokes `node scripts/publish-release.ts`. The orchestrator refreshes current main and tags in a disposable clone even for a stale queued-event checkout. Each selected base passes npm ci, npm run typecheck and npm test before release generation.
 
-A release publishes HEAD to main and its tag in one non-forced atomic push. Only after that push succeeds does the workflow create a GitHub Release. Its notes are exactly the newly prepended changelog section, without the CLI version line or previous sections. No-release results skip publication. Notes are captured outside the working tree.
+Publication uses one non-forced atomic push of the release commit and its annotated tag. Notes are created only after confirmed publication and contain exactly the new changelog section. A no-release result performs no push or notes creation. Existing tags are immutable; unrelated tag collisions fail before release mutation.
 
 ## Rejected pushes and recovery
 
-If main advances during validation, the atomic push may be rejected. The job fails immediately without retrying, rebasing or force-pushing. Neither the release commit nor its tag is published by a rejected atomic push.
+When main advances, a rejected atomic push publishes neither candidate ref. The orchestrator discards its owned unpublished attempt, fetches main and tags, repeats validation, and recomputes the version and changelog. A feature merged during a patch attempt can therefore change the release to a minor version. Already released entries are excluded by the refreshed tag boundary.
 
-Inspect the current remote main and tags and the failed job log. Use a fresh validated workflow on the current main head (rerun the workflow associated with that current head, or let its queued job run). Rerunning the stale event still checks out its stale SHA: do not retry that stale push or force-push. If necessary, make a new appropriate commit on current main to trigger a new run.
+There are three total attempts (initial plus two retries). Unchanged-main rejection, authentication failure and validation failure stop immediately. There is no force push. Exhaustion requires inspecting current main and starting a fresh validated release; never retry a stale generated commit. Temporary clones keep cleanup separate from the caller's checkout and pre-existing tags.
 
-If the atomic push succeeded but GitHub Release creation failed, the commit and tag are already published. Verify that the annotated tag points to the expected release commit and restore only the missing GitHub Release using the exact new CHANGELOG.md section as notes, for example with `gh release create vX.Y.Z --verify-tag --notes-file /path/to/new-section.md`. Do not create another release commit or move the existing tag.
+If transport reports an uncertain outcome, remote refs are inspected first. Confirmed publication proceeds to notes; indeterminate state stops for inspection without retrying publication.
+
+If publication succeeded but GitHub Release notes are missing, verify the annotated tag and restore only the missing GitHub Release using the exact new CHANGELOG.md section, for example `gh release create vX.Y.Z --verify-tag --notes-file /path/to/new-section.md`. Do not create another release commit or move the existing tag.

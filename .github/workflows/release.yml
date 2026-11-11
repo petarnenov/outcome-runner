@@ -21,33 +21,15 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
-      - run: npm run typecheck
       - run: npm install -g @fission-ai/openspec@1.17.0
       - run: openspec --version
-      - run: npm test
-      - name: Create local release
-        id: release
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          node scripts/release.ts > "$RUNNER_TEMP/release-output"
-          IFS= read -r version < "$RUNNER_TEMP/release-output"
-          if [[ "$version" == "no release" ]]; then
-            exit 0
-          fi
-          tail -n +2 "$RUNNER_TEMP/release-output" > "$RUNNER_TEMP/release-notes"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-      - name: Publish commit and tag atomically
-        if: steps.release.outputs.tag != ''
+      - name: Validate and publish current main
         env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          git push --atomic origin HEAD:refs/heads/main "refs/tags/$RELEASE_TAG"
-          gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node scripts/publish-release.ts
