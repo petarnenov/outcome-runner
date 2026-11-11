@@ -251,7 +251,8 @@ things:
    `origin <target>` and looks there; a config that exists only in your working
    tree counts as missing.
 
-When both hold, startup continues without any OpenSpec prompt or output.
+When both hold, startup continues without any OpenSpec prompt or OpenSpec
+output; only the step lines appear on stderr (see [Step lines](#step-lines)).
 
 The startup is **interactive only when both stdin and stderr are terminals
 (TTYs)**. All questions and explanations are written to stderr; stdout keeps only
@@ -336,8 +337,9 @@ example `Harness [claude]: `. You may also type the number of an option or its
 exact name. A value given by a flag (`--harness=`, `--model=`, `--effort=`,
 `--coverage=`) or in the invocation file is used without asking for it.
 
-Non-interactive starts (CI, a pipe, stderr redirected) ask and print nothing
-here: flags, the invocation file and the defaults `claude`, `claude-opus-5-5`,
+Non-interactive starts (CI, a pipe, stderr redirected) ask nothing and print
+nothing here apart from the step lines on stderr (see [Step lines](#step-lines)):
+flags, the invocation file and the defaults `claude`, `claude-opus-5-5`,
 `medium` and 85 apply (with `--harness=codex`, an omitted model or effort comes
 from the local Codex configuration). The selected harness must still be
 available.
