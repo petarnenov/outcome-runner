@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "id": "OR-5",
+  "taskHash": "58314c5e960317eb20242109ed3d4c244bb61f7140f9ba5de08fe0712792d177",
+  "authority": "owner-2026-11-10-pr4-alternate",
+  "specification": {
+    "openspec/changes/completion-summary-grade/design.md": "f426a2aa24672d77cc5257e54040f61e79e43d4b6b3f4b67955d7826358bb019",
+    "openspec/changes/completion-summary-grade/proposal.md": "a94955369105a48f9b8172eb78ecc7962a4f4a2ae5c5341d093c96823f420b5e",
+    "openspec/changes/completion-summary-grade/specs/completion-summary/spec.md": "7d509ca952af8cf213d57ddd5cb34c223f9c96eca9155edfb6ef4cfc5b35d2b2"
+  },
+  "review": {
+    "reviewer": "codex:01a1c7ff-3ff6-7053-9f0c-d5f285999906",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "97fca12f2a86b94182c0e81eebaa39224c23188abbf2d9218771c0329f7b25c8"
+    },
+    {
+      "path": "openspec/changes/completion-summary-grade/design.md",
+      "hash": "f426a2aa24672d77cc5257e54040f61e79e43d4b6b3f4b67955d7826358bb019"
+    },
+    {
+      "path": "openspec/changes/completion-summary-grade/proposal.md",
+      "hash": "a94955369105a48f9b8172eb78ecc7962a4f4a2ae5c5341d093c96823f420b5e"
+    },
+    {
+      "path": "openspec/changes/completion-summary-grade/specs/completion-summary/spec.md",
+      "hash": "7d509ca952af8cf213d57ddd5cb34c223f9c96eca9155edfb6ef4cfc5b35d2b2"
+    },
+    {
+      "path": "openspec/changes/completion-summary-grade/tasks.md",
+      "hash": "ede627d3d012cbd66463e0d4541edbaca4d2b8be971c8fe71aa60c58f42b9e0c"
+    },
+    {
+      "path": "src/completion.ts",
+      "hash": "b0d76150e932b53520502ae2ddf465fb05e37ea660a90150418faca85f1b47ca"
+    },
+    {
+      "path": "src/harness-adapter.ts",
+      "hash": "2d378140ef3caedcd51664b6acdd015aa20ec281e3712ddabc8e55ae92f46cac"
+    },
+    {
+      "path": "src/model.ts",
+      "hash": "7dc34fcf9cf058e85bb13794f8fffe0ed0d60108007062604fd7c61f5d9657e5"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "efa3168c2b1cae55a41e744a8020827dfa85e3863b98fca853818a9ceee21713"
+    },
+    {
+      "path": "test/completion.test.ts",
+      "hash": "797a6e49ecd3d1776aec267f3c8ab2a0724cc07dc931d867ceaa536e4b664c87"
+    },
+    {
+      "path": "test/runner.test.ts",
+      "hash": "1ca2cd6fe79c9645a3cbdbeb060b761496630f251924c47eec0ff63e3c5d2aa2"
+    }
+  ],
+  "head": "2c5f8defb1f4ffdf5b0e91fc637672f06fa86815",
+  "base": "46ad53956d104d3e6f0a49ffc79662a08f4d15af"
+}
