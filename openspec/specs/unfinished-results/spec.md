@@ -122,8 +122,9 @@ accepted by other runners. A `limit-reached` result SHALL carry the same `blocke
 #### Scenario: Foreign acceptance does not count
 
 - **WHEN** `maxAccepted` is 1, no task of the invocation was accepted, another runner accepts a task outside the
-  invocation, and the only remaining task waits for a foreign claim
-- **THEN** its blocker has `kind` `waiting-for-claim`, not `max-accepted`
+  invocation, the only remaining task waits for a foreign claim, and the run is cancelled during its wait
+- **THEN** the run waited instead of ending `limit-reached`, and the `cancelled` result's blocker for that task has
+  `kind` `waiting-for-claim`, not `max-accepted`
 
 ### Requirement: Invocation status in state
 
@@ -182,5 +183,5 @@ task of the invocation, and `incomplete` for any other `incomplete` or `cancelle
 
 #### Scenario: Incomplete run
 
-- **WHEN** a run returns `incomplete` because its only remaining task waits for a foreign claim
-- **THEN** `state.json` `status` is `incomplete`
+- **WHEN** a run whose only remaining task waits for a foreign claim is cancelled during its wait
+- **THEN** the result is `cancelled` and `state.json` `status` is `incomplete`
