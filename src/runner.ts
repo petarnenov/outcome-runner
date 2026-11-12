@@ -11,7 +11,7 @@ import { hash, digest, within, safePath, validateConfig, validateQueue, archiveC
 import type { BudgetExhaustion, BudgetStage, CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose, Queue,
   RetryRecord, ReviewRecord, RunConfig, SendBackCause, SendBackRecord, Task, TaskBudget, Work, WorkerReport,
   TaskCompletion } from './model.ts';
-import { command, git, gitPage, fileAt, hasRef, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS,
+import { command, git, gitPage, fileAt, hasRef, pushBookkeeping, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS,
   MERGE_STATE_POLL_MS } from './git.ts';
 import { lockRootOf, withGitLock } from './git-lock.ts';
 import { pageOffset, readPage } from './text-page.ts';
@@ -33,6 +33,7 @@ import { testFrameworkPreflight } from './test-framework-preflight.ts';
 import type { TestFrameworkDeps } from './test-framework-preflight.ts';
 import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions } from './test-grading.ts';
+import { useNetworkRetry } from './network-retry.ts';
 import { createStepLog, runStartMessage } from './step-log.ts';
 import type { StepLog, StepOutput } from './step-log.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
@@ -473,12 +474,14 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   const step = createStepLog({ write: options.steps, now: options.now });
   const { invocation, harness, model, effort } = (requested ?? {}) as Partial<RunConfig>;
   step('run', 'start', runStartMessage({ invocation, harness, model, effort }));
+  const restoreNetworkRetry = useNetworkRetry({ onWait: (retry, milliseconds, failed) =>
+    step('run', 'network', `connection lost at ${failed}; retrying in ${milliseconds / 1000} s`, { attempt: retry + 1 }) });
   let status = 'unavailable';
   try {
     const result = await runSteps(requested, options, step);
     status = result.status;
     return result;
-  } finally { step('run', 'end', `outcome ${status}`); }
+  } finally { restoreNetworkRetry(); step('run', 'end', `outcome ${status}`); }
 }
 
 async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog): Promise<RunResult> {
@@ -697,7 +700,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         }],
         ['local-branch', () => { if (hasRef(root, `refs/heads/${work.branch}`)) git(root, 'branch', '-D', work.branch); }],
         ...(remote ? [['remote-branch', () => {
-          if (git(root, 'ls-remote', 'origin', `refs/heads/${work.branch}`)) git(root, 'push', 'origin', '--delete', work.branch);
+          if (git(root, 'ls-remote', 'origin', `refs/heads/${work.branch}`)) pushBookkeeping(root, 'origin', '--delete', work.branch);
         }] as [CleanupStep, () => void]] : []),
       ];
       try {

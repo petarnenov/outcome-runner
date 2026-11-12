@@ -247,7 +247,12 @@ The runner also creates a `work-queue-claims-<target>` branch. It is never
 merged; keep it while work is unfinished. When you no longer want an invocation,
 end it with `outcome-runner dispose <invocation file>` instead of resuming it;
 see [Disposing of an invocation](#disposing-of-an-invocation). Never edit the
-claims branch or the ownership files by hand. A newer runner resumes the same
+claims branch or the ownership files by hand. Claims commits and task branch
+deletions are pushed with `--no-verify`: they carry no product code and are
+pushed from the start checkout while it has another commit checked out, so a
+project pre-push hook that verifies the checked-out commit would refuse them.
+Tested task heads are pushed from their worktree with the project's hooks, so a
+refusing hook blocks the task. A newer runner resumes the same
 invocation, and tasks can be added to it; see
 [Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation).
 Owners may keep merging Pull Requests into the target branch while a run is in
@@ -941,6 +946,18 @@ the run keeps working the other tasks it can select, unless `maxAccepted` is set
 and reached, in which case it stops at once. Either way the run still ends with
 exit code 3 (`incomplete`) and a `blocked` entry for that task, keeps its
 ownership, and the next run of the same invocation retries the acceptance.
+
+### Lost network connection
+
+When a Git or `gh` command fails because the connection cannot be made (the
+host cannot be resolved, or the connection is refused or unreachable), the
+runner waits and runs the same command again: after 5, 10, 20 and 40 seconds,
+then every 60 seconds, about 15 minutes in total. The request never reached the
+server, so repeating it is safe. Each wait is logged as a step line, for example
+`run network: connection lost at git fetch origin; retrying in 5 s (attempt 2)`.
+Other failures are not retried. When the connection is still lost after the last
+wait, the run ends as before with `unavailable`; run the same invocation again
+once the connection is back and it resumes the recorded work.
 
 ### Unfinished results
 

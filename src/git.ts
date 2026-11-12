@@ -3,6 +3,7 @@ import type { ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { digest, safePath } from './model.ts';
+import { withNetworkRetry } from './network-retry.ts';
 import { readPage } from './text-page.ts';
 import type { TextPage } from './text-page.ts';
 import type { CheckRecord, Project, PullRequest, RetryRecord, ReviewRecord, Work } from './model.ts';
@@ -38,9 +39,15 @@ const GIT_PREFIX = `git ${GIT_OPTIONS.join(' ')} `;
 const runOptions = (): ExecFileSyncOptionsWithStringEncoding => ({ encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
   env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     !['NODE_TEST_CONTEXT', 'NODE_TEST_WORKER_ID'].includes(key))), CI: 'true', GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1' } });
-export const command = (cwd: string, program: string, args: string[]): string => execFileSync(program, args, {
-  ...runOptions(), cwd, stdio: ['ignore', 'pipe', 'pipe'],
-}).trim();
+/** Runs one program; a connection that cannot be made is waited out (see network-retry.ts). */
+export const command = (cwd: string, program: string, args: string[]): string => withNetworkRetry(
+  () => execFileSync(program, args, { ...runOptions(), cwd, stdio: ['ignore', 'pipe', 'pipe'] }).trim(),
+  () => describeCommand(program, args));
+/** The program and its first two arguments, without the runner's Git options, for the retry step line. */
+const describeCommand = (program: string, args: string[]): string => {
+  const own = program === 'git' && GIT_OPTIONS.every((option, index) => args[index] === option) ? args.slice(GIT_OPTIONS.length) : args;
+  return [program, ...own.slice(0, 2)].join(' ');
+};
 /** Runs one Git command with the runner options; failure messages name the command without them. */
 function runGit<T>(run: (args: string[]) => T, args: string[]): T {
   try { return run([...GIT_OPTIONS, ...args]); }
@@ -64,6 +71,12 @@ export async function gitPage(cwd: string, offset: number, ...args: string[]): P
 export const gitWithInput = (cwd: string, input: string, ...args: string[]): string => runGit(full =>
   execFileSync('git', full, { ...runOptions(), cwd, input, stdio: ['pipe', 'pipe', 'pipe'] }).trim(), args);
 export const git = (cwd: string, ...args: string[]): string => runGit(full => command(cwd, 'git', full), args);
+/**
+ * Pushes runner bookkeeping (claims ledger commits and task branch deletions) without client-side hooks. These
+ * pushes carry no product code, are pushed from the start checkout while it has another commit checked out, and a
+ * project's pre-push verification can only check the checked-out commit. Tested task heads are pushed with hooks.
+ */
+export const pushBookkeeping = (cwd: string, ...args: string[]): string => git(cwd, 'push', '--no-verify', ...args);
 /** Whether `ref` (for example `refs/heads/<branch>`) exists in the repository of `root`. */
 export function hasRef(root: string, ref: string): boolean {
   try { git(root, 'show-ref', '--verify', '--quiet', ref); return true; } catch { return false; }
