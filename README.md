@@ -247,6 +247,8 @@ see [Disposing of an invocation](#disposing-of-an-invocation). Never edit the
 claims branch or the ownership files by hand. A newer runner resumes the same
 invocation, and tasks can be added to it; see
 [Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation).
+Owners may keep merging Pull Requests into the target branch while a run is in
+progress; see [When the target advances during a run](#when-the-target-advances-during-a-run).
 
 ## Target branch
 
@@ -883,7 +885,7 @@ matching kind is used, in this order:
 
 | `kind` | Meaning | Other fields |
 |---|---|---|
-| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete` (or `review-budget-exhausted` or `check-budget-exhausted` with the exhausted `budget`, see [Review and check budgets](#review-and-check-budgets); or `target-conflict-unresolved` with the conflicting `paths`, or `target-integration-rejected`, see [When the target advances during a run](#when-the-target-advances-during-a-run)), `stage` and `diagnostics` (the private `state.json` path) |
+| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete` (or `review-budget-exhausted` or `check-budget-exhausted` with the exhausted `budget`, see [Review and check budgets](#review-and-check-budgets); or `target-conflict-unresolved` with the conflicting `paths`, `target-integration-rejected` or `target-keeps-advancing`, see [When the target advances during a run](#when-the-target-advances-during-a-run)), `stage` and `diagnostics` (the private `state.json` path) |
 | `max-accepted` | The task was not started because `maxAccepted` was reached | `reason` `max-accepted`, `limit` |
 | `waiting-for-dependency` | A dependency is not accepted yet (for example blocked in this run) | `reason` `waiting-for-dependency`, `dependencies` (the ids not accepted) |
 | `waiting-for-claim` | Another runner holds a claim on the task or on overlapping scopes | `reason` `waiting-for-claim`, `claim` with the claimed task `id` and `host` |
@@ -1308,19 +1310,40 @@ under `Archived change`, and, when there are any, the findings under
 
 ## When the target advances during a run
 
-The target branch can move while a task is worked, for example when another task
-or a person merges into it. The runner notices the advance before it publishes
-the task branch, while it waits for the Pull Request checks and before it merges
-(the merge wait returns to publish when `origin/<target>` changed), and handles
-it the same way in each case. It compares the files the target changed since the
-task's recorded base with the task's guarded paths: the task scopes, the change
-directory and, after the archive, the archived change directory and the
+Owners may merge Pull Requests into the target branch while invocations run,
+including changes inside a running task's scopes. A task is never blocked only
+because the target advanced. The runner merges the advanced target into the
+task branch in the task worktree (never in the checkout it was started from,
+whose HEAD, branch, index and working tree stay untouched; that checkout only
+sees `git fetch origin <target>`), runs the frozen product checks on the merged
+result again and merges the Pull Request only while `origin/<target>` still
+equals the target it merged and checked.
+
+**Comparisons with origin.** The runner fetches `origin/<target>` and compares
+it:
+
+1. before it publishes the task branch, with the target the task branch was
+   last integrated with; every publish pass starts with this comparison;
+2. while it waits for the Pull Request, with the checked target (the target the
+   tested head was merged with and checked);
+3. immediately before merging: once in the Pull Request view that leads to the
+   merge request, and again through a target guard that the Pull Request host
+   calls after GitHub reports the Pull Request mergeable and right before
+   `gh pr merge --merge --match-head-commit <tested head>`. A guard that finds a
+   different target issues no merge command. The merge always uses the exact
+   checked head with `--match-head-commit`, so no unchecked combination of task
+   head and target reaches the target.
+
+When the target differs, the runner compares the files the target changed since
+the task's recorded base with the task's guarded paths: the task scopes, the
+change directory and, after the archive, the archived change directory and the
 `openspec/specs` files written by the archive.
 
-**Change outside the guarded paths.** As before, the target is merged into the
-task branch with a `chore(<commitScope>): integrate <target> into <id>` commit,
-the `setup` commands and the final checks run again and the tested head is
-pushed. The recorded base stays the same and no new review session runs.
+**Change outside the guarded paths.** The target is merged into the task branch
+in the task worktree with a `chore(<commitScope>): integrate <target> into <id>`
+commit, the `setup` commands and the product checks run again on the merged
+result and the tested head is pushed. The recorded base stays the same and no
+new implementation or documentation review session runs.
 
 **Change inside the guarded paths.** The task is not blocked. It enters the
 durable `integrate` stage: the runner merges the advanced target into the task
@@ -1331,7 +1354,7 @@ paths (`conflicts`), the `outcome` (`clean` or `conflict`) and the current
 `step`. Then, before the Pull Request is published or updated:
 
 1. a merge with conflicts gets one worker session to resolve them (see below);
-2. the `setup` commands and the project checks run again;
+2. the `setup` commands and the product checks run again;
 3. a new implementation review session reviews the merged result;
 4. a new documentation review session reviews it as well.
 
@@ -1343,14 +1366,28 @@ relative to the new base; then the usual publish, Pull Request and merge
 follow. An open Pull Request is reused and updated by the next push. Each
 finished integration is appended to `integrations` in the run state.
 
+**Repeats and the attempt limit.** When `origin/<target>` advanced again before
+the merge, the runner repeats the worktree merge, the checks (and, for a change
+inside the guarded paths, the reviews) and the comparison, then merges the new
+checked head. Each comparison while waiting for or immediately before the merge
+that finds a different target counts as one attempt, recorded in
+`targetAttempts` in `state.json`. After 5 attempts without an unchanged target
+the task is blocked with reason `target-keeps-advancing`: nothing is merged, the
+worktree, the local branch and the remote task branch are kept, and the attempt
+count is reset. A restart of the same invocation continues in that worktree
+with the worktree merge of the current target and 5 fresh attempts.
+
 **Conflicts.** When the merge conflicts, the worker gets exactly one worker
 session (an implementation session) with the conflicting paths, to resolve them
 inside the task scopes while keeping the intent of both sides. The runner then
 checks that no conflicting file still has a conflict marker (a line starting
 with `<<<<<<< ` or `>>>>>>> `) and no path is left unmerged, and concludes the
-merge. A conflicting path outside the task scopes, for example in the archived
-change or in an `openspec/specs` file, cannot be written by the worker, so the
-task is blocked at once without a session.
+merge; the checks and the reviews of the merged result follow. A merge of a
+change outside the guarded paths that conflicts is aborted and handed to the
+`integrate` stage, so it is handled the same way. A conflicting path outside
+the task scopes, for example in the archived change or in an `openspec/specs`
+file, cannot be written by the worker, so the task is blocked at once without a
+session.
 
 **Blocking reasons.**
 
@@ -1358,6 +1395,7 @@ task is blocked at once without a session.
 |---|---|
 | `target-conflict-unresolved` | A merge with conflicts: the resolution session fails, conflict markers or unmerged paths remain, a conflicting path is outside the task scopes, or the checks or a review do not accept the result. The conflicting `paths` are recorded with it |
 | `target-integration-rejected` | A merge without conflicts whose checks or reviews do not accept the result |
+| `target-keeps-advancing` | The target advanced before the merge in 5 consecutive attempts; the task keeps its worktree and branches and a restart continues |
 
 The reason (and, for a conflict, the `paths`) is stored in the task's `blocked`
 entry in `state.json` and appears in its `blocked` entry of `blockers` in the
@@ -1368,11 +1406,14 @@ A task whose [review or check budget](#review-and-check-budgets) ran out has
 keeps the reason `operation-incomplete`.
 
 **Restarts.** Every integration step is saved in `state.json` before the next
-effect. After a cancellation or a restart of the invocation, the run resumes the
-integration at the recorded step with the recorded base: it never merges the
-target a second time, runs only the outstanding resolution session, checks and
-reviews, and never reuses an acceptance from before the merge. A later run that
-recovers a blocked integration also resumes it at its recorded step.
+effect. `integratedTargets` lists every target commit merged into the task
+branch, oldest first, and `targetAttempts` the current attempt count. After a
+cancellation or a restart of the invocation, the run resumes from the last
+integrated target at the recorded step with the recorded base and attempt
+number: it never merges the target a second time, runs only the outstanding
+resolution session, checks and reviews, and never reuses an acceptance from
+before the merge. A later run that recovers a blocked integration also resumes
+it at its recorded step.
 
 ## Run statistics ledger
 
@@ -1518,6 +1559,8 @@ For example:
 [outcome-runner] 09:05:04 TASK-1 worktree: preparing the worktree
 [outcome-runner] 09:12:40 TASK-1 check: running 1/1: node (attempt 2)
 [outcome-runner] 09:31:12 TASK-1 wait: waiting for mergeability and checks of #12
+[outcome-runner] 09:31:15 TASK-1 compare: comparing origin/main with the checked target
+[outcome-runner] 09:31:15 TASK-1 merge: merging #12
 [outcome-runner] 09:33:02 run end: outcome exhausted
 ```
 
@@ -1530,11 +1573,11 @@ For example:
   effort to 8 (ending with `...` when cut), so all four always appear; a value
   not chosen yet is shown as `auto`.
 - Lines contain only fixed text and safe values: task ids, the invocation,
-  harness, model and effort, the target branch name (in the `integrate` line),
-  a check or setup program name with its index, the Pull Request number,
-  attempt numbers and the run outcome. They never contain secrets, worker
-  output, file contents, check output, error messages, block reasons or other
-  private diagnostics.
+  harness, model and effort, the target branch name (in the `integrate`,
+  `compare` and `retry` lines), a check or setup program name with its index,
+  the Pull Request number, attempt numbers and the run outcome. They never
+  contain commits, secrets, worker output, file contents, check output, error
+  messages, block reasons or other private diagnostics.
 
 The run steps are `start`, one `preflight` line for each preflight (OpenSpec,
 harness version, test framework), `cleanup` for each leftover worktree swept on
@@ -1549,14 +1592,36 @@ writes only the run `start` line and the run `end` line with outcome
 (each setup command), `investigation`, `planning`, `planning check`,
 `planning review`, `implementation`, `commit`, `check` (each product check),
 `review`, `documentation`, `documentation review`, `final checks`, `archive`,
-`receipt`, `integrate` (only when the target advanced), `push`,
-`pull request`, `wait`, `merge`, `acceptance`, `cleanup`, and `blocked`
+`receipt`, `compare` (each comparison with origin), `integrate` (only when the
+target advanced), `push`, `pull request`, `wait`, `merge`, `retry` (only when
+the target advanced before the merge), `acceptance`, `cleanup`, and `blocked`
 (`stopped at <step>`, naming the last step and never the reason). An
 integration of an in-scope target advance writes an `integrate` line before the
 merge, an `implementation` line before the conflict resolution session, `setup`
 and `check` lines for its checks, and `review` and `documentation review` lines
 for its reviews.
 
+- **Comparisons** with `origin/<target>` are logged as `compare` lines. Every
+  publish pass starts with `compare: comparing origin/<target> with the
+  integrated target`, before its `integrate`, `setup` and `check` lines. While
+  waiting to merge, `compare: comparing origin/<target> with the checked
+  target` is written for the first Pull Request view of the wait, for the view
+  that leads to the merge request (directly before `merge: merging #N`, which
+  stays the last line before the merge request), for every view that finds a
+  different target, and by the guard right before the merge command. Later
+  views that find the target unchanged while polling stay quiet.
+- **Target retries**: only the `compare: comparing origin/<target> with the
+  checked target` comparisons, made while waiting to merge or by the guard,
+  write a `retry` line. When such a comparison finds a different target, it is
+  followed directly by `retry: origin/<target> advanced; integrating it again
+  (attempt N)`, and the repeated publish pass follows. On the fifth consecutive
+  such comparison that finds a different target, no `retry` line is written:
+  the task is blocked with `target-keeps-advancing` and the compare line is
+  followed by `blocked: stopped at compare` (the `blocked` line names the last
+  step; the stage recorded in `state.json` stays `publish`). A publish-pass
+  comparison with the integrated target that finds an advanced target writes no
+  `retry` line; the `integrate` line (a change outside the guarded paths) or the
+  lines of the `integrate` stage (a change inside them) follow it directly.
 - **Waits** log once when the wait starts, never on every poll: one `wait` line
   for mergeability and checks, one more when the pull request head is stale,
   and one `git lock: waiting for the Git lock` line when another runner holds
@@ -1568,8 +1633,9 @@ for its reviews.
   and `review` lines; in a documentation round the `documentation`, `commit`
   (committing the documentation) and `documentation review` lines; and in a
   publish pass repeated after the target advanced during the merge the
-  `integrate`, `setup`, `check`, `push`, `pull request`, `wait` and `merge`
-  lines.
+  `compare`, `integrate`, `setup`, `check`, `push`, `pull request`, `wait` and
+  `merge` lines. The attempt number of a publish pass is durable, so a restart
+  keeps it.
 - **Resume**: steps already completed in the run state are not logged again.
   The first step line of work continued from the run state starts its message
   with `resuming`; later lines do not.
@@ -1668,7 +1734,13 @@ scripted pull request hosts, through `disposeInvocation` and the exported
 `dispose` entry point with a temporary `XDG_STATE_HOME`. Target advances during
 a run (clean and conflicting merges, restarts and advances outside the scopes)
 are tested with Git fixtures that push to the fixture origin, scripted adapters
-and the scripted pull request host. Runner upgrades, required settings and added
+and the scripted pull request host. The comparisons with origin before
+publishing and merging, the merge guard, the attempt limit, conflicts while
+waiting to merge and restarts from the recorded target commit are tested in
+`test/merge-when-target-unchanged.test.ts` with the same fixtures and scripted
+pull request hosts whose merge advances the target and then calls the guard, as
+`GitHubHost.merge` does; the guard order of `GitHubHost.merge` is tested with a
+stubbed `gh`. Runner upgrades, required settings and added
 tasks are tested with the same fixtures: an interrupted invocation's `state.json`
 is rewritten the way an older runner wrote it, and `RunOptions.requiredSettings`
 declares a required setting. The review and check budgets and `--retry` are

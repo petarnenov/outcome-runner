@@ -40,7 +40,11 @@ import { runnerVersion } from './runner-version.ts';
 export interface PullRequestHost {
   find(branch: string): PullRequest | null | Promise<PullRequest | null>;
   create(work: Work, body: string): PullRequest | null | Promise<PullRequest | null>;
-  merge(pr: PullRequest, head: string): void | Promise<void>;
+  /**
+   * Merges the pull request with the exact checked `head`. A host that waits before its merge command calls the
+   * optional `guard` immediately before it; a throwing guard means no merge command is issued.
+   */
+  merge(pr: PullRequest, head: string, guard?: () => void | Promise<void>): void | Promise<void>;
 }
 
 export interface RunEvent {
@@ -117,8 +121,11 @@ export interface RunOptions {
 interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
 interface InterruptedFailure extends Error { interrupted?: boolean }
 
-/** The blocked reasons of a failed integration of an in-scope target advance. */
-export type IntegrationCode = 'target-conflict-unresolved' | 'target-integration-rejected';
+/**
+ * The blocked reasons of a failed integration of an advanced target: an unresolved conflict, a rejected
+ * integration, or a target that kept advancing for `TARGET_ATTEMPTS` consecutive attempts.
+ */
+export type IntegrationCode = 'target-conflict-unresolved' | 'target-integration-rejected' | 'target-keeps-advancing';
 
 /** A failed integration: the message is the code, and `paths` lists the unresolved conflicting paths. */
 export class IntegrationFailure extends Error {
@@ -132,10 +139,22 @@ export class IntegrationFailure extends Error {
   }
 }
 
+/** The guard of a merge found origin/<target> different from the checked target; no merge command was issued. */
+class TargetAdvanced extends Error {
+  constructor() {
+    super('Target advanced before the merge');
+    this.name = 'TargetAdvanced';
+  }
+}
+
+/** The consecutive attempts that may end with an advanced target before the task blocks with `target-keeps-advancing`. */
+export const TARGET_ATTEMPTS = 5;
+
 /** Whether `text` has a line starting with a Git conflict marker (`<<<<<<< ` or `>>>>>>> `). */
 export const conflictMarkers = (text: string): boolean => /^(?:<<<<<<<|>>>>>>>) /mu.test(text);
 
-const INTEGRATION_REASONS: readonly string[] = ['target-conflict-unresolved', 'target-integration-rejected'];
+const INTEGRATION_REASONS: readonly string[] = ['target-conflict-unresolved', 'target-integration-rejected',
+  'target-keeps-advancing'];
 
 /** The review rounds of every budget stage (planning, implementation and documentation) of a task. */
 export const REVIEW_ROUNDS = 4;
@@ -272,8 +291,8 @@ export interface UnfinishedInput extends AcceptedInput {
  * blocked, max-accepted, waiting-for-dependency, waiting-for-claim, waiting-for-blocked-scope. Throws
  * `Unexplained unfinished task` when no rule matches. A blocked task with an exhausted budget has the reason
  * `review-budget-exhausted` or `check-budget-exhausted` and a copy of the `budget`; a blocked task keeps the reason
- * `target-conflict-unresolved` (with its conflicting `paths`) or `target-integration-rejected`; every other blocked
- * task has the reason `operation-incomplete`.
+ * `target-conflict-unresolved` (with its conflicting `paths`), `target-integration-rejected` or
+ * `target-keeps-advancing`; every other blocked task has the reason `operation-incomplete`.
  */
 export function explainUnfinished(input: UnfinishedInput): Record<string, Blocker> {
   const { remaining, ids, tasks, blocked, done, maxAccepted, foreignClaims, statePath } = input;
@@ -460,8 +479,6 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   // Task ids whose work was found in durable state at start; only their first line carries `resuming`.
   const resumable = new Set<string>();
   const lastStep = new Map<string, string>();
-  // Publish passes per task within this call; a pass after a target advance logs its attempt.
-  const publishPasses = new Map<string, number>();
   const taskStep = (id: string, name: string, message: string, attempt?: number): void => {
     const resuming = resumable.delete(id); lastStep.set(id, name);
     step(id, name, message, { attempt, resuming });
@@ -570,6 +587,13 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       return result;
     };
     const activeWork = () => store.state.current as Work;
+    // The attempt of the current publish, pull request and merge pass; it is durable, so a restart keeps it.
+    const currentAttempt = (): number => (activeWork().targetAttempts ?? 0) + 1;
+    // The integrated targets with `target` appended unless it is already the last entry.
+    const integrated = (target: string): string[] => {
+      const list = activeWork().integratedTargets ?? [];
+      return list.at(-1) === target ? [...list] : [...list, target];
+    };
     // The durable budget of the active work. A budget stage saves it on entry, so legacy work keeps its derived counts.
     const budget = (): TaskBudget => budgetOf(activeWork());
     const enterBudget = () => { if (!activeWork().budget) save({ budget: structuredClone(budget()) }); };
@@ -691,10 +715,16 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
     // The sorted unmerged paths of the task worktree.
     const unmergedPaths = (work: Work): string[] => [...new Set(git(work.path, 'diff', '--name-only', '--diff-filter=U')
       .split('\n').filter(Boolean))].sort();
+    // Starts the durable `integrate` stage for `target`; every earlier acceptance is cleared so it is never reused.
+    const startIntegration = (target: string): void => {
+      save({ stage: 'integrate', integration: { target, previousBase: activeWork().base, conflicts: [], step: 'merge',
+        outcome: 'clean' }, review: undefined, checks: undefined, finalChecks: undefined, documentationChecks: undefined,
+        head: undefined, testedTarget: undefined, findings: [] });
+    };
     /**
      * `contained`: HEAD already contains the target. `merged`: an advance outside the guarded paths was merged and
-     * set up as before; the base is unchanged. `integrate`: an advance inside the guarded paths started the durable
-     * `integrate` stage, which clears every earlier acceptance so it is never reused for the new base.
+     * set up as before; the base is unchanged. `integrate`: an advance inside the guarded paths, or an outside-scope
+     * merge with conflicts (aborted first), started the durable `integrate` stage.
      */
     const integrateTarget = (work: Work, target: string, attempt?: number): 'contained' | 'merged' | 'integrate' => {
       if (git(work.path, 'merge-base', target, 'HEAD') === target) return 'contained';
@@ -704,13 +734,20 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       // The archived change and the specification files written by the archive belong to the task like its scopes.
       const guarded = [...work.scopes, work.directory, ...(archive ? [archive.directory, ...archive.specs] : [])];
       if (scopesOverlap(changed, guarded)) {
-        save({ stage: 'integrate', integration: { target, previousBase: recorded.base, conflicts: [], step: 'merge',
-          outcome: 'clean' }, review: undefined, checks: undefined, finalChecks: undefined, documentationChecks: undefined,
-          head: undefined, testedTarget: undefined, findings: [] });
+        startIntegration(target);
         return 'integrate';
       }
       taskStep(work.id, 'integrate', `integrating the advanced ${project.target}`, attempt);
-      git(work.path, 'merge', '--no-edit', '-m', commitSubject('chore', `integrate ${project.target} into ${work.id}`), target);
+      try {
+        git(work.path, 'merge', '--no-edit', '-m', commitSubject('chore', `integrate ${project.target} into ${work.id}`), target);
+      } catch (error) {
+        if (!unmergedPaths(work).length) throw error;
+        // The integrate stage merges again, records the conflicts and gives them one resolution session.
+        git(work.path, 'merge', '--abort');
+        startIntegration(target);
+        return 'integrate';
+      }
+      save({ integratedTargets: integrated(target) });
       checks(work, project.setup ?? [], 'setup', attempt);
       return 'merged';
     };
@@ -1190,7 +1227,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               new IntegrationFailure('target-integration-rejected', []);
           };
           if (integration.step === 'merge') {
-            taskStep(work.id, 'integrate', `merging the advanced ${project.target} into the task scope`);
+            // The attempt is read from the durable work, so a restart keeps the number.
+            taskStep(work.id, 'integrate', `merging the advanced ${project.target} into the task scope`, currentAttempt());
             assertWork(activeWork());
             let conflicts: string[] = [];
             if (merging()) {
@@ -1204,8 +1242,9 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
                 if (!conflicts.length) throw error;
               }
             }
-            save({ base: integration.target, integration: { ...integration, conflicts,
-              outcome: conflicts.length ? 'conflict' : 'clean', step: conflicts.length ? 'resolve' : 'checks' } });
+            save({ base: integration.target, integratedTargets: integrated(integration.target),
+              integration: { ...integration, conflicts, outcome: conflicts.length ? 'conflict' : 'clean',
+                step: conflicts.length ? 'resolve' : 'checks' } });
             await cancellable(afterEffect('integrate', activeWork()), signal);
           } else if (integration.step === 'resolve') {
             try {
@@ -1294,29 +1333,31 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           save({ stage: 'publish' });
         }
         if (activeWork().stage === 'publish') {
-          const pass = (publishPasses.get(work.id) ?? 0) + 1; publishPasses.set(work.id, pass);
+          const attempt = currentAttempt();
           assertWork(activeWork());
+          // Every publish pass begins with the comparison of origin/<target> with the integrated target.
+          taskStep(work.id, 'compare', `comparing origin/${project.target} with the integrated target`, attempt);
           const targetNow = refresh(work.id).target;
           // An advance inside the guarded paths continues in the integrate stage of the next loop iteration.
-          if (integrateTarget(work, targetNow, pass) === 'integrate') continue;
-          save({ finalChecks: checks(work, project.checks, 'check', pass) });
+          if (integrateTarget(work, targetNow, attempt) === 'integrate') continue;
+          save({ finalChecks: checks(work, project.checks, 'check', attempt) });
           if (git(work.path, 'status', '--porcelain')) throw new Error('Final checks changed tracked inputs');
           const head = git(work.path, 'rev-parse', 'HEAD');
           const published = work;
-          taskStep(work.id, 'push', 'pushing the tested head', pass);
+          taskStep(work.id, 'push', 'pushing the tested head', attempt);
           lockGit(published.id, () => git(published.path, 'push', 'origin', `HEAD:refs/heads/${published.branch}`));
           save({ head, testedTarget: targetNow, stage: 'pr' });
         }
         if (activeWork().stage === 'pr') {
-          const pass = publishPasses.get(work.id);
-          taskStep(work.id, 'pull request', 'finding the pull request', pass);
+          const attempt = currentAttempt();
+          taskStep(work.id, 'pull request', 'finding the pull request', attempt);
           const now = activeWork();
           const body = join(store.directory, `${work.id}-pr.md`);
           writeFileSync(body, pullRequestBody(now, config.authority.reference));
           let pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
-          if (pr) { taskStep(work.id, 'pull request', `reusing #${pr.number}`, pass); rememberPr(pr); }
+          if (pr) { taskStep(work.id, 'pull request', `reusing #${pr.number}`, attempt); rememberPr(pr); }
           if (!pr) {
-            taskStep(work.id, 'pull request', 'creating the pull request', pass);
+            taskStep(work.id, 'pull request', 'creating the pull request', attempt);
             pr = await cancellable(Promise.resolve(host.create(now, body)), signal);
             if (pr) rememberPr(pr);
             await cancellable(afterEffect('pr', pr), signal);
@@ -1326,12 +1367,24 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         }
         if (activeWork().stage === 'merge') {
           const now = activeWork();
-          const pass = publishPasses.get(work.id);
           const polling = options.mergePolling ?? {};
           const limit = polling.views ?? MERGE_STATE_VIEWS;
+          // Every comparison of origin/<target> with the checked target goes through this helper; it is logged when
+          // `log` is set or when the target differs, so repeated unchanged polling stays quiet.
+          const compareTarget = (log: boolean): boolean => {
+            const targetNow = refresh(work.id).target;
+            const unchanged = targetNow === activeWork().testedTarget;
+            if (log || !unchanged) {
+              taskStep(work.id, 'compare', `comparing origin/${project.target} with the checked target`, currentAttempt());
+            }
+            return unchanged;
+          };
+          // Called by the host right before its merge command: a difference means no merge command is issued.
+          const guard = (): void => { if (!compareTarget(true)) throw new TargetAdvanced(); };
           // The wait is announced once on entry and a stale head once per merge stage, never on every view.
-          taskStep(work.id, 'wait', `waiting for mergeability and checks of ${now.pr ? `#${now.pr.number}` : 'the pull request'}`, pass);
-          let headWait = false;
+          taskStep(work.id, 'wait', `waiting for mergeability and checks of ${now.pr ? `#${now.pr.number}` : 'the pull request'}`,
+            currentAttempt());
+          let headWait = false; let advanced = false;
           for (let view = 1; ; view += 1) {
             const pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
             if (!pr) throw new Error('Recorded PR missing');
@@ -1342,18 +1395,34 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             if (git(work.path, 'rev-parse', 'HEAD') !== now.head) {
               throw new Error('Checked head or target changed');
             }
-            if (refresh(work.id).target !== now.testedTarget) { save({ stage: 'publish' }); break; }
-            if (pr.headRefOid === now.head) {
-              taskStep(work.id, 'merge', `merging #${pr.number}`, pass);
-              await cancellable(Promise.resolve(host.merge(pr, now.head!)), signal); await cancellable(afterEffect('merge', pr), signal);
+            const ready = pr.headRefOid === now.head;
+            if (!compareTarget(view === 1 || ready)) { advanced = true; break; }
+            if (ready) {
+              taskStep(work.id, 'merge', `merging #${pr.number}`, currentAttempt());
+              try { await cancellable(Promise.resolve(host.merge(pr, now.head!, guard)), signal); }
+              catch (error) {
+                if (!(error instanceof TargetAdvanced)) throw error;
+                advanced = true; break;
+              }
+              await cancellable(afterEffect('merge', pr), signal);
               break;
             }
-            if (!headWait) { headWait = true; taskStep(work.id, 'wait', 'waiting for pull request head to match', pass); }
+            if (!headWait) { headWait = true; taskStep(work.id, 'wait', 'waiting for pull request head to match', currentAttempt()); }
             assertOriginHead(work.path, work.branch, now.head!);
             if (view >= limit) throw new Error('Checked head or target changed');
             await cancellable((polling.delay ?? delay)(polling.pollMs ?? MERGE_STATE_POLL_MS), signal);
           }
-          if (activeWork().stage === 'publish') continue;
+          if (advanced) {
+            // A failed comparison: repeat the worktree merge, checks and comparison, at most TARGET_ATTEMPTS times.
+            const attempts = (activeWork().targetAttempts ?? 0) + 1;
+            if (attempts >= TARGET_ATTEMPTS) {
+              save({ stage: 'publish', targetAttempts: 0 });
+              throw new IntegrationFailure('target-keeps-advancing', []);
+            }
+            taskStep(work.id, 'retry', `origin/${project.target} advanced; integrating it again`, attempts + 1);
+            save({ targetAttempts: attempts, stage: 'publish' });
+            continue;
+          }
           const targetNow = refresh(work.id).target;
           if (!accepted(targetNow, authorized(refresh(work.id).queue, work.id))) throw new Error('Merged result lacks valid receipt');
         }

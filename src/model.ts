@@ -174,6 +174,10 @@ export interface Work extends Task {
   integration?: IntegrationRecord;
   /** Every finished integration, oldest first. */
   integrations?: IntegrationRecord[];
+  /** Every origin/<target> commit merged into the task branch, oldest first. */
+  integratedTargets?: string[];
+  /** Consecutive comparisons that found origin/<target> different from the checked target. */
+  targetAttempts?: number;
   session?: SessionHandle & { purpose: Purpose };
   sessions?: WorkerSession[];
   sessionStarts?: Partial<Record<Purpose, number>>;

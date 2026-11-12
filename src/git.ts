@@ -151,12 +151,17 @@ export class GitHubHost {
       '--title', `feat(${this.project.commitScope ?? 'work-queue'}): complete ${work.id}${this.project.commitSuffix ?? ''}`, '--body-file', body);
     return this.find(work.branch);
   }
-  async merge(pr: PullRequest, head: string): Promise<void> {
+  /**
+   * Merges the exact checked `head` once the pull request view has settled and is eligible. The optional `guard`
+   * runs after the settled view and immediately before `gh pr merge`; a throwing guard issues no merge command.
+   */
+  async merge(pr: PullRequest, head: string, guard?: () => void | Promise<void>): Promise<void> {
     const row = await this.settledMergeView(pr, head);
     if (row.state !== 'OPEN' || row.headRefOid !== head || row.baseRefName !== this.project.target ||
         row.mergeStateStatus !== 'CLEAN' || row.isDraft) {
       throw new Error(`PR protection or identity blocks merge (${row.mergeStateStatus})`);
     }
+    await guard?.();
     this.gh('pr', 'merge', String(pr.number), '--merge', '--match-head-commit', head);
   }
   mergeView(pr: PullRequest): MergeView {
