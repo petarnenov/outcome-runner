@@ -62,9 +62,9 @@ function reportFailure(error: unknown, output: Output): object {
   return line;
 }
 
-const flagError = (arg: string | undefined) => new Error('Expected --harness=<claude|codex>, --model=<id>, ' +
-  '--effort=<level> and --coverage=<n>, each at most once, --no-mascot at most once, and --retry <task id> once per ' +
-  `task id; rejected ${JSON.stringify(arg)}`);
+const flagError = (arg: string) => new Error('Expected --harness=<claude|codex>, --model=<id>, ' +
+  '--effort=<level> and --coverage=<n>, each at most once, --retry <task id> once per task id, ' +
+  `and --no-mascot at most once; rejected ${JSON.stringify(arg)}`);
 
 /**
  * Parses `--harness=`, `--model=`, `--effort=` and `--coverage=`, in any order, each at most once and nonempty,
