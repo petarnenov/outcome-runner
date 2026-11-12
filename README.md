@@ -1610,9 +1610,17 @@ for its reviews.
   stays the last line before the merge request), for every view that finds a
   different target, and by the guard right before the merge command. Later
   views that find the target unchanged while polling stay quiet.
-- **Target retries**: a comparison that finds a different target is followed
-  directly by `retry: origin/<target> advanced; integrating it again
-  (attempt N)`, and the repeated publish pass follows.
+- **Target retries**: only the `compare: comparing origin/<target> with the
+  checked target` comparisons, made while waiting to merge or by the guard,
+  write a `retry` line. When such a comparison finds a different target, it is
+  followed directly by `retry: origin/<target> advanced; integrating it again
+  (attempt N)`, and the repeated publish pass follows. On the fifth consecutive
+  such comparison that finds a different target, no `retry` line is written:
+  the task is blocked with `target-keeps-advancing` and the compare line is
+  followed by `blocked: stopped at publish`. A publish-pass comparison with the
+  integrated target that finds an advanced target writes no `retry` line; the
+  `integrate` line (a change outside the guarded paths) or the lines of the
+  `integrate` stage (a change inside them) follow it directly.
 - **Waits** log once when the wait starts, never on every poll: one `wait` line
   for mergeability and checks, one more when the pull request head is stale,
   and one `git lock: waiting for the Git lock` line when another runner holds
