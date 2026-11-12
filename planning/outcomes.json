@@ -500,6 +500,23 @@
         "README replaces the advice not to merge into the target during a run with how the runner integrates an advanced target.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-28",
+      "title": "Send a rejected integration back to the worker before blocking",
+      "change": "integration-rejection-send-back",
+      "priority": 23,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-27"],
+      "criteria": [
+        "When the checks, the implementation review or the documentation review of an integrated result without conflicts do not accept it, the runner gives the worker one implementation session with the failed check output or the review findings, inside the task scopes, instead of blocking the task at once with target-integration-rejected.",
+        "After that session the runner runs the frozen product checks, the implementation review and the documentation review on the result again. Only when they accept does the task continue to publishing and merging; otherwise it is blocked with reason target-integration-rejected, recording the last findings or check output.",
+        "The send-back session and the reviews after it are recorded in the integration entry of the durable state before each next effect, so a restart resumes at the recorded step and never grants a second send-back session for the same integrated target commit.",
+        "The send-back session and its outcome are logged as step lines.",
+        "Tests use scripted adapters and Git fixtures and cover: a documentation review rejection fixed by the send-back session and accepted; an implementation review rejection fixed and accepted; a failed check fixed and accepted; a send-back session whose result is still rejected blocking with target-integration-rejected and its findings; and a restart after the send-back session resuming without a second session.",
+        "README describes the send-back session in the integration section and the target-integration-rejected reason.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
