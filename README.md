@@ -199,10 +199,13 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
 | 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked, a foreign claim or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)) |
-| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `missing-setting`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
+| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
 
 After an interruption, run the **same command with the same file** from the same
 branch to resume. Do not delete the state under `~/.local/state/outcome-runner/`.
+A task blocked because its review or check budget ran out stays blocked on such a
+restart; give it a fresh budget with `--retry <task id>` (see
+[Review and check budgets](#review-and-check-budgets)).
 The runner also creates a `work-queue-claims-<target>` branch. It is never
 merged; keep it while work is unfinished. When you no longer want an invocation,
 end it with `outcome-runner dispose <invocation file>` instead of resuming it;
@@ -602,9 +605,11 @@ before its next step starts: claim, investigation, planning and planning review,
 implementation and implementation review, then documentation, documentation
 review, project checks, archive, receipt, publish, Pull Request and merge. See
 [Documentation and archive](#documentation-and-archive) for the stages after the
-implementation review. When the target advances into the task's scope, an
-`integrate` stage merges it and checks and reviews the result again before the
-receipt is recorded anew; see
+implementation review. The planning, implementation and documentation stages
+are bounded by durable review and check budgets; see
+[Review and check budgets](#review-and-check-budgets). When the target advances
+into the task's scope, an `integrate` stage merges it and checks and reviews the
+result again before the receipt is recorded anew; see
 [When the target advances during a run](#when-the-target-advances-during-a-run).
 
 ## Project and authority
@@ -643,7 +648,7 @@ security decisions.
 ```sh
 cd /path/to/repository
 outcome-runner hash path/to/queue.json
-outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>] [--no-mascot]
+outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>] [--no-mascot] [--retry <task id>]...
 outcome-runner dispose /path/to/invocation.json [--remove-work]
 ```
 
@@ -702,7 +707,11 @@ once; any other argument is refused with exit code 4. The valueless
 `--no-mascot` (see [Mascot](#mascot)) may also appear once, in any position
 among them; a repeated `--no-mascot` or a valued form such as `--no-mascot=1` is
 refused with exit code 4 like any other invalid flag, and the mascot stays off
-for that refusal. A model not offered by the
+for that refusal. `--retry <task id>` takes the task id as the next argument and
+may be given once per task id, in any position among the other flags (see
+[Review and check budgets](#review-and-check-budgets)); `--retry` without an id,
+with an id beginning with `-`, with the same id twice or as `--retry=<id>` is
+refused with exit code 4 like any other invalid flag. A model not offered by the
 selected harness's catalog, or an effort the selected model does not support, is
 refused before allocation with exit code 4 and a diagnostics message naming the
 rejected value. Omitted fields still fall back to the defaults above.
@@ -782,7 +791,7 @@ matching kind is used, in this order:
 
 | `kind` | Meaning | Other fields |
 |---|---|---|
-| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete` (or `target-conflict-unresolved` with the conflicting `paths`, or `target-integration-rejected`; see [When the target advances during a run](#when-the-target-advances-during-a-run)), `stage` and `diagnostics` (the private `state.json` path) |
+| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete` (or `review-budget-exhausted` or `check-budget-exhausted` with the exhausted `budget`, see [Review and check budgets](#review-and-check-budgets); or `target-conflict-unresolved` with the conflicting `paths`, or `target-integration-rejected`, see [When the target advances during a run](#when-the-target-advances-during-a-run)), `stage` and `diagnostics` (the private `state.json` path) |
 | `max-accepted` | The task was not started because `maxAccepted` was reached | `reason` `max-accepted`, `limit` |
 | `waiting-for-dependency` | A dependency is not accepted yet (for example blocked in this run) | `reason` `waiting-for-dependency`, `dependencies` (the ids not accepted) |
 | `waiting-for-claim` | Another runner holds a claim on the task or on overlapping scopes | `reason` `waiting-for-claim`, `claim` with the claimed task `id` and `host` |
@@ -797,6 +806,70 @@ For example:
 The private failure message of a blocked task stays in `state.json`; it is never
 written to stdout. `claimedElsewhere` still lists foreign claims by task id. A
 `cancelled` result carries no `blockers`.
+
+### Review and check budgets
+
+Every task has a durable budget, saved in its work state in `state.json` as
+`budget` (`plan`, `work` and `document`, each with the used `reviews` and
+`checks`). It bounds the planning, implementation and documentation stages:
+
+| Stage | Review rounds | Check attempts |
+|---|---|---|
+| `plan` (planning and planning review) | 4 | 4 failing planning check runs (the OpenSpec packet or `planningCheck`) |
+| `work` (implementation and implementation review) | 4 | 4 failing product check runs (`checks`) |
+| `document` (documentation and documentation review) | 4 | 0 (the stage runs no checks) |
+
+- **Review budget.** A review round is counted when its review session is about
+  to start, before the session runs, so a review session that fails or crashes
+  still uses its round. A review that does not accept with zero findings sends
+  its findings to a new worker session of the stage while rounds remain.
+- **Check budget.** A failing planning check or product check run of the stage
+  uses one check attempt and **never a review round**; the worker gets another
+  session of the same stage to fix it while attempts remain, and no review
+  starts for the failing run. The `run_checks` calls a worker makes inside its
+  own session do not count. The integration checks and reviews of an
+  [advanced target](#when-the-target-advances-during-a-run) and the final checks
+  have no budget; they block on their first failure as before.
+- **Restarts keep the counts.** A restart of the invocation without `--retry`
+  continues from the recorded counts and never grants new rounds or attempts. A
+  blocked task is still resumed (for example after a failed session), but a task
+  whose budget ran out is blocked again at once, without any worker or review
+  session. State written before budgets existed takes its used review rounds from
+  the recorded planning, implementation and documentation reviews, with no check
+  attempts used.
+
+When a budget runs out the task is blocked. Its private reason in `state.json`
+names the stage, whether reviews or checks ran out, and the used and allowed
+counts of both, for example
+`Implementation review budget exhausted: 4 of 4 review rounds and 0 of 4 check attempts used`
+or `Planning check budget exhausted: 1 of 4 review rounds and 4 of 4 check attempts used`.
+The blocked entry also has `budget` with `stage`, `exhausted` (`reviews` or
+`checks`), `reviews` and `checks`, each with `used` and `limit`. The public
+blocker in the run result (see [Unfinished results](#unfinished-results)) has
+`reason` `review-budget-exhausted` or `check-budget-exhausted` and the same
+`budget`, for example
+`{"kind":"blocked","stage":"work","reason":"review-budget-exhausted","diagnostics":"...","budget":{"stage":"work","exhausted":"reviews","reviews":{"used":4,"limit":4},"checks":{"used":0,"limit":4}}}`.
+Every other blocked task keeps its reason, for example `operation-incomplete`.
+
+**`--retry <task id>`.** Only the owner grants a blocked task a fresh budget, by
+restarting the invocation with `--retry <task id>` (once per task id, for
+several tasks repeat it):
+
+```sh
+outcome-runner ~/invocations/my-project-1.json --retry TASK-1
+```
+
+The task's used review rounds and check attempts are reset to zero before it
+resumes at its recorded stage. Each retry is recorded with the task id (`task`),
+the time (`at`), the `stage`, the `previous` budget and the `exhausted` budget,
+when there was one, both in the task's work state (`retries`) and in `retries` of
+`state.json`. The task's receipt lists its retries in `retries`; receipts of
+tasks never retried have no such field. `--retry` is an operational option: it
+is never part of the invocation identity. A `--retry` for a task that is not a
+blocked task of the invocation (for example a task that was accepted after an
+earlier retry) is refused with exit code 4 and reason `retry-not-blocked`, before
+any ownership, claim or session and without changing any budget or retry record;
+the private diagnostics file lists the ids in `details.tasks`.
 
 ### Invocation status
 
@@ -1073,10 +1146,15 @@ documentation files inside the scopes.
 **Documentation review.** A fresh review session checks the documentation
 changes against the implementation, the criteria and the scopes, and accepts
 only with zero findings. Findings go back to a new documentation session. Like
-planning and implementation it allows at most 4 rounds; after that the task is
-blocked with `Documentation review remains unresolved`. After acceptance the
-project `checks` run again (`final-checks`); a failure blocks the task before
-the archive.
+planning and implementation it allows at most 4 review rounds, counted durably
+in `budget.document.reviews` when each documentation review session starts (see
+[Review and check budgets](#review-and-check-budgets)); after that the task is
+blocked with
+`Documentation review budget exhausted: 4 of 4 review rounds and 0 of 0 check attempts used`
+and the public reason `review-budget-exhausted`. A restart in `document-review`
+after the fourth review session failed blocks again without a fifth review.
+After acceptance the project `checks` run again (`final-checks`); a failure
+blocks the task before the archive.
 
 **Archive.** The runner archives the change with the project command
 `archive`, run as an argument array (never through a shell) in the task
@@ -1103,7 +1181,8 @@ publish and merge) use the archived paths.
 **Receipt and Pull Request.** The result manifest accepts paths inside the task
 scopes, the archived change directory and the `openspec/specs` files written by
 the archive; any other path blocks the task. The receipt records the archived
-specification paths and the resolved `target`. Receipts written before this
+specification paths and the resolved `target`, and the task's owner retries in
+`retries` when it was retried with `--retry`. Receipts written before this
 stage, with unarchived specification paths, stay valid. The Pull Request body lists the updated
 documentation files under `Documentation updated`, the archived change directory
 under `Archived change`, and, when there are any, the findings under
@@ -1166,7 +1245,9 @@ The reason (and, for a conflict, the `paths`) is stored in the task's `blocked`
 entry in `state.json` and appears in its `blocked` entry of `blockers` in the
 run result (see [Unfinished results](#unfinished-results)), for example
 `{"kind":"blocked","stage":"integrate","reason":"target-conflict-unresolved","diagnostics":"...","paths":["src/counter/result.mjs"]}`.
-Every other blocked task keeps the reason `operation-incomplete`.
+A task whose [review or check budget](#review-and-check-budgets) ran out has
+`review-budget-exhausted` or `check-budget-exhausted`; every other blocked task
+keeps the reason `operation-incomplete`.
 
 **Restarts.** Every integration step is saved in `state.json` before the next
 effect. After a cancellation or a restart of the invocation, the run resumes the
@@ -1287,8 +1368,8 @@ Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
 `openspec-layout-created`, `harness-unavailable`, `test-framework-missing`,
 `test-framework-analysis-failed`, `test-framework-prepared`, `missing-setting`
 or `startup-or-run-failed` (target refusals, `invocation-running`,
-`invocation-disposed` and `dependencies-outside-invocation` are recorded as
-`startup-or-run-failed`).
+`invocation-disposed`, `retry-not-blocked` and `dependencies-outside-invocation`
+are recorded as `startup-or-run-failed`).
 Blocked tasks use safe `blockingReason` codes
 `operation-incomplete` or `cancelled`. SIGINT and SIGTERM are handled
 during startup and work through one guarded finalizer; SIGKILL, power loss and
@@ -1472,9 +1553,13 @@ are tested with Git fixtures that push to the fixture origin, scripted adapters
 and the scripted pull request host. Runner upgrades, required settings and added
 tasks are tested with the same fixtures: an interrupted invocation's `state.json`
 is rewritten the way an older runner wrote it, and `RunOptions.requiredSettings`
-declares a required setting. The `live:*` scripts exercise a real
-harness; set `OUTCOME_TEST_HARNESS` to `claude` or `codex` (default `codex`).
-Step lines are captured through `RunOptions.steps`.
+declares a required setting. The review and check budgets and `--retry` are
+tested in `test/review-budgets.test.ts` with the same fixtures and scripted
+adapters that reject chosen reviews, write failing results or incomplete
+planning artifacts, or fail chosen sessions, across restarts and retries. The
+`live:*` scripts exercise a real harness; set `OUTCOME_TEST_HARNESS` to
+`claude` or `codex` (default `codex`). Step lines are captured through
+`RunOptions.steps`.
 
 ## License
 

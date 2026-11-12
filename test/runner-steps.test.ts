@@ -85,10 +85,11 @@ test('C (required): a task blocked by failing checks ends with the step it stopp
   assert.equal(task.filter(line => line.startsWith('A implementation:')).length, 4);
   assert.equal(body(lines.at(-1)!), 'run end: outcome incomplete');
   const reason = f.state('one').blocked.A.reason as string;
-  assert.match(reason, /remain unresolved/u);
+  assert.match(reason, /^Implementation check budget exhausted: /u);
   for (const line of lines) {
     assert.ok(line.length <= 120, line);
-    for (const secret of ['unresolved', 'Scripted worker', 'export const', 'Implement all', 'findings', 'Error']) {
+    for (const secret of ['unresolved', 'exhausted', 'Scripted worker', 'export const', 'Implement all', 'findings',
+      'Error']) {
       assert.ok(!line.includes(secret), `${line} contains ${secret}`);
     }
   }

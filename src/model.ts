@@ -71,6 +71,29 @@ export type Stage = 'claim' | 'investigate' | 'plan' | 'work' | 'document' | 'do
   'archive' | 'integrate' | 'receipt' | 'publish' | 'pr' | 'merge';
 export type Purpose = 'investigate' | 'plan' | 'work' | 'review' | 'document' | 'document-review';
 
+/** The stages with a durable review and check budget. */
+export type BudgetStage = 'plan' | 'work' | 'document';
+/** The used review rounds and failing check runs of one budget stage. */
+export interface StageBudget { reviews: number; checks: number }
+/** The used counts of every budget stage of a task. */
+export type TaskBudget = Record<BudgetStage, StageBudget>;
+export interface BudgetUse { used: number; limit: number }
+/** A budget that ran out: its stage, which part ran out and the used and allowed counts of both parts. */
+export interface BudgetExhaustion {
+  stage: BudgetStage;
+  exhausted: 'reviews' | 'checks';
+  reviews: BudgetUse;
+  checks: BudgetUse;
+}
+/** One owner retry (`--retry <task id>`) of a blocked task: the budget it replaced and the exhaustion, if any. */
+export interface RetryRecord {
+  task: string;
+  at: string;
+  stage: Stage;
+  previous: TaskBudget;
+  exhausted?: BudgetExhaustion;
+}
+
 /** The durable steps of merging an in-scope target advance into the task branch, in order. */
 export type IntegrationStep = 'merge' | 'resolve' | 'checks' | 'review' | 'document-review';
 
@@ -164,6 +187,10 @@ export interface Work extends Task {
   acceptedAt?: string;
   completion?: TaskCompletion;
   cleanup?: { failed: CleanupStep[] };
+  /** The used review rounds and check attempts; absent in work recorded before budgets existed. */
+  budget?: TaskBudget;
+  /** Every owner retry of this task, oldest first. */
+  retries?: RetryRecord[];
 }
 
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) :

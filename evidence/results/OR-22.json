@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "id": "OR-22",
+  "taskHash": "51d31bdd7abca6f08c9c12cb0281d5b99aa5df5c95bbeba784e1d914ce21e53d",
+  "authority": "owner-2026-11-11-outcome-runner-or-18-24",
+  "target": "main",
+  "specification": {
+    "openspec/changes/archive/2026-11-12-durable-review-budgets/design.md": "6335c3bf01a24f9e7405a1343f5624e77f89a4c716e3c5b80e50e362b70bc670",
+    "openspec/changes/archive/2026-11-12-durable-review-budgets/proposal.md": "0af1b1761029e0c53596cf3421c8048245e06ff6c58f3b40bd3c89cc41c930cb",
+    "openspec/changes/archive/2026-11-12-durable-review-budgets/specs/review-budgets/spec.md": "0085ff0fc61ba3ab887a30084476a0ef2267ae8bdc146a4a691d09c145d127e3",
+    "openspec/changes/archive/2026-11-12-durable-review-budgets/specs/unfinished-results/spec.md": "4ad0e730c600939a7e25b217f063cd838759e94719d0e0d263ce65bdc7f62ab5"
+  },
+  "review": {
+    "reviewer": "claude:edf80c31-35c9-4640-a561-d7b69cd3fc89",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "261c98d2ee2fb7939a3d4355b4e02e9a4faee5cd7df6215b6fde64ee237fbe97"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-durable-review-budgets/design.md",
+      "hash": "6335c3bf01a24f9e7405a1343f5624e77f89a4c716e3c5b80e50e362b70bc670"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-durable-review-budgets/proposal.md",
+      "hash": "0af1b1761029e0c53596cf3421c8048245e06ff6c58f3b40bd3c89cc41c930cb"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-durable-review-budgets/specs/review-budgets/spec.md",
+      "hash": "0085ff0fc61ba3ab887a30084476a0ef2267ae8bdc146a4a691d09c145d127e3"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-durable-review-budgets/specs/unfinished-results/spec.md",
+      "hash": "4ad0e730c600939a7e25b217f063cd838759e94719d0e0d263ce65bdc7f62ab5"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-durable-review-budgets/tasks.md",
+      "hash": "3d47b32d17bdc6e937a89d06b62d3d9618647515a3d9b8cbdd3101cd05e1a568"
+    },
+    {
+      "path": "openspec/specs/review-budgets/spec.md",
+      "hash": "269ea90bcdd1730145174f9bcbe13ae4b9953d1b4e3b8bd57d97956f49c64df3"
+    },
+    {
+      "path": "openspec/specs/unfinished-results/spec.md",
+      "hash": "3d72a10f35efa2bc87f1310f3b7fcaa1432091846d9741dc569fbf59255eb2d5"
+    },
+    {
+      "path": "src/cli.ts",
+      "hash": "4e02ab3c090cb284f329a1f3e739f1bd81409227105b21a4a8bd28be59f2f2df"
+    },
+    {
+      "path": "src/git.ts",
+      "hash": "3bf68a5655def54bb4795b1460e9f396cd952064bd8eebcdacc9a6c9a0cc418a"
+    },
+    {
+      "path": "src/model.ts",
+      "hash": "2b1a8c9095403b597c3c4cc2edb91ac94ec3ce6a8edfa80c14da24c1b9e33cef"
+    },
+    {
+      "path": "src/run-store.ts",
+      "hash": "b8c479f065341480322a29d7b6f5efea96f49a68810ade875f726fe396080682"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "eb5e385b6912bb0a1c291449604fbcf936bfe02a601044dd24d952a8b091f02c"
+    },
+    {
+      "path": "test/document-archive.test.ts",
+      "hash": "3206a35de611a2c092410034b187519e48b8df4ecf1c36d9602e569de5e2ef90"
+    },
+    {
+      "path": "test/review-budgets.test.ts",
+      "hash": "efcb64e332b3cf3750121d7692c7aaef790ed68e2039a07dde300232a268dd8c"
+    },
+    {
+      "path": "test/runner-steps.test.ts",
+      "hash": "1dad5fffe846f7709f34d29b42d7d341edd3ea996e467327e239c1ae75b392df"
+    }
+  ],
+  "head": "90b0a436e2abcc8082b0e2ec72cc56c265c8e263",
+  "base": "c9fdd1962602831730cf6456d19e1276b32e1da8"
+}
