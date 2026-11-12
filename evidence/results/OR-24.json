@@ -10,7 +10,7 @@
     "openspec/changes/archive/2026-11-12-cli-usage-and-install/specs/cli-usage-and-install/spec.md": "4647b8a2859abf61197f453840f70a6ed259d4b9a47dbe90d470eabc7e6d349e"
   },
   "review": {
-    "reviewer": "claude:f0d12abe-5c20-429c-8bbb-dd2706aa43be",
+    "reviewer": "claude:2233adf5-d8b3-4245-b663-b3afde4d9c8b",
     "outcome": "accepted",
     "accepted": true
   },
@@ -99,8 +99,8 @@
       "hash": "6f3960e3d36135c160b11a173cd303a7b7d237e45c8cf7cb1f7f7171cda386ec"
     }
   ],
-  "head": "87092c64089a11e43f2fa590249ce7dbbbe36788",
-  "base": "4d1cb8e1048a7d1bb2723ce47ffc8718cc65f27a",
+  "head": "fce9a11864f4ca643202e1eacabf64a316ae6848",
+  "base": "56270537f3f04eda534e31fd9d2d7a636f14ff5e",
   "invocationChanges": [
     {
       "kind": "identity-upgraded",
