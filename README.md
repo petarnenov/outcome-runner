@@ -244,7 +244,12 @@ The runner also creates a `work-queue-claims-<target>` branch. It is never
 merged; keep it while work is unfinished. When you no longer want an invocation,
 end it with `outcome-runner dispose <invocation file>` instead of resuming it;
 see [Disposing of an invocation](#disposing-of-an-invocation). Never edit the
-claims branch or the ownership files by hand. A newer runner resumes the same
+claims branch or the ownership files by hand. Claims commits and task branch
+deletions are pushed with `--no-verify`: they carry no product code and are
+pushed from the start checkout while it has another commit checked out, so a
+project pre-push hook that verifies the checked-out commit would refuse them.
+Tested task heads are pushed from their worktree with the project's hooks, so a
+refusing hook blocks the task. A newer runner resumes the same
 invocation, and tasks can be added to it; see
 [Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation).
 Owners may keep merging Pull Requests into the target branch while a run is in

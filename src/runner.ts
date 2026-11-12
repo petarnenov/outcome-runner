@@ -11,7 +11,7 @@ import { hash, digest, within, safePath, validateConfig, validateQueue, archiveC
 import type { BudgetExhaustion, BudgetStage, CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose, Queue,
   RetryRecord, ReviewRecord, RunConfig, SendBackCause, SendBackRecord, Task, TaskBudget, Work, WorkerReport,
   TaskCompletion } from './model.ts';
-import { command, git, gitPage, fileAt, hasRef, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS,
+import { command, git, gitPage, fileAt, hasRef, pushBookkeeping, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS,
   MERGE_STATE_POLL_MS } from './git.ts';
 import { lockRootOf, withGitLock } from './git-lock.ts';
 import { pageOffset, readPage } from './text-page.ts';
@@ -648,7 +648,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         }],
         ['local-branch', () => { if (hasRef(root, `refs/heads/${work.branch}`)) git(root, 'branch', '-D', work.branch); }],
         ...(remote ? [['remote-branch', () => {
-          if (git(root, 'ls-remote', 'origin', `refs/heads/${work.branch}`)) git(root, 'push', 'origin', '--delete', work.branch);
+          if (git(root, 'ls-remote', 'origin', `refs/heads/${work.branch}`)) pushBookkeeping(root, 'origin', '--delete', work.branch);
         }] as [CleanupStep, () => void]] : []),
       ];
       try {

@@ -1,4 +1,4 @@
-import { fileAt, git, gitWithInput } from './git.ts';
+import { fileAt, git, gitWithInput, pushBookkeeping } from './git.ts';
 
 export interface Claim {
   version: number;
@@ -78,7 +78,7 @@ export class ClaimLedger {
 
   private push(head: string | null, commit: string): boolean {
     try {
-      git(this.root, 'push', 'origin', `${commit}:${this.ref}`);
+      pushBookkeeping(this.root, 'origin', `${commit}:${this.ref}`);
       return true;
     } catch (error) {
       if (this.remoteHead() !== head) return false;

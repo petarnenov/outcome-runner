@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ClaimLedger } from './claims.ts';
 import type { LedgerSnapshot } from './claims.ts';
-import { fileAt, git, hasRef, receiptAt, GitHubHost } from './git.ts';
+import { fileAt, git, hasRef, pushBookkeeping, receiptAt, GitHubHost } from './git.ts';
 import { primaryOf, withGitLock } from './git-lock.ts';
 import { hash, validateQueue, within } from './model.ts';
 import type { PullRequest, RunConfig, Work } from './model.ts';
@@ -209,7 +209,7 @@ export async function disposeInvocation(config: RunConfig, options: DisposeOptio
       const remoteBranch = (): WorkState => {
         if (!git(root, 'ls-remote', 'origin', `refs/heads/${branch}`)) return 'absent';
         if (!removeWork) return 'kept';
-        git(root, 'push', 'origin', '--delete', branch); return 'removed';
+        pushBookkeeping(root, 'origin', '--delete', branch); return 'removed';
       };
       const build = (run: (step: () => WorkState) => WorkState): DisposedWork => ({ id: entry.id,
         ...(path ? { worktree: { path, state: run(worktree) } } : {}),
