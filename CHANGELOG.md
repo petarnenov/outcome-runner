@@ -1,3 +1,10 @@
+## 0.23.0 - 2026-11-12
+
+### Features
+
+- implement OR-27 (aa4bfb6)
+- implement OR-27 (1eaf8f8)
+
 ## 0.22.0 - 2026-11-12
 
 ### Features
