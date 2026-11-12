@@ -586,6 +586,42 @@
         "README describes the check time limit, checkTimeoutMinutes and the timed-out outcome.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-33",
+      "title": "Reviews that converge within their budget",
+      "change": "converging-reviews",
+      "priority": 28,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-32"],
+      "criteria": [
+        "Every planning, implementation and documentation review prompt tells the reviewer to report every finding it can find in this round, not only the first ones, and to report accepted only with zero findings.",
+        "From the second review round of a stage, the review prompt lists the findings of the earlier rounds of that stage for the task and tells the reviewer to check first that each of them was resolved. The reviewer may still report new findings.",
+        "The review rounds and check attempts of each stage can be set in the invocation as budgets.<stage>.reviews and budgets.<stage>.checks for the stages plan, work and document, each an integer from 1 through 12 (document has no checks). An invalid value is refused at startup with exit code 4, reason invalid-budget and diagnostics naming the field. The budgets are not part of the invocation identity.",
+        "Without a setting the plan stage has 6 review rounds; every other limit stays as it is today.",
+        "A task blocked by an exhausted budget is resumed without --retry when the limit configured for the restart is above its used count; --retry keeps granting a fresh budget as before, and the blocked entry and the public blocker report the limit in force.",
+        "Tests use scripted adapters and Git fixtures and cover: the exhaustive instruction in the three review prompts; earlier findings present in the second round prompt and absent in the first; a plan accepted in its fifth review round with the default limits; configured limits applied to each stage; a task blocked at an exhausted budget resuming after the limit is raised; and invalid budgets refused.",
+        "README describes the exhaustive review instruction, the earlier findings in later rounds, the budgets setting and the new default of the plan stage.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-34",
+      "title": "Retry a session that failed without a report before blocking",
+      "change": "session-retry",
+      "priority": 29,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-33"],
+      "criteria": [
+        "When a worker or review session ends without an outcome report because the harness process exited, its transport closed or timed out, or its connection failed, the runner starts the same session again instead of blocking the task at once: up to 3 attempts in total, waiting 10 seconds before the second and 30 seconds before the third.",
+        "A session that reported an outcome, a cancelled run, an interrupted run and an exhausted budget are not retried and behave as before.",
+        "The attempts of one session use one review round and no extra check attempt of the stage budget.",
+        "Each attempt is recorded in the durable state before the session starts and logged as a step line with its attempt number, so a restart continues with the recorded attempt count instead of starting over.",
+        "After the last failed attempt the task is blocked as before, and its private reason names the number of attempts and the last failure.",
+        "Tests use scripted adapters, a fake clock and Git fixtures and cover: a session that fails once and then succeeds, with the task accepted; three failures blocking the task with the attempt count; a session that reports a refusal not retried; a restart after a failed attempt continuing the count; and a retried review session using one review round.",
+        "README describes the session retry, its waits, what is not retried and the blocked reason after the last attempt.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
