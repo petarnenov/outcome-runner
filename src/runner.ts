@@ -8,13 +8,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay, setImmediate as yieldLoop } from 'node:timers/promises';
 import { hash, digest, within, safePath, validateConfig, validateQueue, archiveCommand, isDocumentation,
   specsDirectory } from './model.ts';
-import type { CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose, Queue, ReviewRecord, RunConfig, Task, Work,
-  WorkerReport, TaskCompletion } from './model.ts';
+import type { BudgetExhaustion, BudgetStage, CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose, Queue,
+  RetryRecord, ReviewRecord, RunConfig, Task, TaskBudget, Work, WorkerReport, TaskCompletion } from './model.ts';
 import { command, git, gitPage, fileAt, hasRef, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS,
   MERGE_STATE_POLL_MS } from './git.ts';
 import { lockRootOf, withGitLock } from './git-lock.ts';
 import { pageOffset, readPage } from './text-page.ts';
 import { RunStore } from './run-store.ts';
+import type { BlockedEntry } from './run-store.ts';
 import { invocationIdentity, missingSetting, MissingSettingError, REQUIRED_SETTINGS,
   settingAt } from './invocation-identity.ts';
 import type { RequiredSetting } from './invocation-identity.ts';
@@ -55,7 +56,8 @@ export type BlockerKind = 'blocked' | 'waiting-for-dependency' | 'waiting-for-cl
  * One unfinished task of the invocation: `blocked` carries `stage` and `diagnostics` (the state.json path),
  * `waiting-for-dependency` the `dependencies` not yet accepted, `waiting-for-claim` the foreign `claim`,
  * `waiting-for-blocked-scope` the blocked `task` whose scopes overlap and `max-accepted` the `limit`.
- * A task blocked by an unresolved target conflict also carries the conflicting `paths`.
+ * A task blocked by an unresolved target conflict also carries the conflicting `paths`, and a task blocked by an
+ * exhausted review or check budget carries the `budget`.
  */
 export interface Blocker {
   kind: BlockerKind;
@@ -63,6 +65,7 @@ export interface Blocker {
   stage?: Work['stage'];
   diagnostics?: string;
   paths?: string[];
+  budget?: BudgetExhaustion;
   dependencies?: string[];
   claim?: { id: string; host?: string };
   task?: string;
@@ -103,6 +106,11 @@ export interface RunOptions {
   steps?: StepOutput;
   /** Settings the invocation file must contain; the default is `REQUIRED_SETTINGS`. */
   requiredSettings?: readonly RequiredSetting[];
+  /**
+   * Blocked tasks of the invocation that get a fresh review and check budget (`--retry <task id>`). Any other id
+   * refuses the run with `retry-not-blocked`. Operational only: it never enters the invocation identity.
+   */
+  retry?: string[];
 }
 
 interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
@@ -128,6 +136,53 @@ export const conflictMarkers = (text: string): boolean => /^(?:<<<<<<<|>>>>>>>) 
 
 const INTEGRATION_REASONS: readonly string[] = ['target-conflict-unresolved', 'target-integration-rejected'];
 
+/** The review rounds of every budget stage (planning, implementation and documentation) of a task. */
+export const REVIEW_ROUNDS = 4;
+/** The failing runner check runs of each budget stage; the documentation stage runs no checks. */
+export const CHECK_ATTEMPTS: Readonly<Record<BudgetStage, number>> = Object.freeze({ plan: 4, work: 4, document: 0 });
+const BUDGET_NAMES: Readonly<Record<BudgetStage, string>> = Object.freeze({ plan: 'Planning', work: 'Implementation',
+  document: 'Documentation' });
+/** A budget with nothing used. */
+const freshBudget = (): TaskBudget => ({ plan: { reviews: 0, checks: 0 }, work: { reviews: 0, checks: 0 },
+  document: { reviews: 0, checks: 0 } });
+
+/**
+ * The used counts of `work`: its recorded `budget`, or for work recorded before budgets existed the number of its
+ * planning, implementation and documentation reviews with no check attempts used.
+ */
+export function budgetOf(work: Pick<Work, 'budget' | 'planningReviews' | 'reviews' | 'documentationReviews'>): TaskBudget {
+  if (work.budget) return work.budget;
+  return { plan: { reviews: (work.planningReviews ?? []).length, checks: 0 },
+    work: { reviews: (work.reviews ?? []).length, checks: 0 },
+    document: { reviews: (work.documentationReviews ?? []).length, checks: 0 } };
+}
+
+/** The exhaustion of `stage` of `budget`, with the used and allowed counts of both parts. */
+export function budgetExhaustion(budget: TaskBudget, stage: BudgetStage, exhausted: BudgetExhaustion['exhausted']):
+  BudgetExhaustion {
+  return { stage, exhausted, reviews: { used: budget[stage].reviews, limit: REVIEW_ROUNDS },
+    checks: { used: budget[stage].checks, limit: CHECK_ATTEMPTS[stage] } };
+}
+
+/**
+ * The private blocked reason of an exhausted budget, for example
+ * `Implementation review budget exhausted: 4 of 4 review rounds and 1 of 4 check attempts used`.
+ */
+export function budgetMessage({ stage, exhausted, reviews, checks }: BudgetExhaustion): string {
+  return `${BUDGET_NAMES[stage]} ${exhausted === 'reviews' ? 'review' : 'check'} budget exhausted: ` +
+    `${reviews.used} of ${reviews.limit} review rounds and ${checks.used} of ${checks.limit} check attempts used`;
+}
+
+/** A task whose review or check budget ran out; the message is `budgetMessage(budget)`. */
+export class BudgetExhausted extends Error {
+  budget: BudgetExhaustion;
+  constructor(budget: BudgetExhaustion) {
+    super(budgetMessage(budget));
+    this.name = 'BudgetExhausted';
+    this.budget = structuredClone(budget);
+  }
+}
+
 // Test reporters write failures to stdout while package managers write notices to stderr, so both are kept.
 const failureDetail = (error: unknown): string => {
   const { stdout, stderr, message } = error as CommandFailure;
@@ -139,7 +194,6 @@ const checkRecords = (rows: CheckRecord[]) => rows.map(({ command, args, outcome
 const reviewRecord = ({ reviewer, outcome }: ReviewRecord) => ({ reviewer, outcome });
 const scopesOverlap = (first: string[], second: string[]): boolean => first.some(path =>
   second.some(other => within(path, other) || within(other, path)));
-const DOCUMENTATION_ROUNDS = 4;
 const DOCUMENTATION_REVIEW = 'Review the documentation changes independently against the implementation, every ' +
   'criterion and the task scope. Documentation may change only README files, Markdown files and docs or doc ' +
   'directories inside the task scopes. Read files and context; the diff section shows all task changes. ' +
@@ -199,7 +253,8 @@ export function foreignClaimsOf(snapshot: Pick<LedgerSnapshot, 'claims'>, done: 
 export interface UnfinishedInput extends AcceptedInput {
   remaining: string[];
   tasks: Pick<Task, 'id' | 'dependencies' | 'scopes'>[];
-  blocked: Record<string, { reason?: string; paths?: string[]; work?: Pick<Work, 'stage' | 'scopes'> }>;
+  blocked: Record<string, { reason?: string; paths?: string[]; budget?: BudgetExhaustion;
+    work?: Pick<Work, 'stage' | 'scopes'> }>;
   maxAccepted?: number;
   foreignClaims: Pick<Claim, 'id' | 'host' | 'scopes'>[];
   statePath: string;
@@ -208,9 +263,10 @@ export interface UnfinishedInput extends AcceptedInput {
 /**
  * A blocker for every blocked task of the invocation and every remaining task, using the first matching rule:
  * blocked, max-accepted, waiting-for-dependency, waiting-for-claim, waiting-for-blocked-scope. Throws
- * `Unexplained unfinished task` when no rule matches. A blocked task keeps the reason `target-conflict-unresolved`
- * (with its conflicting `paths`) or `target-integration-rejected`; every other blocked task has the reason
- * `operation-incomplete`.
+ * `Unexplained unfinished task` when no rule matches. A blocked task with an exhausted budget has the reason
+ * `review-budget-exhausted` or `check-budget-exhausted` and a copy of the `budget`; a blocked task keeps the reason
+ * `target-conflict-unresolved` (with its conflicting `paths`) or `target-integration-rejected`; every other blocked
+ * task has the reason `operation-incomplete`.
  */
 export function explainUnfinished(input: UnfinishedInput): Record<string, Blocker> {
   const { remaining, ids, tasks, blocked, done, maxAccepted, foreignClaims, statePath } = input;
@@ -221,7 +277,13 @@ export function explainUnfinished(input: UnfinishedInput): Record<string, Blocke
   const blockers: Record<string, Blocker> = {};
   for (const id of [...new Set([...blockedIds, ...remaining])]) {
     if (Object.hasOwn(blocked, id)) {
-      const { reason, paths, work } = blocked[id];
+      const { reason, paths, budget, work } = blocked[id];
+      if (budget) {
+        blockers[id] = { kind: 'blocked', stage: work?.stage,
+          reason: budget.exhausted === 'reviews' ? 'review-budget-exhausted' : 'check-budget-exhausted',
+          diagnostics: statePath, budget: structuredClone(budget) };
+        continue;
+      }
       const integration = typeof reason === 'string' && INTEGRATION_REASONS.includes(reason);
       blockers[id] = { kind: 'blocked', stage: work?.stage, reason: integration ? reason! : 'operation-incomplete',
         diagnostics: statePath, ...(integration && paths?.length ? { paths: [...paths] } : {}) };
@@ -469,6 +531,14 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       throw Object.assign(new Error('This invocation was disposed; start new work with a new invocation name'),
         { reason: 'invocation-disposed' });
     }
+    // Every retried id must be a blocked task of this invocation; otherwise nothing (settings, ownership file,
+    // claims, sessions, budgets or retry records) is touched.
+    const retry = [...new Set(options.retry ?? [])];
+    const notBlocked = retry.filter(id => !ids.includes(id) || !Object.hasOwn(store.state.blocked ?? {}, id));
+    if (notBlocked.length) {
+      throw Object.assign(new Error(`Only blocked tasks of this invocation can be retried: ${notBlocked.join(', ')}`),
+        { reason: 'retry-not-blocked', details: { tasks: notBlocked } });
+    }
     // Required settings are recorded by path and value hash only; one added on resume is recorded as a change.
     store.recordSettings(Object.fromEntries(required.map(setting =>
       [setting.path, hash(settingAt(requested, setting.path))])));
@@ -491,6 +561,34 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       return result;
     };
     const activeWork = () => store.state.current as Work;
+    // The durable budget of the active work. A budget stage saves it on entry, so legacy work keeps its derived counts.
+    const budget = (): TaskBudget => budgetOf(activeWork());
+    const enterBudget = () => { if (!activeWork().budget) save({ budget: structuredClone(budget()) }); };
+    const exhausted = (stage: BudgetStage, part: BudgetExhaustion['exhausted']) =>
+      new BudgetExhausted(budgetExhaustion(budget(), stage, part));
+    // Before every round: an exhausted stage blocks before any session starts.
+    const guardRound = (stage: BudgetStage) => {
+      const used = budget()[stage];
+      if (used.reviews >= REVIEW_ROUNDS) throw exhausted(stage, 'reviews');
+      if (CHECK_ATTEMPTS[stage] && used.checks >= CHECK_ATTEMPTS[stage]) throw exhausted(stage, 'checks');
+    };
+    // Immediately before a review session: the round is counted durably first, so a failing session still uses it.
+    const countReview = (stage: BudgetStage) => {
+      const current = budget();
+      if (current[stage].reviews >= REVIEW_ROUNDS) throw exhausted(stage, 'reviews');
+      save({ budget: { ...current, [stage]: { ...current[stage], reviews: current[stage].reviews + 1 } } });
+    };
+    // A failing runner check run uses one check attempt, never a review round.
+    const countCheck = (stage: BudgetStage, findings: string[]) => {
+      const current = budget();
+      const checks = current[stage].checks + 1;
+      save({ budget: { ...current, [stage]: { ...current[stage], checks } }, findings });
+      if (checks >= CHECK_ATTEMPTS[stage]) throw exhausted(stage, 'checks');
+    };
+    // A review that did not accept on the last round exhausts the review budget.
+    const afterRejection = (stage: BudgetStage) => {
+      if (budget()[stage].reviews >= REVIEW_ROUNDS) throw exhausted(stage, 'reviews');
+    };
     const rememberPr = (pr: PullRequest) => {
       const previous = activeWork().pr;
       save({ pr: { ...pr, url: pr.url ?? (previous?.number === pr.number ? previous.url : undefined) } });
@@ -710,6 +808,21 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       } finally { try { adapter?.close(); } finally { adapter = null; } }
     };
     process.on('SIGINT', stop); process.on('SIGTERM', stop);
+    // Each retried task gets a fresh budget and a retry record on its work and in the state, in one update.
+    if (retry.length) {
+      const at = new Date(now()).toISOString();
+      const blocked: Record<string, BlockedEntry> = { ...store.state.blocked };
+      const records: RetryRecord[] = [];
+      for (const id of retry) {
+        const entry = blocked[id];
+        const record: RetryRecord = { task: id, at, stage: entry.work.stage, previous: structuredClone(budgetOf(entry.work)),
+          ...(entry.budget ? { exhausted: structuredClone(entry.budget) } : {}) };
+        blocked[id] = { ...entry, work: { ...entry.work, budget: freshBudget(),
+          retries: [...(entry.work.retries ?? []), record] } };
+        records.push(record);
+      }
+      store.update({ blocked, retries: [...(store.state.retries ?? []), ...structuredClone(records)] });
+    }
     const recovery = Object.values(store.state.blocked ?? {}).map(entry => entry.work).filter(Boolean);
     for (const work of recovery.filter(work => ids.includes(work.id))) statistics?.decision(work, 'blocked', work);
     if (store.state.current) statistics?.decision(store.state.current, 'blocked', store.state.current);
@@ -891,9 +1004,11 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             'Do not use a final message as a substitute for outcome_report.');
           save({ investigation, stage: 'plan' });
         }
+        // Planning and implementation rounds are bounded only by the durable review and check budgets.
         if (activeWork().stage === 'plan') {
-          let bound = false;
-          for (let attempt = 0; attempt < 4; attempt += 1) {
+          enterBudget();
+          for (;;) {
+            guardRound('plan');
             const number = sessionsStarted(activeWork(), 'plan') + 1;
             taskStep(work.id, 'planning', 'starting the planning session', number);
             // Graded test fragments come from the frozen threshold on every attempt, so replanning repeats them.
@@ -910,8 +1025,9 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               specification = packet(work.path, work.directory);
               checks(work, [project.planningCheck]);
             } catch (error) {
-              save({ findings: [failureDetail(error)] }); continue;
+              countCheck('plan', [failureDetail(error)]); continue;
             }
+            countReview('plan');
             taskStep(work.id, 'planning review', 'starting the planning review session', number);
             const review = await session(work, 'review', prompt +
               'Review planning artifacts independently against exact source criteria, scope and decisions. ' +
@@ -919,15 +1035,16 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               planningReviewTestInstructions(config.coverage));
             save({ planningReviews: [...(activeWork().planningReviews ?? []), review] });
             if (review.outcome === 'accepted' && !review.findings.length) {
-              save({ specification, stage: 'work', findings: [] }); bound = true; break;
+              save({ specification, stage: 'work', findings: [] }); break;
             }
             save({ findings: review.findings });
+            afterRejection('plan');
           }
-          if (!bound) throw new Error('Planning review remains unresolved');
         }
         if (activeWork().stage === 'work') {
-          let passed = false;
-          for (let attempt = 0; attempt < 4; attempt += 1) {
+          enterBudget();
+          for (;;) {
+            guardRound('work');
             const number = sessionsStarted(activeWork(), 'work') + 1;
             taskStep(work.id, 'implementation', 'starting the implementation session', number);
             await session(activeWork(), 'work', prompt +
@@ -939,7 +1056,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             taskStep(work.id, 'commit', 'committing the implementation', number);
             assertWork(activeWork()); commit(work);
             try { save({ checks: checks(work, project.checks, 'check', number) }); }
-            catch (error) { save({ findings: [failureDetail(error)] }); continue; }
+            catch (error) { countCheck('work', [failureDetail(error)]); continue; }
+            countReview('work');
             taskStep(work.id, 'review', 'starting the implementation review session', number);
             const review = await session(activeWork(), 'review', prompt + implementationReview(config.coverage),
               true, number);
@@ -948,21 +1066,20 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               // The documentation stage starts from the reviewed head; its record lists what it later updates.
               save({ review: { ...review, accepted: true }, stage: 'document', findings: [],
                 documentation: { base: git(work.path, 'rev-parse', 'HEAD'), files: [], outsideScope: [] } });
-              passed = true; break;
+              break;
             }
             save({ findings: review.findings });
+            afterRejection('work');
           }
-          if (!passed) throw new Error('Implementation checks or review remain unresolved');
         }
         // Each documentation round persists its stage before the next session, so a restart in document-review
         // reviews the recorded documentation instead of writing it again.
         while (['document', 'document-review'].includes(activeWork().stage)) {
-          // Round N of the documentation follows N - 1 recorded documentation reviews.
-          const round = (activeWork().documentationReviews ?? []).length + 1;
+          enterBudget();
+          // Round N of the documentation follows N - 1 counted documentation review rounds.
+          const round = budget().document.reviews + 1;
           if (activeWork().stage === 'document') {
-            if ((activeWork().documentationReviews ?? []).length >= DOCUMENTATION_ROUNDS) {
-              throw new Error('Documentation review remains unresolved');
-            }
+            guardRound('document');
             taskStep(work.id, 'documentation', 'starting the documentation session', round);
             const documented = await session(activeWork(), 'document', prompt +
               'Update the documentation inside the task scopes so that it matches the implemented behaviour and every ' +
@@ -982,6 +1099,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               stage: 'document-review' });
           }
           if (activeWork().stage === 'document-review') {
+            // A restart in document-review skips the branch above, so the review budget is guarded here as well.
+            countReview('document');
             taskStep(work.id, 'documentation review', 'starting the documentation review session', round);
             const review = await session(activeWork(), 'document-review', prompt + DOCUMENTATION_REVIEW);
             const reviews = [...(activeWork().documentationReviews ?? []), review];
@@ -989,6 +1108,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               save({ documentationReviews: reviews, stage: 'final-checks', findings: [] });
             } else {
               save({ documentationReviews: reviews, findings: review.findings, stage: 'document' });
+              afterRejection('document');
             }
           }
         }
@@ -1149,7 +1269,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             review: { ...reviewRecord(now.review!), accepted: true },
             checks: checkRecords(now.documentationChecks ?? now.checks!), manifest,
             head: git(work.path, 'rev-parse', 'HEAD'), base: now.base,
-            ...(changes.length ? { invocationChanges: structuredClone(changes) } : {}) };
+            ...(changes.length ? { invocationChanges: structuredClone(changes) } : {}),
+            ...(now.retries?.length ? { retries: structuredClone(now.retries) } : {}) };
           const path = join(work.path, receiptPath(work.id)); mkdirSync(dirname(path), { recursive: true });
           writeFileSync(path, JSON.stringify(receipt, null, 2) + '\n');
           taskStep(work.id, 'commit', 'committing the receipt');
@@ -1230,10 +1351,12 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         }
         if ((error as InterruptedFailure).interrupted) throw error;
         const stage = activeWork().stage;
-        // An unresolved target conflict keeps its conflicting paths beside the reason.
+        // An unresolved target conflict keeps its conflicting paths beside the reason, and an exhausted budget its
+        // stage, exhausted part and counts.
         const paths = error instanceof IntegrationFailure && error.paths.length ? { paths: [...error.paths] } : {};
+        const budgetDetail = error instanceof BudgetExhausted ? { budget: structuredClone(error.budget) } : {};
         store.update({ blocked: { ...store.state.blocked, [work.id]: {
-          reason: (error as Error).message, ...paths, work: activeWork() } }, current: null });
+          reason: (error as Error).message, ...paths, ...budgetDetail, work: activeWork() } }, current: null });
         blockedStep(work.id, stage);
         // The reason reaches only the stderr mascot caption; the serialized event stays unchanged.
         report({ status: 'blocked', id: work.id }, { reason: (error as Error).message });

@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { digest, safePath } from './model.ts';
 import { readPage } from './text-page.ts';
 import type { TextPage } from './text-page.ts';
-import type { CheckRecord, Project, PullRequest, ReviewRecord, Work } from './model.ts';
+import type { CheckRecord, Project, PullRequest, RetryRecord, ReviewRecord, Work } from './model.ts';
 import type { InvocationChange } from './run-store.ts';
 
 export interface Receipt {
@@ -23,6 +23,8 @@ export interface Receipt {
   base: string;
   /** The changes recorded for the invocation when the receipt was written; omitted when there were none. */
   invocationChanges?: InvocationChange[];
+  /** The owner retries of the task (`--retry <task id>`); omitted when the task was never retried. */
+  retries?: RetryRecord[];
 }
 
 /**

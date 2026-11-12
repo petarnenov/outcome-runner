@@ -5,7 +5,7 @@ import { join, relative, resolve } from 'node:path';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { hash } from './model.ts';
-import type { RunConfig, Work } from './model.ts';
+import type { BudgetExhaustion, RetryRecord, RunConfig, Work } from './model.ts';
 import { compareIdentity, invocationIdentity } from './invocation-identity.ts';
 import type { InvocationIdentity } from './invocation-identity.ts';
 
@@ -22,8 +22,11 @@ export interface Operation {
   result?: OperationResult;
 }
 
-/** A blocked task: the private reason, the paths it concerns (for example unresolved conflicts) and its work. */
-export interface BlockedEntry { reason: string; paths?: string[]; work: Work }
+/**
+ * A blocked task: the private reason, the paths it concerns (for example unresolved conflicts), the budget that ran
+ * out (when a review or check budget is exhausted) and its work.
+ */
+export interface BlockedEntry { reason: string; paths?: string[]; budget?: BudgetExhaustion; work: Work }
 
 /** The record `outcome-runner dispose` leaves: when it last disposed and the unaccepted work it disposed. */
 export interface DisposedRecord { at: string; tasks: Record<string, Work> }
@@ -59,6 +62,8 @@ export interface RunState {
   baselineDone?: string[];
   statisticsSources?: import('./statistics.ts').Sources;
   disposed?: DisposedRecord;
+  /** Every owner retry (`--retry <task id>`) of the invocation, oldest first. */
+  retries?: RetryRecord[];
 }
 
 export interface RunStoreOptions {

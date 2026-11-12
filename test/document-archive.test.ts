@@ -331,7 +331,7 @@ test('B: a restart in document-review reviews again without another documentatio
   assert.equal(count(prompts, 'document'), 1); assert.equal(count(prompts, 'documentReview'), 2);
 });
 
-// B (required): checks run again after documentation; a failure blocks before the archive, and the restart
+// B (required): checks re-run after documentation; a failure blocks before the archive, and the restart
 // resumes in final-checks without another documentation session or review.
 test('B: checks re-run after documentation, a failure blocks before archive and the restart resumes there', async t => {
   const f = fixture(t); const prompts: { kind: Kind; prompt: string }[] = []; const calls: ArchiveCall[] = [];
@@ -376,14 +376,14 @@ test('B: a documentation review finding is repaired in a second round', async t 
   assert.match(git(f.root, 'show', 'origin/proposal:src/a/README.md'), /TypeError/u);
 });
 
-// B (required): an unresolved documentation review blocks after four rounds.
+// B (required): an unresolved documentation review blocks after four rounds with the exhausted documentation budget.
 test('B: a documentation review unresolved after four rounds blocks the task', async t => {
   const f = fixture(t); const prompts: { kind: Kind; prompt: string }[] = []; const calls: ArchiveCall[] = [];
   const result = await runQueue(f.config, { ...passing, host: f.host, runCommand: scriptedArchive({ calls }),
     createAdapter: worker({ prompts, documentReview: () => ({ outcome: 'changes-required', findings: ['Still incomplete.'] }) }) });
   assert.equal(result.status, 'incomplete'); assert.equal(f.records.length, 0); assert.equal(calls.length, 0);
   const blocked = f.state().blocked.A;
-  assert.equal(blocked.reason, 'Documentation review remains unresolved');
+  assert.equal(blocked.reason, 'Documentation review budget exhausted: 4 of 4 review rounds and 0 of 0 check attempts used');
   assert.equal(blocked.work.documentationReviews.length, 4);
   assert.equal(count(prompts, 'document'), 4); assert.equal(count(prompts, 'documentReview'), 4);
 });
@@ -495,7 +495,7 @@ test('README documents the documentation and archive stages', () => {
   assert.ok(readme.includes('## Documentation and archive'));
   for (const text of ['document', 'document-review', 'final-checks', 'archive', 'openspec archive {change} --yes',
     '<changes>/archive/<YYYY-MM-DD>-<change>', 'openspec/specs', 'Documentation outside scope',
-    'Documentation review remains unresolved', 'Archived specification differs from binding']) {
+    'Documentation review budget exhausted', 'Archived specification differs from binding']) {
     assert.ok(section.includes(text), `README documentation section mentions ${text}`);
   }
 });

@@ -18,7 +18,7 @@ import { runMascot, taskMascot } from './mascot-events.ts';
 type Output = (line: string) => unknown;
 type Runner = (config: RunConfig, options: RunOptions) => Promise<{ status: string }>;
 type Flag = 'harness' | 'model' | 'effort' | 'coverage';
-type Flags = Partial<Record<Flag, string>> & { noMascot?: true };
+type Flags = Partial<Record<Flag, string>> & { noMascot?: true; retry?: string[] };
 
 /** Plays one mascot animation. It receives its own abort signal and never gets stdout. */
 export type MascotPlayer = (mood: MascotMood, caption: string,
@@ -62,19 +62,29 @@ function reportFailure(error: unknown, output: Output): object {
   return line;
 }
 
+const flagError = (arg: string | undefined) => new Error('Expected --harness=<claude|codex>, --model=<id>, ' +
+  '--effort=<level> and --coverage=<n>, each at most once, --no-mascot at most once, and --retry <task id> once per ' +
+  `task id; rejected ${JSON.stringify(arg)}`);
+
 /**
  * Parses `--harness=`, `--model=`, `--effort=` and `--coverage=`, in any order, each at most once and nonempty,
- * and the valueless `--no-mascot` at most once.
+ * the valueless `--no-mascot` at most once, and `--retry <task id>` with the id as the next argument, once per id.
  */
 export function parseFlags(args: string[]): Flags {
   const flags: Flags = {};
-  for (const arg of args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--retry') {
+      const id = args[index + 1];
+      if (!id || id.startsWith('-') || flags.retry?.includes(id)) throw flagError(id === undefined ? arg : `${arg} ${id}`);
+      flags.retry = [...(flags.retry ?? []), id]; index += 1;
+      continue;
+    }
     if (arg === '--no-mascot' && !flags.noMascot) { flags.noMascot = true; continue; }
     const match = flagPattern.exec(arg);
     const name = match?.[1] as Flag | undefined;
     if (!match || !name || name in flags || (name === 'harness' && !harnesses.includes(match[2] as Harness))) {
-      throw new Error('Expected --harness=<claude|codex>, --model=<id>, --effort=<level> and --coverage=<n>, each at most once, ' +
-        `and --no-mascot at most once; rejected ${JSON.stringify(arg)}`);
+      throw flagError(arg);
     }
     flags[name] = match[2];
   }
@@ -122,7 +132,9 @@ export async function main(path: string, runner: Runner = runQueue, output: Outp
       const shown = enabled ? taskMascot(event, detail) : undefined;
       if (shown) void animate(shown.mood, shown.caption);
     };
-    const result = await runner(config, { statistics, signal: cancellation.signal, report });
+    // `--retry` is an operational run option; it never enters the configuration and so never the identity.
+    const result = await runner(config, { statistics, signal: cancellation.signal, report,
+      ...(flags.retry ? { retry: [...flags.retry] } : {}) });
     await pending;
     const terminalResult = cancellation.signal.aborted ? { ...result, status: 'cancelled' } : result;
     status = terminalResult.status as Status;
