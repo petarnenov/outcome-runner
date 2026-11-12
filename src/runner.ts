@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay, setImmediate as yieldLoop } from 'node:timers/promises';
 import { hash, digest, within, safePath, validateConfig, validateQueue, archiveCommand, isDocumentation,
-  specsDirectory } from './model.ts';
+  specsDirectory, resolvePollSeconds } from './model.ts';
 import type { BudgetExhaustion, BudgetStage, CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose, Queue,
   RetryRecord, ReviewRecord, RunConfig, SendBackCause, SendBackRecord, Task, TaskBudget, Work, WorkerReport,
   TaskCompletion } from './model.ts';
@@ -90,6 +90,9 @@ export interface RunResult {
 /** Runs one program with an argument array and no shell in `cwd`; throws on a nonzero exit. */
 export type CommandRunner = (cwd: string, program: string, args: string[]) => string;
 
+/** Waits `milliseconds` or until `signal` aborts; it resolves in both cases. */
+export type Sleep = (milliseconds: number, signal: AbortSignal) => Promise<void>;
+
 export interface RunOptions {
   statistics?: Statistics;
   signal?: AbortSignal;
@@ -117,6 +120,11 @@ export interface RunOptions {
    * refuses the run with `retry-not-blocked`. Operational only: it never enters the invocation identity.
    */
   retry?: string[];
+  /**
+   * The wait of one poll while the run waits for free work. It receives the poll interval in milliseconds and a
+   * signal that aborts on cancellation; the default is a timer that ends early when the signal aborts.
+   */
+  sleep?: Sleep;
 }
 
 interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
@@ -346,6 +354,43 @@ export function explainUnfinished(input: UnfinishedInput): Record<string, Blocke
   return blockers;
 }
 
+/** Whether the run waits for free work: some blockers exist and each waits for a foreign claim or a dependency. */
+export const waitsForFreeWork = (blockers: Record<string, Pick<Blocker, 'kind'>>): boolean => {
+  const kinds = Object.values(blockers).map(blocker => blocker.kind);
+  return kinds.length > 0 && kinds.every(kind => kind === 'waiting-for-claim' || kind === 'waiting-for-dependency');
+};
+
+/**
+ * The message of the `run wait` step line: `waiting <n>s for <id> on <host>, ...` with the distinct ids waited for,
+ * sorted. A `waiting-for-claim` blocker names the claimed task and the host its claim records (`unknown host` when it
+ * records none); every dependency of a `waiting-for-dependency` blocker not already listed names the host of its
+ * foreign claim, or `unclaimed` when no foreign claim holds it.
+ */
+export function waitMessage(blockers: Record<string, Pick<Blocker, 'kind' | 'claim' | 'dependencies'>>,
+  foreignClaims: Pick<Claim, 'id' | 'host'>[], pollSeconds: number): string {
+  const hosts = new Map<string, string>();
+  const shown = (host: string | undefined): string => host || 'unknown host';
+  for (const blocker of Object.values(blockers)) {
+    if (blocker.kind === 'waiting-for-claim' && blocker.claim) hosts.set(blocker.claim.id, shown(blocker.claim.host));
+  }
+  for (const blocker of Object.values(blockers)) {
+    if (blocker.kind !== 'waiting-for-dependency') continue;
+    for (const dependency of blocker.dependencies ?? []) {
+      if (hosts.has(dependency)) continue;
+      const claim = foreignClaims.find(item => item.id === dependency);
+      hosts.set(dependency, claim ? shown(claim.host) : 'unclaimed');
+    }
+  }
+  const waited = [...hosts.keys()].sort((first, second) => first.localeCompare(second));
+  return `waiting ${pollSeconds}s for ${waited.map(id => `${id} on ${hosts.get(id)}`).join(', ')}`;
+}
+
+/** The default sleep: a timer that ends early, without an error, when `signal` aborts. */
+const defaultSleep: Sleep = async (milliseconds, signal) => {
+  try { await delay(milliseconds, undefined, { signal }); }
+  catch (error) { if ((error as Error)?.name !== 'AbortError') throw error; }
+};
+
 /**
  * The per-invocation lock and ownership files of one clone: `<hash(primary)>-<hash(stateDirectory)>.sqlite` and
  * `<hash(primary)>-<hash(stateDirectory)>-owner.json` beside the primary checkout. Different invocations of one
@@ -442,6 +487,9 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   const required = options.requiredSettings ?? REQUIRED_SETTINGS;
   const lacking = missingSetting(requested, required);
   if (lacking) throw new MissingSettingError(lacking);
+  // An invalid poll interval is refused just as early; the interval is operational and never enters the identity.
+  const pollSeconds = resolvePollSeconds((requested as Partial<RunConfig> | undefined)?.pollSeconds);
+  const sleep = options.sleep ?? defaultSleep;
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
   // the test framework analysis, the lock, claims and worktrees.
   const statistics = options.statistics;
@@ -496,8 +544,12 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   const outcomes = join(dirname(primary), `${primary.split('/').at(-1)}-outcomes`);
   let store!: RunStore; let adapter: HarnessAdapter | null | undefined; let stopped = false;
   const ownershipFile = files.ownership;
+  // The wait for free work ends on the caller's signal and on `stop` (also reached through SIGINT and SIGTERM).
+  const local = new AbortController();
+  const waitSignal = signal ? AbortSignal.any([signal, local.signal]) : local.signal;
   const stop = () => {
     stopped = true;
+    local.abort();
     if (store?.state.current) statistics?.decision(store.state.current, 'blocked', store.state.current, 'cancelled');
     try { adapter?.close(); } catch { /* Cancellation still reaches the guarded CLI finalizer. */ }
   };
@@ -1019,9 +1071,22 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           !foreignClaims.some(claim => claim.id === task.id || scopesOverlap(claim.scopes, task.scopes)) &&
           !Object.values(store.state.blocked!).some(entry => entry.work && scopesOverlap(entry.work.scopes, task.scopes)))
           .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
-        if (!task) return finish({ status: 'incomplete', ...resultData(newlyAccepted), remaining,
-          blockers: explain(remaining, foreignClaims),
-          claimedElsewhere: Object.fromEntries(foreignClaims.map(claim => [claim.id, { host: claim.host }])) });
+        if (!task) {
+          const blockers = explain(remaining, foreignClaims);
+          // Work held by another runner or waiting for a dependency is waited for; anything blocked in this
+          // invocation (or waiting for such a task or scope) ends the run, because nobody else can finish it.
+          if (waitsForFreeWork(blockers)) {
+            step('run', 'wait', waitMessage(blockers, foreignClaims, pollSeconds));
+            await sleep(pollSeconds * 1000, waitSignal);
+            // A cancel during the wait ends the run before any fetch, ledger pull, claim, worktree or session.
+            if (stopped || signal?.aborted) {
+              return finish({ status: 'cancelled', ...resultData(newlyAccepted), remaining, blockers });
+            }
+            continue;
+          }
+          return finish({ status: 'incomplete', ...resultData(newlyAccepted), remaining, blockers,
+            claimedElsewhere: Object.fromEntries(foreignClaims.map(claim => [claim.id, { host: claim.host }])) });
+        }
         const operation = hash({ invocation: config.invocation, id: task.id, authority: config.authority.reference });
         const branch = `outcome/${task.id}-${operation.slice(0, 12)}`;
         taskStep(task.id, 'claim', 'claiming the task');

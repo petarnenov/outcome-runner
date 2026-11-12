@@ -128,15 +128,33 @@ export function runnerFixture(t: TestContext, { target = 'main', ids = ['A', 'B'
     effort: 'medium', stateDirectory: join(base, `state-${name}`), invocation: name, project,
     authority: { reference: 'fixture-owner', instruction: 'OFF implement these exact outcomes and normally merge.', target, tasks },
     ...patch });
-  /** Scripted options: preflights pass, the archive is scripted and pull requests target the resolved branch. */
-  const options = (config: RunConfig, extra: RunOptions = {}): RunOptions => ({ host: hostFor(config.project.target),
-    createAdapter: scriptedWorker(), openspec: { probe: () => ({ status: 0 }), configPresent: () => true },
-    selection: { interactive: false, probe: harness => ({ harness, available: true, version: 'scripted' }) },
-    testFramework: preparedTestFramework, mergePolling: { delay: async () => {} }, runCommand: separateArchive(), ...extra });
+  /** The milliseconds of every call of the default fake sleep, over all runs of this fixture, in call order. */
+  const sleeps: number[] = [];
+  /**
+   * Scripted options: preflights pass, the archive is scripted and pull requests target the resolved branch. Every
+   * call owns an abort controller that the run always observes, combined with `extra.signal` when one is given.
+   * Without `extra.sleep`, the default fake sleep records its milliseconds in `sleeps` and aborts that controller,
+   * so the first wait for free work ends the run with `cancelled`; a further call throws instead of hanging.
+   */
+  const options = (config: RunConfig, extra: RunOptions = {}): RunOptions => {
+    const fixtureAbort = new AbortController();
+    const signal = extra.signal ? AbortSignal.any([extra.signal, fixtureAbort.signal]) : fixtureAbort.signal;
+    const sleep = extra.sleep ?? (async (milliseconds: number) => {
+      if (fixtureAbort.signal.aborted) throw new Error('fake sleep: poll limit reached');
+      sleeps.push(milliseconds);
+      fixtureAbort.abort();
+    });
+    return { host: hostFor(config.project.target),
+      createAdapter: scriptedWorker(), openspec: { probe: () => ({ status: 0 }), configPresent: () => true },
+      selection: { interactive: false, probe: harness => ({ harness, available: true, version: 'scripted' }) },
+      testFramework: preparedTestFramework, mergePolling: { delay: async () => {} }, runCommand: separateArchive(), ...extra,
+      signal, sleep };
+  };
   const run = (candidate: RunConfig, extra: RunOptions = {}) => runQueue(candidate, options(candidate, extra));
   const state = (name = 'one') => JSON.parse(readFileSync(join(base, `state-${name}`, 'state.json'), 'utf8'));
   const outcomes = join(base, 'project-outcomes');
-  return { base, remote, root, project, queue, records, hostFor, config, options, run, state, outcomes, integrator };
+  return { base, remote, root, project, queue, records, hostFor, config, options, run, state, outcomes, integrator,
+    sleeps };
 }
 
 export type RunnerFixture = ReturnType<typeof runnerFixture>;
