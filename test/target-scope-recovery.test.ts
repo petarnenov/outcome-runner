@@ -22,6 +22,7 @@ const SUBJECT = 'chore(fixture): integrate main into A';
 const isPostMergeReview = (prompt: string) => prompt.includes('Review actual implementation') &&
   prompt.includes('review the merged result');
 const isResolution = (prompt: string) => prompt.includes('Resolve the merge conflicts');
+const isSendBack = (prompt: string) => prompt.includes('Address the rejection of the merged result');
 
 interface Scenario { f: RunnerFixture; config: RunConfig; lines: string[]; setupLog: string; prompts: string[] }
 
@@ -212,6 +213,8 @@ test('C: an earlier acceptance is not reused when the review after a clean merge
   assert.equal(git(s.f.remote, 'for-each-ref', `refs/heads/${blocked.work.branch}`), '');
   assert.equal(s.f.records.length, 0);
   assert.deepEqual(integrationCommits(s.f), []);
+  // The rejected clean merge got exactly one send-back session before it blocked.
+  assert.equal(s.prompts.filter(isSendBack).length, 1);
 });
 
 // 4.6 (C) (required)
@@ -277,6 +280,8 @@ for (const failure of ['fails', 'markers', 'review'] as const) {
     assert.equal(report?.detail?.reason, 'target-conflict-unresolved');
     assert.equal(s.f.records.length, 0);
     assert.equal(s.prompts.filter(isResolution).length, 1);
+    // A conflict integration keeps its own handling: it never gets a send-back session.
+    assert.equal(s.prompts.filter(isSendBack).length, 0);
   });
 }
 

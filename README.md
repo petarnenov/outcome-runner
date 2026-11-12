@@ -655,15 +655,18 @@ Published work carries no temporary diagnostic files. Every implementation
 session of the work stage is told to delete, with `delete_file`, each scratch or
 diagnostic file it created before finishing, such as temporary debug tests,
 captures or notes, and to keep only files the task needs; the conflict
-resolution session after an integration does not get this instruction. The
+resolution session after an integration does not get this instruction, while
+the send-back session of a rejected clean integration does. The
 implementation review, in the work stage and after an integration, reports
 changes-required when the task changes still contain a file that only served
 diagnosis, such as a temporary debug test, and names each such file by path in
 its findings. In the work stage, like any other rejection, the findings go to
 the next implementation session, which deletes the files, and the round counts
-against the review budget. An integration review that names a leftover file
-blocks the task with the usual integration reason (see
-[When the target advances during a run](#when-the-target-advances-during-a-run)).
+against the review budget. An integration review of a clean merge that names a
+leftover file sends the merged result back once: the send-back session deletes
+the file, and the task is blocked with the usual integration reason only when
+the result is still rejected afterwards. A conflict integration blocks at once
+(see [When the target advances during a run](#when-the-target-advances-during-a-run)).
 
 ## Project and authority
 
@@ -922,8 +925,10 @@ Every task has a durable budget, saved in its work state in `state.json` as
   session of the same stage to fix it while attempts remain, and no review
   starts for the failing run. The `run_checks` calls a worker makes inside its
   own session do not count. The integration checks and reviews of an
-  [advanced target](#when-the-target-advances-during-a-run) and the final checks
-  have no budget; they block on their first failure as before.
+  [advanced target](#when-the-target-advances-during-a-run), the send-back
+  session and the final checks have no budget. A clean integration gets one
+  send-back session before it blocks; a conflict integration and the final
+  checks block on their first failure.
 - **Restarts keep the counts.** A restart of the invocation without `--retry`
   continues from the recorded counts and never grants new rounds or attempts. A
   blocked task is still resumed (for example after a failed session), but a task
@@ -1356,7 +1361,10 @@ paths (`conflicts`), the `outcome` (`clean` or `conflict`) and the current
 1. a merge with conflicts gets one worker session to resolve them (see below);
 2. the `setup` commands and the product checks run again;
 3. a new implementation review session reviews the merged result;
-4. a new documentation review session reviews it as well.
+4. a new documentation review session reviews it as well;
+5. when the checks or a review do not accept a merge without conflicts, one
+   send-back session repairs it and the checks and both reviews run again (see
+   below).
 
 Earlier acceptances are never reused for the new base: the accepted review, the
 checks, the final checks, the tested head and the tested target are cleared
@@ -1389,12 +1397,36 @@ the task scopes, for example in the archived change or in an `openspec/specs`
 file, cannot be written by the worker, so the task is blocked at once without a
 session.
 
+**Send-back after a rejected clean merge.** When the setup or product checks,
+the implementation review or the documentation review do not accept the result
+of a merge without conflicts, the task is not blocked at once. The worker gets
+one send-back session: one worker session (an implementation session) given the
+failed check output or the review findings, which may write only inside the
+task scopes. The OpenSpec change is already archived at that point, so writes to
+its files, or to any other path outside the task scopes, are refused, and only
+task scope paths are committed after the session (as a
+`fix(<commitScope>): address the integration findings of <id>` commit when
+anything changed).
+After the send-back session the checks and both reviews run again.
+When all of them accept, the task continues to the receipt, publishing and
+merging. Otherwise it is blocked with `target-integration-rejected`, and the
+last findings or check output stay in `state.json`: in `findings` and in
+`integration.sendBack`, which records the `cause` (`checks`, `review` or
+`document-review`), the `findings` given to the session, the `session` state
+(`pending`, `started` or `finished`), the `outcome` (`accepted` or `rejected`)
+and, after a rejection, the last `rejection` with its cause and findings. A
+finished integration keeps its `sendBack` record in `integrations`. The
+send-back session uses no review or check budget. A restart never grants a
+second send-back session for the same target commit; a later advance of the
+target is a new integration with its own send-back. Merges with conflicts get no
+send-back session.
+
 **Blocking reasons.**
 
 | Reason | When |
 |---|---|
 | `target-conflict-unresolved` | A merge with conflicts: the resolution session fails, conflict markers or unmerged paths remain, a conflicting path is outside the task scopes, or the checks or a review do not accept the result. The conflicting `paths` are recorded with it |
-| `target-integration-rejected` | A merge without conflicts whose checks or reviews do not accept the result |
+| `target-integration-rejected` | A merge without conflicts whose checks or reviews are still rejected after the one send-back session |
 | `target-keeps-advancing` | The target advanced before the merge in 5 consecutive attempts; the task keeps its worktree and branches and a restart continues |
 
 The reason (and, for a conflict, the `paths`) is stored in the task's `blocked`
@@ -1411,9 +1443,12 @@ branch, oldest first, and `targetAttempts` the current attempt count. After a
 cancellation or a restart of the invocation, the run resumes from the last
 integrated target at the recorded step with the recorded base and attempt
 number: it never merges the target a second time, runs only the outstanding
-resolution session, checks and reviews, and never reuses an acceptance from
-before the merge. A later run that recovers a blocked integration also resumes
-it at its recorded step.
+resolution session, send-back session, checks and reviews, and never reuses an
+acceptance from before the merge. A recorded send-back session that already
+started is never started again: the restart commits what the session left in the
+task worktree and runs the checks and both reviews, which decide the outcome. A
+later run that recovers a blocked integration also resumes it at its recorded
+step.
 
 ## Run statistics ledger
 
@@ -1593,13 +1628,24 @@ writes only the run `start` line and the run `end` line with outcome
 `planning review`, `implementation`, `commit`, `check` (each product check),
 `review`, `documentation`, `documentation review`, `final checks`, `archive`,
 `receipt`, `compare` (each comparison with origin), `integrate` (only when the
-target advanced), `push`, `pull request`, `wait`, `merge`, `retry` (only when
+target advanced), `send-back` (only when a rejected clean integration is sent
+back), `push`, `pull request`, `wait`, `merge`, `retry` (only when
 the target advanced before the merge), `acceptance`, `cleanup`, and `blocked`
 (`stopped at <step>`, naming the last step and never the reason). An
 integration of an in-scope target advance writes an `integrate` line before the
 merge, an `implementation` line before the conflict resolution session, `setup`
 and `check` lines for its checks, and `review` and `documentation review` lines
-for its reviews.
+for its reviews. When a clean integration is sent back, it also writes a
+`send-back` line
+(`send-back: the <checks|implementation review|documentation review> did not accept the merged result; sending it back`),
+an `implementation` line before the send-back session
+(`implementation: starting the send-back session of the merged result`), a
+`commit` line for its result (`commit: committing the send-back result`), the
+`setup`, `check`, `review` and `documentation review` lines of the checks and
+reviews that run again, and a `send-back` line with the outcome: either
+`send-back: the merged result was accepted after the send-back session`, or
+`send-back: the merged result is still rejected after the send-back session`
+followed directly by `blocked: stopped at send-back`.
 
 - **Comparisons** with `origin/<target>` are logged as `compare` lines. Every
   publish pass starts with `compare: comparing origin/<target> with the
@@ -1634,7 +1680,8 @@ for its reviews.
   (committing the documentation) and `documentation review` lines; and in a
   publish pass repeated after the target advanced during the merge the
   `compare`, `integrate`, `setup`, `check`, `push`, `pull request`, `wait` and
-  `merge` lines. The attempt number of a publish pass is durable, so a restart
+  `merge` lines, and the `send-back` lines with their `implementation` and
+  `commit` lines. The attempt number of a publish pass is durable, so a restart
   keeps it.
 - **Resume**: steps already completed in the run state are not logged again.
   The first step line of work continued from the run state starts its message
@@ -1734,7 +1781,10 @@ scripted pull request hosts, through `disposeInvocation` and the exported
 `dispose` entry point with a temporary `XDG_STATE_HOME`. Target advances during
 a run (clean and conflicting merges, restarts and advances outside the scopes)
 are tested with Git fixtures that push to the fixture origin, scripted adapters
-and the scripted pull request host. The comparisons with origin before
+and the scripted pull request host. The send-back session of a rejected clean
+integration (rejections by a check, the implementation review and the
+documentation review, results still rejected, the scope limit and restarts) is
+tested in `test/integration-send-back.test.ts` with the same fixtures. The comparisons with origin before
 publishing and merging, the merge guard, the attempt limit, conflicts while
 waiting to merge and restarts from the recorded target commit are tested in
 `test/merge-when-target-unchanged.test.ts` with the same fixtures and scripted

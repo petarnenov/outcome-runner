@@ -94,8 +94,34 @@ export interface RetryRecord {
   exhausted?: BudgetExhaustion;
 }
 
-/** The durable steps of merging an in-scope target advance into the task branch, in order. */
-export type IntegrationStep = 'merge' | 'resolve' | 'checks' | 'review' | 'document-review';
+/**
+ * The durable steps of merging an in-scope target advance into the task branch, in order. `send-back` is the one
+ * worker session of a rejected clean integration; the checks and both reviews follow it again.
+ */
+export type IntegrationStep = 'merge' | 'resolve' | 'checks' | 'review' | 'document-review' | 'send-back';
+
+/**
+ * What did not accept the merged result: the setup or product checks, the implementation review or the
+ * documentation review.
+ */
+export type SendBackCause = 'checks' | 'review' | 'document-review';
+
+/** The one send-back of a clean integration. */
+export interface SendBackRecord {
+  /** What rejected the merged result before the session. */
+  cause: SendBackCause;
+  /** The review findings or the failed check output given to the session. */
+  findings: string[];
+  /**
+   * `pending`: not started. `started`: saved right before the session starts. `finished`: session done and result
+   * committed.
+   */
+  session: 'pending' | 'started' | 'finished';
+  /** Set when the checks and both reviews after the session decided. */
+  outcome?: 'accepted' | 'rejected';
+  /** The last rejection after the session: its cause and its findings or check output. */
+  rejection?: { cause: SendBackCause; findings: string[] };
+}
 
 /** One merge of an advanced target that changed the task's guarded paths. */
 export interface IntegrationRecord {
@@ -107,6 +133,11 @@ export interface IntegrationRecord {
   conflicts: string[];
   outcome: 'clean' | 'conflict';
   step: IntegrationStep;
+  /**
+   * The one send-back of this integration; absent when none was needed. Its presence means that this target
+   * commit has used its send-back.
+   */
+  sendBack?: SendBackRecord;
 }
 
 export interface CheckRecord extends CommandSpec { outcome: string; output?: string }
