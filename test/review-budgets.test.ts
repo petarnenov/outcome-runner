@@ -299,3 +299,55 @@ test('C: --retry of a task that is not blocked is refused before any claim, sess
 });
 
 // 5.11 (C) (coverage-only): not needed, coverage reached.
+
+// 5.12 (B) (required)
+test('B: failing check runs use check attempts and never review rounds', async t => {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const s = scripted({ failingWork: n => n <= 2, reject: { review: n => n <= 3 } }); const config = f.config();
+  const result = await f.run(config, { createAdapter: s.createAdapter });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.deepEqual(result.accepted, ['A']);
+  assert.equal(s.count('work'), 6); assert.equal(s.count('review'), 4);
+  // No review session follows the two failing check runs: the first review comes after the third implementation.
+  const kinds = s.prompts.map(entry => entry.kind).filter(kind => kind === 'work' || kind === 'review');
+  assert.deepEqual(kinds, ['work', 'work', 'work', 'review', 'work', 'review', 'work', 'review', 'work', 'review']);
+  const completed = readState(config).completed.A as Work;
+  assert.deepEqual(completed.budget!.work, { checks: 2, reviews: 4 });
+});
+
+// 5.13 (B) (required)
+test('B: a restart without --retry continues the planning review count', async t => {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const s = scripted({ reject: { planReview: n => n !== 3 }, fail: { planReview: n => n === 3 } });
+  const config = f.config();
+  const first = await f.run(config, { createAdapter: s.createAdapter });
+  assert.equal(first.status, 'incomplete', JSON.stringify(first));
+  assert.equal(first.blockers!.A.reason, 'operation-incomplete');
+  const blocked = readState(config).blocked.A;
+  assert.equal(blocked.reason, 'Scripted worker failure'); assert.equal(blocked.budget, undefined);
+  assert.equal(blocked.work.budget.plan.reviews, 3);
+  assert.equal(s.count('planReview'), 3);
+  const second = await f.run(config, { createAdapter: s.createAdapter });
+  assert.equal(second.status, 'incomplete', JSON.stringify(second));
+  assert.equal(s.count('planReview'), 4);
+  const state = assertBudgetBlock(second, config, exhaustion('plan', 'reviews', 4, 0));
+  assert.equal(state.blocked.A.work.budget.plan.reviews, 4);
+  assert.equal(s.count('work'), 0);
+});
+
+// 5.14 (B) (required)
+test('B: a restart of an exhausted task blocks again without any session', async t => {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const s = scripted({ reject: { review: () => true } }); const config = f.config();
+  await reviewsRanOut(f, config, s);
+  const prompts = s.prompts.length; const claims = claimCommits(f);
+  const again = await f.run(config, { createAdapter: s.createAdapter });
+  assert.equal(again.status, 'incomplete', JSON.stringify(again));
+  const state = assertBudgetBlock(again, config, REVIEWS_RAN_OUT);
+  assert.deepEqual(state.blocked.A.work.budget.work, { reviews: 4, checks: 0 });
+  assert.equal(s.prompts.length, prompts);
+  assert.ok(!s.prompts.slice(prompts).some(entry => entry.prompt.includes('Task A;')));
+  assert.equal(claimCommits(f), claims);
+});
+
+// 5.15 (B) (coverage-only): not needed, coverage reached.
