@@ -18,7 +18,8 @@ export interface Receipt {
   specification: Record<string, string>;
   review: Pick<ReviewRecord, 'reviewer' | 'outcome' | 'accepted'>;
   checks: CheckRecord[];
-  manifest: { path: string; hash: string }[];
+  /** Each changed path with its content hash; a deleted path has hash null. */
+  manifest: { path: string; hash: string | null }[];
   head: string;
   base: string;
   /** The changes recorded for the invocation when the receipt was written; omitted when there were none. */
@@ -72,6 +73,11 @@ export function fileAt(root: string, revision: string, path: string): Buffer {
     cwd: root, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
   }), ['show', `${revision}:${path}`]);
 }
+/** The content hash of a path at a revision, or null when the path does not exist there. */
+function hashAt(root: string, revision: string, path: string): string | null {
+  const present = git(root, 'ls-tree', '--name-only', revision, '--', path).split('\n').includes(path);
+  return present ? digest(fileAt(root, revision, path)) : null;
+}
 export function receiptAt(root: string, revision: string, path: string, taskHash: string, authority: string | null): Receipt | null {
   const files = git(root, 'ls-tree', '-r', '--name-only', revision, '--', path).split('\n');
   if (!files.includes(path)) return null;
@@ -92,7 +98,7 @@ export function receiptAt(root: string, revision: string, path: string, taskHash
     safePath(entry.path);
     if (paths.has(entry.path)) throw new Error('Duplicate receipt path');
     paths.add(entry.path);
-    if (digest(fileAt(root, first, entry.path)) !== entry.hash) throw new Error('Accepted result differs from receipt');
+    if (hashAt(root, first, entry.path) !== entry.hash) throw new Error('Accepted result differs from receipt');
   }
   for (const [path, expected] of Object.entries(receipt.specification)) {
     safePath(path);

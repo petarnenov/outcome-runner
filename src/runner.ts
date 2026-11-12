@@ -1261,7 +1261,11 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           if (!paths.length || outsideManifest(paths, now).length) {
             throw new Error('Empty or out-of-scope result manifest');
           }
-          const manifest = paths.map(path => ({ path, hash: digest(readFileSync(join(work.path, path))) }));
+          // A path the task deleted is recorded with hash null.
+          const manifest = paths.map(path => {
+            const file = join(work.path, path);
+            return { path, hash: existsSync(file) ? digest(readFileSync(file)) : null };
+          });
           // The changes recorded for the invocation so far (runner upgrade, added settings or tasks) are listed.
           const changes = store.state.changes ?? [];
           const receipt = { version: 1, id: work.id, taskHash: work.taskHash,
