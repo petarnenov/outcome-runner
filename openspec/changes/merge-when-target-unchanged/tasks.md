@@ -2,28 +2,28 @@
 
 ## 1. Model
 
-- [ ] 1.1 `src/model.ts`: add `Work.integratedTargets?: string[]` and `Work.targetAttempts?: number` (design decision 1).
+- [x] 1.1 `src/model.ts`: add `Work.integratedTargets?: string[]` and `Work.targetAttempts?: number` (design decision 1).
 
 ## 2. Host
 
-- [ ] 2.1 `src/runner.ts` `PullRequestHost.merge(pr, head, guard?)`; `src/git.ts` `GitHubHost.merge` awaits `guard?.()`
+- [x] 2.1 `src/runner.ts` `PullRequestHost.merge(pr, head, guard?)`; `src/git.ts` `GitHubHost.merge` awaits `guard?.()`
   after `settledMergeView` and the protection checks and immediately before `gh pr merge --merge --match-head-commit
   <head>` (decision 5). The scripted host of `test/support/runner-fixture.ts` stays unchanged (it does not call the
   guard).
 
 ## 3. Runner
 
-- [ ] 3.1 Replace `publishPasses` with the durable attempt number `(targetAttempts ?? 0) + 1` on every publish, `pr`
+- [x] 3.1 Replace `publishPasses` with the durable attempt number `(targetAttempts ?? 0) + 1` on every publish, `pr`
   and merge-stage line (decision 1).
-- [ ] 3.2 `recordIntegrated(target)` in the outside-scope merge and in the integrate `merge` step (decision 2).
-- [ ] 3.3 Outside-scope merge conflict: `git merge --abort` and start the integrate stage (decision 3).
-- [ ] 3.4 `compare ... with the integrated target` line as the first line of every publish pass, after `assertWork`
+- [x] 3.2 `recordIntegrated(target)` in the outside-scope merge and in the integrate `merge` step (decision 2).
+- [x] 3.3 Outside-scope merge conflict: `git merge --abort` and start the integrate stage (decision 3).
+- [x] 3.4 `compare ... with the integrated target` line as the first line of every publish pass, after `assertWork`
   and before the refresh, `integrate`, `setup` and `check` lines (decision 4).
-- [ ] 3.5 Attempt number on every worktree-merge `integrate` line (decisions 4 and 7): the outside-scope merge line in
+- [x] 3.5 Attempt number on every worktree-merge `integrate` line (decisions 4 and 7): the outside-scope merge line in
   `integrateTarget` and the integrate stage's `merge` step line (`merging the advanced <target> into the task scope`)
   are both written with `(targetAttempts ?? 0) + 1`, so a retried in-scope merge logs `integrate ... (attempt N)`;
   the integrate stage reads the attempt from the durable work, so a restart keeps the number.
-- [ ] 3.6 Merge-stage comparisons through one helper `compareTarget(log)` (decision 5), exactly one comparison per
+- [x] 3.6 Merge-stage comparisons through one helper `compareTarget(log)` (decision 5), exactly one comparison per
   view, in this order per view: `host.find`, the state and local head checks, `ready = pr.headRefOid === now.head`,
   `compareTarget(view === 1 || ready)` (an unchanged, not ready later view writes nothing; a difference always writes
   its line and goes to 3.7, so `retry` follows directly), then when ready `merge: merging #N` and
@@ -31,10 +31,10 @@
   `merge: merging #N` line stays the last step line before `host.merge`. Remove the old silent check
   (`if (refresh(work.id).target !== now.testedTarget) { save({ stage: 'publish' }); break; }`). Add the guard
   (`compareTarget(true)` throwing the private `TargetAdvanced`) and its catch as a failed comparison.
-- [ ] 3.7 Export `TARGET_ATTEMPTS = 5`; failed comparison handling with `retry` line, durable `targetAttempts`, block with
+- [x] 3.7 Export `TARGET_ATTEMPTS = 5`; failed comparison handling with `retry` line, durable `targetAttempts`, block with
   `IntegrationFailure('target-keeps-advancing', [])` after saving stage `publish` and `targetAttempts: 0`; add the
   code to `IntegrationCode` and `INTEGRATION_REASONS` (decision 6).
-- [ ] 3.8 Adjust every existing test that asserts exact or adjacent step-line sequences, per-call publish pass
+- [x] 3.8 Adjust every existing test that asserts exact or adjacent step-line sequences, per-call publish pass
   numbers, the old merge-stage retry lines, or the step line written before a host call. Search all of `test/` for
   `deepEqual` / `slice` / `indexOf` / `lastStep` over step lines. Known changes, in `test/runner-steps.test.ts`:
   - `A (required): an accepted task writes the ordered step lines, each before the first effect of its step` (planned
@@ -65,7 +65,7 @@
 
 ## 4. README
 
-- [ ] 4.1 Replace the advice not to merge into the target during a run; extend "When the target advances during a
+- [x] 4.1 Replace the advice not to merge into the target during a run; extend "When the target advances during a
   run", the blocker table, the step line list and the Development section (decision 9).
 
 ## 5. Tests
@@ -84,10 +84,10 @@ worktree and branches.
 
 ### Grade E
 
-- [ ] 5.1 (E) (required) `explainUnfinished` with a blocked entry `{ reason: 'target-keeps-advancing' }` gives `kind`
+- [x] 5.1 (E) (required) `explainUnfinished` with a blocked entry `{ reason: 'target-keeps-advancing' }` gives `kind`
   `blocked`, that `reason` and no `paths`; `TARGET_ATTEMPTS` is 5.
-- [ ] 5.2 (E) (required) No file under `src/` contains `Target changed outcome scope`.
-- [ ] 5.3 (E) (required) README section (spec scenario "README section", source criterion 8): `README.md` is read and
+- [x] 5.2 (E) (required) No file under `src/` contains `Target changed outcome scope`.
+- [x] 5.3 (E) (required) README section (spec scenario "README section", source criterion 8): `README.md` is read and
   its section under the heading `When the target advances during a run` is extracted. The README no longer advises
   against merging into the target during a run (no `do not merge` / `don't merge` / `avoid merging` wording about the
   target, case-insensitive, anywhere in the README), and the section names: owners may merge during a run (including
@@ -97,13 +97,13 @@ worktree and branches.
 
 ### Grade D
 
-- [ ] 5.4 (D) (required) Guard right before the merge command: `GitHubHost.merge` with a stubbed `gh` returning a
+- [x] 5.4 (D) (required) Guard right before the merge command: `GitHubHost.merge` with a stubbed `gh` returning a
   CLEAN view calls the guard after the view and before `gh pr merge ... --match-head-commit <head>`; with a guard
   that throws, no `gh pr merge` call is recorded.
-- [ ] 5.5 (D) (required) Changed pull request head refuses the merge: from `afterEffect('pr')` a foreign commit is
+- [x] 5.5 (D) (required) Changed pull request head refuses the merge: from `afterEffect('pr')` a foreign commit is
   pushed to the task branch on origin; the task is blocked with `Checked head or target changed`, the host `merge`
   was never called and `origin/main` has no merge of the task.
-- [ ] 5.6 (D) (required) Advance outside the scopes merged and checked without review (spec scenarios "Advance
+- [x] 5.6 (D) (required) Advance outside the scopes merged and checked without review (spec scenarios "Advance
   outside the scopes is merged and checked without a new review" and "Retry is logged"): from `afterEffect('pr')`
   the target commits `docs/other.md`; the task is accepted, `integratedTargets` ends with that commit, the product
   check lines follow the `integrate` line with `(attempt 2)` and precede the second push, review and document-review
@@ -114,7 +114,7 @@ worktree and branches.
   comes `compare: comparing origin/main with the integrated target (attempt 2)`, then `integrate ... (attempt 2)`;
   the line directly before the second `merge: merging #1 (attempt 2)` is
   `compare: comparing origin/main with the checked target (attempt 2)`.
-- [ ] 5.7 (D) (required) Polling stays quiet (spec scenario "Polling stays quiet"): the scripted host's `find` is
+- [x] 5.7 (D) (required) Polling stays quiet (spec scenario "Polling stays quiet"): the scripted host's `find` is
   wrapped so that on the first two merge-stage views it returns the recorded pull request with a `headRefOid` that
   differs from the tested head (for example a constant 40-character fake SHA), and from the third view on it
   delegates to the scripted host. It must not return `null` (the merge stage treats a missing pull request as
@@ -128,14 +128,14 @@ worktree and branches.
 
 ### Grade C
 
-- [ ] 5.8 (C) (required) Advance inside the scopes while waiting: from `afterEffect('pr')` the target commits
+- [x] 5.8 (C) (required) Advance inside the scopes while waiting: from `afterEffect('pr')` the target commits
   `src/a/notes.md`; `origin/main` (after fetch) contains the commit through an `integrate main into A` merge made in
   the task worktree; the step log has a merge-stage `compare ... with the checked target` line directly before
   `retry (attempt 2)`, then `compare ... with the integrated target (attempt 2)` and the integrate stage's merge-step
   line `A integrate: merging the advanced main into the task scope (attempt 2)`; the product checks and one extra
   implementation review session run after that `integrate` line and before the next push; no blocked entry or state
   field contains `Target changed outcome scope`; the task is accepted; and `checkoutState(root)` is unchanged.
-- [ ] 5.9 (C) (required) Origin advances between the check and the merge: the wrapped host `merge` pushes an
+- [x] 5.9 (C) (required) Origin advances between the check and the merge: the wrapped host `merge` pushes an
   outside-scope target commit and calls the guard on its first call only; the first merge is not delegated, the
   step lines around it are `compare ... with the checked target`, `merge: merging #1`, the guard's
   `compare ... with the checked target`, `retry ... (attempt 2)` in that order with nothing between them; the runner
@@ -144,12 +144,12 @@ worktree and branches.
 
 ### Grade B
 
-- [ ] 5.10 (B) (required) Attempt limit: the wrapped host `merge` advances the target and calls the guard on every
+- [x] 5.10 (B) (required) Attempt limit: the wrapped host `merge` advances the target and calls the guard on every
   call; after the fifth failed comparison the task is blocked with `target-keeps-advancing` (state and result
   blocker), no merge was delegated, `retry` lines carry attempts 2 to 5, the blocked work has stage `publish` and
   `targetAttempts` 0, and the worktree, local branch and remote branch exist. Running the same invocation again
   with the plain scripted host merges and accepts the task in the same worktree.
-- [ ] 5.11 (B) (required) Conflict while waiting: from `afterEffect('pr')` the target commits a different
+- [x] 5.11 (B) (required) Conflict while waiting: from `afterEffect('pr')` the target commits a different
   `src/a/result.mjs`; the merge-stage `compare` line that finds the difference comes directly before
   `retry (attempt 2)`; (a) the resolution session writes a merged file, the checks and the implementation review
   run after it and the task is accepted with the resolved content on `origin/main`; (b) the resolution session fails
@@ -163,15 +163,15 @@ worktree and branches.
   outside the task scopes, blocks with `target-conflict-unresolved` without any resolution session. The blocked
   `paths` are asserted loosely, because Git's merge-ort strategy may record the file side under a renamed path such
   as `evidence/results/A.json~HEAD`: `paths` is non-empty and every entry starts with `evidence/results/A.json`
-  (the exact path `evidence/results/A.json` is not required).
-- [ ] 5.13 (B) (required) Adjusted existing test `B (required): a target advance during the merge stage repeats the
+  (the exact path `evidence/results/A.json` is not required). not needed: coverage reached
+- [x] 5.13 (B) (required) Adjusted existing test `B (required): a target advance during the merge stage repeats the
   publish steps with (attempt 2)` in `test/runner-steps.test.ts` (spec scenario "Retry is logged"; task 3.8): the
   slice from `A wait: waiting for mergeability and checks of #1` equals the 15 lines listed in task 3.8, `advanced`
   is 1 and no line contains `resuming`.
 
 ### Grade A
 
-- [ ] 5.14 (A) (required) Restart resumes from the recorded target commit: an in-scope advance from
+- [x] 5.14 (A) (required) Restart resumes from the recorded target commit: an in-scope advance from
   `afterEffect('pr')` whose target commit `T` is remembered; the first run is cancelled from
   `afterEffect('integrate')` right after the merge step is recorded. The first run's step log has the integrate line
   `A integrate: merging the advanced main into the task scope (attempt 2)`. `state.json` `current` has `T` last in
@@ -185,8 +185,8 @@ worktree and branches.
   `(attempt 2)`.
 - [ ] 5.15 (A) (coverage-only) Two advances then an unchanged target: the wrapped `merge` advances the target on its
   first two calls; `targetAttempts` reaches 2, `integratedTargets` has two entries and the task is accepted on the
-  third attempt.
-- [ ] 5.16 (A) (required) Adjusted existing test `A (required): an accepted task writes the ordered step lines, each
+  third attempt. not needed: coverage reached
+- [x] 5.16 (A) (required) Adjusted existing test `A (required): an accepted task writes the ordered step lines, each
   before the first effect of its step` in `test/runner-steps.test.ts` (spec scenarios "Publish comparison without an
   advance" and "Order without an advance"; task 3.8): the expected list has the two new `compare` lines at the
   positions given in task 3.8 (and in design decision 5), the last step line before every `host merge` event is still
@@ -195,5 +195,5 @@ worktree and branches.
 
 ## 6. Verification after binding
 
-- [ ] 6.1 Run `npm run typecheck`.
-- [ ] 6.2 Run `npm test` with the coverage gate at 85%.
+- [x] 6.1 Run `npm run typecheck`.
+- [x] 6.2 Run `npm test` with the coverage gate at 85%.
