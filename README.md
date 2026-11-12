@@ -1617,10 +1617,11 @@ for its reviews.
   (attempt N)`, and the repeated publish pass follows. On the fifth consecutive
   such comparison that finds a different target, no `retry` line is written:
   the task is blocked with `target-keeps-advancing` and the compare line is
-  followed by `blocked: stopped at publish`. A publish-pass comparison with the
-  integrated target that finds an advanced target writes no `retry` line; the
-  `integrate` line (a change outside the guarded paths) or the lines of the
-  `integrate` stage (a change inside them) follow it directly.
+  followed by `blocked: stopped at compare` (the `blocked` line names the last
+  step; the stage recorded in `state.json` stays `publish`). A publish-pass
+  comparison with the integrated target that finds an advanced target writes no
+  `retry` line; the `integrate` line (a change outside the guarded paths) or the
+  lines of the `integrate` stage (a change inside them) follow it directly.
 - **Waits** log once when the wait starts, never on every poll: one `wait` line
   for mergeability and checks, one more when the pull request head is stale,
   and one `git lock: waiting for the Git lock` line when another runner holds
