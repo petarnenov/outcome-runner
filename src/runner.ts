@@ -35,6 +35,7 @@ import { planTestInstructions, planningReviewTestInstructions, workTestInstructi
 import { createStepLog, runStartMessage } from './step-log.ts';
 import type { StepLog, StepOutput } from './step-log.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
+import { runnerVersion } from './runner-version.ts';
 
 export interface PullRequestHost {
   find(branch: string): PullRequest | null | Promise<PullRequest | null>;
@@ -492,7 +493,9 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         throw new Error('Another durable invocation owns unfinished work in this repository');
       }
     }
-    const ownership = { identity: '', stateDirectory: resolve(config.stateDirectory), released: false };
+    // Every write of the ownership file names the version of this runner; readers never decide on it.
+    const ownership = { identity: '', stateDirectory: resolve(config.stateDirectory), released: false,
+      runnerVersion: runnerVersion() };
     let released = false;
     const release = () => {
       writeFileSync(ownershipFile, JSON.stringify({ ...ownership, released: true }));

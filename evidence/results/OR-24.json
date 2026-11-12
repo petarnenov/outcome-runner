@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "id": "OR-24",
+  "taskHash": "c9735251f08db0b33785ec36ac84d138246b3f074249e0856264065874f0f842",
+  "authority": "owner-2026-11-11-outcome-runner-or-18-24",
+  "target": "main",
+  "specification": {
+    "openspec/changes/archive/2026-11-12-cli-usage-and-install/design.md": "0ec02bec513e55894ed1edbbf160d550be4f7c8a25e485b24cadea9edd75d4a8",
+    "openspec/changes/archive/2026-11-12-cli-usage-and-install/proposal.md": "4a6997e99c40163c06a55994616b22d39cab19689c88e87b4fd22e6f8fa80565",
+    "openspec/changes/archive/2026-11-12-cli-usage-and-install/specs/cli-usage-and-install/spec.md": "4647b8a2859abf61197f453840f70a6ed259d4b9a47dbe90d470eabc7e6d349e"
+  },
+  "review": {
+    "reviewer": "claude:2233adf5-d8b3-4245-b663-b3afde4d9c8b",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "bfbddc7824be4af9b3f20117027ec24d3b63e06127ae8aa04b6c8dccec9dbb49"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-cli-usage-and-install/design.md",
+      "hash": "0ec02bec513e55894ed1edbbf160d550be4f7c8a25e485b24cadea9edd75d4a8"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-cli-usage-and-install/proposal.md",
+      "hash": "4a6997e99c40163c06a55994616b22d39cab19689c88e87b4fd22e6f8fa80565"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-cli-usage-and-install/specs/cli-usage-and-install/spec.md",
+      "hash": "4647b8a2859abf61197f453840f70a6ed259d4b9a47dbe90d470eabc7e6d349e"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-cli-usage-and-install/tasks.md",
+      "hash": "cb0c48c428649d83fd92dc99f6d1a70b92d2538a377aa6a92b2316662e84bcba"
+    },
+    {
+      "path": "openspec/specs/cli-usage-and-install/spec.md",
+      "hash": "c9a1da2e3fe1cad6a22e4886e5703d6b80ce6795676826a779618b232e5295cb"
+    },
+    {
+      "path": "src/cli.ts",
+      "hash": "6fd2adaaf70bb7f584dc04b7a9fe0bc72176c981f3cc3a70a7e1df3f81e7c373"
+    },
+    {
+      "path": "src/dispose.ts",
+      "hash": "c984c38ca2b0a352318aa4843703a0a5f642b76def7b318ae7552bd901429bcc"
+    },
+    {
+      "path": "src/run-store.ts",
+      "hash": "fc434799d5b3250cb499a1e30a30ea381bf1c86251e9da9afbb79c725eb53da4"
+    },
+    {
+      "path": "src/runner-version.ts",
+      "hash": "2a6567ae091354d563078e814926f0e6521e0f6084bad8b1bd00c280fcf7b694"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "971441b237f56f43d6118eabe34311dc2ff70b894d5d7b29af08c1ff8df1585e"
+    },
+    {
+      "path": "src/statistics.ts",
+      "hash": "dbee53819e1aa05d9761cc50e5cf71a92929c3e7de241bbe3b0313386d9fd77f"
+    },
+    {
+      "path": "test/cli-usage.test.ts",
+      "hash": "0dc4b8b0da1406904ba928475455201d5e0b818af09d132d4f6c1ffdcb1a07a1"
+    },
+    {
+      "path": "test/cli.test.ts",
+      "hash": "6f3960e3d36135c160b11a173cd303a7b7d237e45c8cf7cb1f7f7171cda386ec"
+    }
+  ],
+  "head": "fce9a11864f4ca643202e1eacabf64a316ae6848",
+  "base": "56270537f3f04eda534e31fd9d2d7a636f14ff5e",
+  "invocationChanges": [
+    {
+      "kind": "identity-upgraded",
+      "from": 1,
+      "to": 2,
+      "at": "2026-11-12T07:26:56.580Z"
+    }
+  ]
+}
