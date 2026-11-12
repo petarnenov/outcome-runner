@@ -54,9 +54,9 @@ interface WorkerScript {
   documentation?: 'until-fixed';
   /**
    * The send-back session: `write` writes src/a/fixed.md, `delete` deletes src/a/broken.md, `outside` first tries to
-   * write the old change directory's tasks.md and then writes src/a/fixed.md, `fail` fails the session.
+   * write the old change directory's tasks.md and then writes src/a/fixed.md.
    */
-  sendBack?: 'write' | 'delete' | 'outside' | 'fail';
+  sendBack?: 'write' | 'delete' | 'outside';
 }
 
 /** scriptedWorker plus scripted reviews of the merged result and a scripted send-back session. */
@@ -78,7 +78,6 @@ function worker(s: Scenario, script: WorkerScript) {
     return { ...inner, async startAction(prompt: string) {
       s.prompts.push(prompt);
       if (isSendBack(prompt)) {
-        if (script.sendBack === 'fail') throw new Error('Scripted send-back failure');
         if (script.sendBack === 'outside') {
           try { await write(`${DIRECTORY}/tasks.md`, '# Tasks\n'); }
           catch (error) { s.refused.push((error as Error).message); }
@@ -128,6 +127,13 @@ function assertAccepted(s: Scenario, cause: string): Work {
   assert.equal(commits(s.f, SUBJECT).length, 1);
   return completed;
 }
+
+/** The prompts of the reviews of the merged result that ran after the send-back session. */
+const reviewsAfterSendBack = (s: Scenario) => {
+  const prompts = s.prompts.slice(s.prompts.findIndex(isSendBack));
+  return { review: prompts.filter(isPostMergeReview).length,
+    documentation: prompts.filter(isPostMergeDocumentationReview).length };
+};
 
 const section = (readme: string, heading: string): string => {
   const start = readme.indexOf(`\n${heading}\n`);
@@ -193,6 +199,10 @@ test('C: a documentation review rejection of the merged result is fixed by the s
   const [sendBack] = s.prompts.filter(isSendBack);
   assert.ok(sendBack.includes(FINDING));
   assertAccepted(s, 'document-review');
+  // Both reviews ran before the send-back and both run again after it.
+  assert.equal(s.prompts.filter(isPostMergeReview).length, 2);
+  assert.equal(s.prompts.filter(isPostMergeDocumentationReview).length, 2);
+  assert.deepEqual(reviewsAfterSendBack(s), { review: 1, documentation: 1 });
   assert.equal(git(s.f.root, 'show', 'origin/main:src/a/fixed.md'), '# Fixed');
 });
 
@@ -204,8 +214,11 @@ test('C: an implementation review rejection of the merged result is fixed by the
   assert.ok(s.prompts.filter(isSendBack)[0].includes(FINDING));
   const completed = assertAccepted(s, 'review');
   assert.deepEqual(completed.integrations![0].sendBack!.findings, [FINDING]);
+  // The implementation review runs before and after the send-back. The documentation review never started before
+  // it, because the implementation review rejected first; after the send-back both reviews run.
   assert.equal(s.prompts.filter(isPostMergeReview).length, 2);
-  assert.equal(s.prompts.filter(isPostMergeDocumentationReview).length, 2);
+  assert.equal(s.prompts.filter(isPostMergeDocumentationReview).length, 1);
+  assert.deepEqual(reviewsAfterSendBack(s), { review: 1, documentation: 1 });
   assert.ok(completed.review?.accepted);
 });
 
@@ -220,6 +233,7 @@ test('C: a failed check on the merged result is fixed by the send-back session w
   assert.ok(completed.integrations![0].sendBack!.findings.some(finding => finding.includes(MARKER)));
   assert.ok(completed.checks!.every(row => row.outcome === 'passed'));
   assert.ok(completed.finalChecks!.every(row => row.outcome === 'passed'));
+  assert.deepEqual(reviewsAfterSendBack(s), { review: 1, documentation: 1 });
   assert.equal(git(s.f.root, 'ls-tree', '--name-only', 'origin/main', '--', 'src/a/broken.md'), '');
 });
 
