@@ -1,8 +1,9 @@
-import { existsSync, closeSync, fchmodSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, fchmodSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Grade, Purpose, RunConfig, Task, Work } from './model.ts';
+import { runnerVersion } from './runner-version.ts';
 
 export type Source = 'cli-flag' | 'invocation-json' | 'interactive-answer' | 'default';
 export type Setting = 'harness' | 'harnessCliVersion' | 'model' | 'effort' | 'coverage' | 'maxAccepted' | 'leaves';
@@ -104,8 +105,7 @@ export class Statistics {
   private finished = false;
   private clocks: { utc: () => string; elapsed: () => number; uuid: () => string; version: () => string; host: () => string };
   constructor(clocks: Statistics['clocks'] = { utc: () => new Date().toISOString(), elapsed: () => performance.now(),
-    uuid: randomUUID, version: () => JSON.parse(readFileSync(new URL(existsSync(new URL('../package.json', import.meta.url)) ? '../package.json' : '../../package.json', import.meta.url), 'utf8')).version as string,
-    host: hostname }) {
+    uuid: randomUUID, version: runnerVersion, host: hostname }) {
     this.clocks = clocks;
     this.start = clocks.elapsed();
     const pair = () => ({ value: null, source: null });

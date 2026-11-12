@@ -8,6 +8,7 @@ import { hash } from './model.ts';
 import type { BudgetExhaustion, RetryRecord, RunConfig, Work } from './model.ts';
 import { compareIdentity, invocationIdentity } from './invocation-identity.ts';
 import type { InvocationIdentity } from './invocation-identity.ts';
+import { runnerVersion } from './runner-version.ts';
 
 /** The legacy (schema 1) identity: the whole resolved configuration with `root` and `leaves`. */
 export interface RunIdentity { leaves: string[]; [detail: string]: unknown }
@@ -39,6 +40,11 @@ export type InvocationChange =
 
 export interface RunState {
   version: number;
+  /**
+   * The version of the runner that last wrote this state. Absent in states of older runners; it is never part of the
+   * identity, so a runner update never makes a resume incompatible.
+   */
+  runnerVersion?: string;
   /** `2` for the projected identity; absent for legacy state whose identity is the whole configuration. */
   identitySchema?: 2;
   identityHash: string;
@@ -70,6 +76,8 @@ export interface RunStoreOptions {
   repositoryRoot?: string | null;
   /** The clock of the change records; default `Date.now`. */
   now?: () => number;
+  /** The runner version stamped on every write; default `runnerVersion`. */
+  version?: () => string;
 }
 
 const INCOMPATIBLE = 'Run state is incompatible; reconcile it without discarding history';
@@ -91,13 +99,15 @@ export class RunStore {
   lock: DatabaseSync;
   state!: RunState;
   now: () => number;
+  version: () => string;
   /** Whether this store created the state file. */
   created = false;
 
   constructor(directory: string, identity: InvocationIdentity,
-    { repositoryRoot = null, now = Date.now }: RunStoreOptions = {}) {
+    { repositoryRoot = null, now = Date.now, version = runnerVersion }: RunStoreOptions = {}) {
     this.directory = resolve(directory);
     this.now = now;
+    this.version = version;
     if (!Array.isArray(identity?.leaves) || !identity.leaves.length ||
         identity.leaves.some(id => typeof id !== 'string' || !id) ||
         new Set(identity.leaves).size !== identity.leaves.length) {
@@ -177,8 +187,9 @@ export class RunStore {
       operationKey: state.operationKey ?? state.identityHash, changes };
   }
 
+  /** Writes the state with `fields`, the next sequence number and the version of this runner. */
   update(fields: Partial<RunState>): RunState {
-    const next = { ...this.state, ...fields, sequence: this.state.sequence + 1 };
+    const next = { ...this.state, ...fields, runnerVersion: this.version(), sequence: this.state.sequence + 1 };
     writeStateFile(this.directory, next);
     this.state = next;
     return next;

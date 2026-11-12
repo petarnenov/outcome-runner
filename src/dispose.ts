@@ -11,6 +11,7 @@ import { writeStateFile } from './run-store.ts';
 import type { RunState } from './run-store.ts';
 import { invocationLockFiles } from './runner.ts';
 import type { PullRequestHost } from './runner.ts';
+import { runnerVersion } from './runner-version.ts';
 
 export interface DisposeOptions {
   /** Removes the worktrees and the local and remote branches of the unaccepted tasks; by default they are kept. */
@@ -97,7 +98,8 @@ const attempt = (fn: () => WorkState): WorkState => {
  * commit, records the disposed work in `state.json` with `status: 'released'`, frees its ownership file and lists
  * (or, with `removeWork`, removes) the worktrees and branches of its unaccepted tasks and lists its open pull
  * requests. Accepted tasks and other invocations are never touched. Refuses with `unknown-invocation` before any
- * file is created and with `invocation-running` while a process of the invocation holds its locks.
+ * file is created and with `invocation-running` while a process of the invocation holds its locks. The written
+ * `state.json` and ownership file carry the `runnerVersion` of this runner.
  */
 export async function disposeInvocation(config: RunConfig, options: DisposeOptions = {}): Promise<DisposeSummary> {
   const { removeWork = false, host, now = Date.now } = options;
@@ -154,7 +156,7 @@ export async function disposeInvocation(config: RunConfig, options: DisposeOptio
         ...(state.blocked ? { blocked: kept } : {}),
         ...(state.current && disposing[state.current.id] ? { current: null } : {}),
         disposed: { at: new Date(now()).toISOString(), tasks: { ...state.disposed?.tasks, ...disposing } },
-        sequence: (state.sequence ?? 0) + 1 });
+        runnerVersion: runnerVersion(), sequence: (state.sequence ?? 0) + 1 });
       stateWritten = true;
     }
 
@@ -219,11 +221,12 @@ export async function disposeInvocation(config: RunConfig, options: DisposeOptio
     let ownership: DisposeSummary['ownership'] = 'absent';
     if (existsSync(files.ownership)) {
       const previous = JSON.parse(readFileSync(files.ownership, 'utf8'));
-      // Only this invocation's ownership file is ever written.
+      // Only this invocation's ownership file is ever written; a file without `runnerVersion` is read the same way.
       if (previous?.stateDirectory === stateDirectory) {
         if (previous.released) ownership = 'already-released';
         else {
-          writeFileSync(files.ownership, JSON.stringify({ ...previous, released: true }), { mode: 0o600 });
+          writeFileSync(files.ownership, JSON.stringify({ ...previous, released: true, runnerVersion: runnerVersion() }),
+            { mode: 0o600 });
           ownership = 'released';
         }
       }

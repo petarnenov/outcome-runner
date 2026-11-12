@@ -1,4 +1,4 @@
-import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Statistics, appendStatistics, safeFailure } from './statistics.ts';
@@ -11,6 +11,7 @@ import type { Harness, RunConfig } from './model.ts';
 import { harnesses } from './harness-catalog.ts';
 import { resolveRunPaths } from './run-paths.ts';
 import { disposeInvocation } from './dispose.ts';
+import { runnerVersion } from './runner-version.ts';
 import { playMascot } from '../mascot/mascot.ts';
 import type { MascotMood } from '../mascot/mascot.ts';
 import { runMascot, taskMascot } from './mascot-events.ts';
@@ -38,15 +39,41 @@ export interface DisposeCommandOptions {
   host?: PullRequestHost;
 }
 
+export interface HashOptions {
+  /** Task ids to print; empty prints every task. Every id must name a task of the queue. */
+  ids?: string[];
+  /** Receives the one-line usage errors (missing queue file, unknown task id); the default is stderr. */
+  error?: Output;
+}
+
 const writeOutput: Output = line => process.stdout.write(line);
+const writeError: Output = line => process.stderr.write(line);
 const readJson = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
 const flagPattern = /^--(harness|model|effort|coverage)=(.+)$/u;
 const defaultMascot: MascotPlayer = (mood, caption, { signal, env }) => playMascot(mood, caption, { signal, env });
 
+/** The commands and their arguments, printed by `--help` and `-h`. */
+export const USAGE = 'Usage:\n' +
+  '  outcome-runner <invocation file> [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>] ' +
+  '[--no-mascot] [--retry <task id>]...\n' +
+  '  outcome-runner hash <queue file> [<task id>...]\n' +
+  '  outcome-runner dispose <invocation file> [--remove-work]\n' +
+  '  outcome-runner --version\n' +
+  '  outcome-runner --help\n' +
+  '\n' +
+  'Commands:\n' +
+  '  <invocation file>  Run the outcomes of the invocation in the Git repository of the current directory.\n' +
+  '  hash               Print the task hashes of a queue file, or only those of the given task ids.\n' +
+  '  dispose            Release an unfinished invocation; --remove-work also removes its worktrees and branches.\n' +
+  '  --version          Print the version of this runner.\n' +
+  '  --help, -h         Print this help.\n' +
+  '\n' +
+  'Documentation: https://github.com/petarnenov/outcome-runner#readme\n';
+
 /**
  * Uses an error's specific `reason` (for example from the OpenSpec or test framework preflight) or the generic
  * startup reason. A `missing-setting` refusal also names the missing `setting` and an `example` of it. The message,
- * stack and any `details` stay in the private diagnostics file.
+ * stack, any `details` and the `runnerVersion` stay in the private diagnostics file.
  * Returns the line object it wrote; the exit code is always 4.
  */
 function reportFailure(error: unknown, output: Output): object {
@@ -55,7 +82,8 @@ function reportFailure(error: unknown, output: Output): object {
   const reason = typeof specific === 'string' && specific ? specific : 'startup-or-run-failed';
   const directory = mkdtempSync(join(tmpdir(), 'work-queue-error-'));
   const diagnostics = join(directory, 'error.json');
-  writeFileSync(diagnostics, JSON.stringify({ reason, message, stack, ...(details === undefined ? {} : { details }) }), { mode: 0o600 });
+  writeFileSync(diagnostics, JSON.stringify({ reason, message, stack, runnerVersion: runnerVersion(),
+    ...(details === undefined ? {} : { details }) }), { mode: 0o600 });
   const line = { status: 'unavailable', reason,
     ...(typeof setting === 'string' && setting ? { setting, example } : {}), diagnostics };
   output(JSON.stringify(line) + '\n');
@@ -186,13 +214,43 @@ export async function dispose(path: string, output: Output = writeOutput,
   }
 }
 
-export function printTaskHashes(queuePath: string, output: Output = writeOutput): number {
+/** An argument as it appears in a one-line error: quoted only when it contains a control character. */
+const shown = (argument: string): string => /[\u0000-\u001f\u007f]/u.test(argument) ? JSON.stringify(argument) : argument;
+
+/** Whether `path` is absent (`ENOENT`) or not a regular file; any other stat failure is left to the queue read. */
+function queueFileMissing(path: string): boolean {
+  try { return !statSync(path).isFile(); }
+  catch (failure) { return (failure as NodeJS.ErrnoException).code === 'ENOENT'; }
+}
+
+/**
+ * `outcome-runner hash <queue file> [<task id>...]`: prints one JSON line mapping the requested task ids (every task
+ * when none is given) to their hashes, in queue order, and returns 0. A missing queue argument or file and unknown
+ * task ids are one line on `error` with exit 4 and nothing on `output`; an invalid or malformed queue prints the
+ * `unavailable` line with a diagnostics file (exit 4).
+ */
+export function printTaskHashes(queuePath: string | undefined, output: Output = writeOutput,
+  { ids = [], error = writeError }: HashOptions = {}): number {
+  if (!queuePath) {
+    error('outcome-runner hash: missing queue file argument\n');
+    return 4;
+  }
+  if (queueFileMissing(queuePath)) {
+    error(`outcome-runner hash: queue file not found: ${shown(queuePath)}\n`);
+    return 4;
+  }
   try {
     const { tasks } = validateQueue(readJson(queuePath));
-    output(JSON.stringify(Object.fromEntries(tasks.map(task => [task.id, hash(task)]))) + '\n');
+    const unknown = [...new Set(ids)].filter(id => !tasks.some(task => task.id === id));
+    if (unknown.length) {
+      error(`outcome-runner hash: unknown task id${unknown.length > 1 ? 's' : ''}: ${unknown.map(shown).join(', ')}\n`);
+      return 4;
+    }
+    const selected = ids.length ? tasks.filter(task => ids.includes(task.id)) : tasks;
+    output(JSON.stringify(Object.fromEntries(selected.map(task => [task.id, hash(task)]))) + '\n');
     return 0;
-  } catch (error) {
-    reportFailure(error, output);
+  } catch (failure) {
+    reportFailure(failure, output);
     return 4;
   }
 }
@@ -200,7 +258,15 @@ export function printTaskHashes(queuePath: string, output: Output = writeOutput)
 /** Entry points of the subcommands; the parameter exists so tests can check the dispatch. */
 export interface Commands { dispose: typeof dispose }
 
-export function run([command, ...rest]: string[], commands: Commands = { dispose }): number | Promise<number> {
+/** Where `--version`, `--help` and `hash` write; the defaults are stdout and stderr. */
+export interface RunStreams { output?: Output; error?: Output }
+
+export function run([command, ...rest]: string[], commands: Commands = { dispose },
+  { output = writeOutput, error = writeError }: RunStreams = {}): number | Promise<number> {
+  // Version and help come first: they read no file and touch no ledger, state or diagnostics.
+  if (command === '--version') { output(`${runnerVersion()}\n`); return 0; }
+  if (command === '--help' || command === '-h') { output(USAGE); return 0; }
   if (command === 'dispose') return commands.dispose(rest[0], undefined, { args: rest.slice(1) });
-  return command === 'hash' ? printTaskHashes(rest[0]) : main(command, runQueue, undefined, { args: rest });
+  if (command === 'hash') return printTaskHashes(rest[0], output, { ids: rest.slice(1), error });
+  return main(command, runQueue, undefined, { args: rest });
 }

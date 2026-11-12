@@ -116,13 +116,21 @@ test('hash prints the mapping the runner compares with authority', t => {
   assert.deepEqual(JSON.parse(lines[0]), { A: hash(task) });
 });
 
-for (const [name, content] of [['missing', null], ['invalid', '{"version":1,"tasks":[]}'], ['malformed', '{']]) {
+test('hash reports a missing queue file in one stderr line and prints no mapping', t => {
+  const base = workspace(t); const queue = join(base, 'queue.json'); const lines: string[] = []; const errors: string[] = [];
+  assert.equal(printTaskHashes(queue, line => lines.push(line), { error: line => errors.push(line) }), 4);
+  assert.deepEqual(lines, []);
+  assert.deepEqual(errors, [`outcome-runner hash: queue file not found: ${queue}\n`]);
+});
+
+for (const [name, content] of [['invalid', '{"version":1,"tasks":[]}'], ['malformed', '{']]) {
   test(`hash prints no mapping for a ${name} queue`, t => {
     const base = workspace(t); const queue = join(base, 'queue.json'); const lines: string[] = [];
-    if (content !== null) writeFileSync(queue, content);
+    writeFileSync(queue, content);
     assert.equal(printTaskHashes(queue, line => lines.push(line)), 4);
     assert.equal(JSON.parse(lines[0]).status, 'unavailable');
     assert.equal(lines.length, 1);
+    rmSync(join(JSON.parse(lines[0]).diagnostics, '..'), { recursive: true, force: true });
   });
 }
 
