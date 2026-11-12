@@ -1,3 +1,9 @@
+## 0.24.1 - 2026-11-12
+
+### Fixes
+
+- wait out a lost network connection before failing Git and gh commands (1db4193)
+
 ## 0.24.0 - 2026-11-12
 
 ### Features
