@@ -874,6 +874,18 @@ and reached, in which case it stops at once. Either way the run still ends with
 exit code 3 (`incomplete`) and a `blocked` entry for that task, keeps its
 ownership, and the next run of the same invocation retries the acceptance.
 
+### Lost network connection
+
+When a Git or `gh` command fails because the connection cannot be made (the
+host cannot be resolved, or the connection is refused or unreachable), the
+runner waits and runs the same command again: after 5, 10, 20 and 40 seconds,
+then every 60 seconds, about 15 minutes in total. The request never reached the
+server, so repeating it is safe. Each wait is logged as a step line, for example
+`run network: connection lost at git fetch origin; retrying in 5 s (attempt 2)`.
+Other failures are not retried. When the connection is still lost after the last
+wait, the run ends as before with `unavailable`; run the same invocation again
+once the connection is back and it resumes the recorded work.
+
 ### Unfinished results
 
 An `incomplete` result (exit code 3) and a `limit-reached` result carry

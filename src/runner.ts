@@ -33,6 +33,7 @@ import { testFrameworkPreflight } from './test-framework-preflight.ts';
 import type { TestFrameworkDeps } from './test-framework-preflight.ts';
 import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions } from './test-grading.ts';
+import { useNetworkRetry } from './network-retry.ts';
 import { createStepLog, runStartMessage } from './step-log.ts';
 import type { StepLog, StepOutput } from './step-log.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
@@ -428,12 +429,14 @@ export async function runQueue(requested: RunConfig, options: RunOptions = {}): 
   const step = createStepLog({ write: options.steps, now: options.now });
   const { invocation, harness, model, effort } = (requested ?? {}) as Partial<RunConfig>;
   step('run', 'start', runStartMessage({ invocation, harness, model, effort }));
+  const restoreNetworkRetry = useNetworkRetry({ onWait: (retry, milliseconds, failed) =>
+    step('run', 'network', `connection lost at ${failed}; retrying in ${milliseconds / 1000} s`, { attempt: retry + 1 }) });
   let status = 'unavailable';
   try {
     const result = await runSteps(requested, options, step);
     status = result.status;
     return result;
-  } finally { step('run', 'end', `outcome ${status}`); }
+  } finally { restoreNetworkRetry(); step('run', 'end', `outcome ${status}`); }
 }
 
 async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog): Promise<RunResult> {
