@@ -12,7 +12,6 @@ import type { RunOptions } from '../src/runner.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
 import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions } from '../src/test-grading.ts';
-import { preparedTestFramework } from './support/prepared-test-framework.ts';
 import { scriptedArchive } from './support/scripted-archive.ts';
 
 const fragments = [planTestInstructions, planningReviewTestInstructions, workTestInstructions,
@@ -53,7 +52,7 @@ test('README describes the graded test workflow', () => {
 
 const passingOptions: RunOptions = { openspec: { probe: () => ({ status: 0 }), configPresent: () => true },
   selection: { interactive: false, probe: harness => ({ harness, available: true, version: 'scripted' }) },
-  testFramework: preparedTestFramework, mergePolling: { delay: async () => {} }, runCommand: scriptedArchive() };
+  mergePolling: { delay: async () => {} }, runCommand: scriptedArchive() };
 
 function fixture(t: TestContext) {
   const base = mkdtempSync(join(tmpdir(), 'graded-test-')); t.after(() => rmSync(base, { recursive: true, force: true }));

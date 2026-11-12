@@ -20,7 +20,6 @@ import { ClaimLedger } from '../src/claims.ts';
 import { RunStore } from '../src/run-store.ts';
 import { invocationIdentity } from '../src/invocation-identity.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolContext, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
-import { preparedTestFramework } from './support/prepared-test-framework.ts';
 import { separateArchive } from './support/scripted-archive.ts';
 
 // Scripted runs pass a scripted OpenSpec preflight so no test runs the openspec binary;
@@ -30,8 +29,6 @@ const passingOpenspec: RunOptions['openspec'] = { probe: () => ({ status: 0 }), 
 // test/harness-selection.test.ts covers the availability check and the prompts.
 const passingSelection: RunOptions['selection'] = { interactive: false,
   probe: harness => ({ harness, available: true, version: 'scripted' }) };
-// Scripted runs report a prepared test framework, so the scripted workers never serve the analysis session;
-// test/test-framework-preflight.test.ts covers the analysis, setup and ordering.
 // Scripted runs also archive through a scripted command, so no test runs openspec archive;
 // test/document-archive.test.ts covers the archive stage.
 // A run that waits for work held elsewhere is cancelled by its first fake sleep instead of polling for real;
@@ -43,12 +40,12 @@ const runQueue: typeof runQueueWithPreflight = (config, options = {}) => {
     if (abort.signal.aborted) throw new Error('fake sleep: poll limit reached');
     abort.abort();
   });
-  return runQueueWithPreflight(config, { openspec: passingOpenspec, selection: passingSelection, testFramework: preparedTestFramework,
+  return runQueueWithPreflight(config, { openspec: passingOpenspec, selection: passingSelection,
     mergePolling: { delay: async () => {} }, runCommand: separateArchive(), ...options, signal, sleep });
 };
 const withPassingOpenspec = (portable: typeof runQueueWithPreflight): typeof runQueueWithPreflight =>
   (config, options = {}) => portable(config, { openspec: passingOpenspec, selection: passingSelection,
-    testFramework: preparedTestFramework, runCommand: separateArchive(), ...options });
+    runCommand: separateArchive(), ...options });
 
 interface FixtureHost {
   find(branch: string): PullRequest | null;

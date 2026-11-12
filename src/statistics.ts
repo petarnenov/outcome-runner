@@ -34,8 +34,7 @@ export interface RunStatistics {
 }
 
 export const SAFE_FAILURE_REASONS: readonly string[] = ['openspec-missing', 'openspec-not-initialized', 'openspec-layout-created',
-  'harness-unavailable', 'test-framework-missing', 'test-framework-analysis-failed', 'test-framework-prepared',
-  'missing-setting'];
+  'harness-unavailable', 'missing-setting'];
 
 export const safeFailure = (reason: unknown): string =>
   SAFE_FAILURE_REASONS.includes(typeof reason === 'string' ? reason : '') ? reason as string : 'startup-or-run-failed';
