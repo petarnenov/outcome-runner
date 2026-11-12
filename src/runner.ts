@@ -9,7 +9,8 @@ import { setTimeout as delay, setImmediate as yieldLoop } from 'node:timers/prom
 import { hash, digest, within, safePath, validateConfig, validateQueue, archiveCommand, isDocumentation,
   specsDirectory } from './model.ts';
 import type { BudgetExhaustion, BudgetStage, CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose, Queue,
-  RetryRecord, ReviewRecord, RunConfig, Task, TaskBudget, Work, WorkerReport, TaskCompletion } from './model.ts';
+  RetryRecord, ReviewRecord, RunConfig, SendBackCause, SendBackRecord, Task, TaskBudget, Work, WorkerReport,
+  TaskCompletion } from './model.ts';
 import { command, git, gitPage, fileAt, hasRef, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS,
   MERGE_STATE_POLL_MS } from './git.ts';
 import { lockRootOf, withGitLock } from './git-lock.ts';
@@ -155,6 +156,10 @@ export const conflictMarkers = (text: string): boolean => /^(?:<<<<<<<|>>>>>>>) 
 
 const INTEGRATION_REASONS: readonly string[] = ['target-conflict-unresolved', 'target-integration-rejected',
   'target-keeps-advancing'];
+
+/** How the send-back step lines and the send-back prompt name what rejected the merged result. */
+const CAUSE_LABEL: Readonly<Record<SendBackCause, string>> = Object.freeze({ checks: 'checks',
+  review: 'implementation review', 'document-review': 'documentation review' });
 
 /** The review rounds of every budget stage (planning, implementation and documentation) of a task. */
 export const REVIEW_ROUNDS = 4;
@@ -712,6 +717,14 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         git(work.path, 'commit', '-m', commitSubject('docs', `document ${work.id}`));
       }
     };
+    // The send-back commit stages only the task scopes, never the (archived) change directory.
+    const commitSendBack = (work: Work): void => {
+      const paths = present(work, [...work.scopes]);
+      if (paths.length) git(work.path, 'add', '-A', '--', ...paths);
+      if (git(work.path, 'diff', '--cached', '--name-only')) {
+        git(work.path, 'commit', '-m', commitSubject('fix', `address the integration findings of ${work.id}`));
+      }
+    };
     // The sorted unmerged paths of the task worktree.
     const unmergedPaths = (work: Work): string[] => [...new Set(git(work.path, 'diff', '--name-only', '--diff-filter=U')
       .split('\n').filter(Boolean))].sort();
@@ -766,16 +779,18 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       if (section !== 'findings' && section !== 'checks') throw new Error('Unknown context section');
       return { section, ...await readPage([Buffer.from(JSON.stringify(activeWork()[section] ?? []))], offset) };
     };
+    // `writablePaths`, when given, replaces the default writable paths of `purpose` (the send-back session passes
+    // only the task scopes).
     const session = async (work: Work, purpose: Purpose, prompt: string, implementationReview = false,
-      attempt?: number): Promise<ReviewRecord> => {
+      attempt?: number, writablePaths?: string[]): Promise<ReviewRecord> => {
       let result: WorkerReport | undefined;
       const files = git(work.path, 'ls-files', '-z').split('\0').filter(Boolean);
       const instructionPaths = [...new Set(['AGENTS.md', ...[...work.scopes, work.directory].flatMap(path =>
         path.split('/').map((_, index, parts) => `${parts.slice(0, index + 1).join('/')}/AGENTS.md`))])];
       // A documentation session writes inside the task scopes, and only documentation files there.
-      const writable = purpose === 'plan' ? [work.directory] : purpose === 'work' ?
+      const writable = writablePaths ?? (purpose === 'plan' ? [work.directory] : purpose === 'work' ?
         [...work.scopes, `${work.directory}/tasks.md`, `${work.directory}/compliance.md`,
-          `${work.directory}/verification.md`] : purpose === 'document' ? [...work.scopes] : [];
+          `${work.directory}/verification.md`] : purpose === 'document' ? [...work.scopes] : []);
       const broker = new CodexFiles({ root: work.path,
         scopes: [...files.map(path => ({ path, mode: 'read' })),
           ...instructionPaths.map(path => ({ path, mode: 'read' })), ...work.scopes.map(path => ({ path, mode: 'read' })),
@@ -1226,6 +1241,42 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               new IntegrationFailure('target-conflict-unresolved', integration.conflicts) :
               new IntegrationFailure('target-integration-rejected', []);
           };
+          const cancelled = (error: unknown): boolean => stopped || !!signal?.aborted ||
+            !!(error as InterruptedFailure).interrupted;
+          /**
+           * A rejection of the merged result by the checks or a review. A conflict integration blocks with its
+           * conflicting paths. A clean integration is sent back once: the send-back step is saved before the next
+           * effect. A rejection after that send-back records the last findings and blocks with
+           * `target-integration-rejected`.
+           */
+          const sendBackOrReject = async (cause: SendBackCause, findings: string[]): Promise<void> => {
+            const current = activeWork().integration!;
+            if (current.outcome === 'conflict') {
+              save({ findings });
+              throw new IntegrationFailure('target-conflict-unresolved', current.conflicts);
+            }
+            if (current.sendBack) {
+              save({ findings, integration: { ...current, sendBack: { ...current.sendBack, outcome: 'rejected',
+                rejection: { cause, findings: [...findings] } } } });
+              taskStep(work.id, 'send-back', 'the merged result is still rejected after the send-back session',
+                currentAttempt());
+              throw new IntegrationFailure('target-integration-rejected', []);
+            }
+            taskStep(work.id, 'send-back', `the ${CAUSE_LABEL[cause]} did not accept the merged result; sending it back`,
+              currentAttempt());
+            save({ findings, integration: { ...current, step: 'send-back',
+              sendBack: { cause, findings: [...findings], session: 'pending' } } });
+            await cancellable(afterEffect('send-back-requested', activeWork()), signal);
+          };
+          // The send-back step text: the cause, the findings or check output, and the task scopes as the only
+          // writable paths.
+          const sendBackPrompt = (sendBack: SendBackRecord): string =>
+            `Address the rejection of the merged result: the ${CAUSE_LABEL[sendBack.cause]} did not accept the merge ` +
+            `of the advanced ${project.target} ${integration.target} into the task branch. Findings or failed check ` +
+            `output: ${JSON.stringify(sendBack.findings)}. Fix them by writing only inside the task scopes ` +
+            `${JSON.stringify(work.scopes)}; writes to the OpenSpec change or any other path are refused. Keep all ` +
+            'approved OpenSpec scenarios and tests passing. ' + workTestInstructions(config.coverage) + ' ' +
+            LEFTOVER_FILES_WORK;
           if (integration.step === 'merge') {
             // The attempt is read from the durable work, so a restart keeps the number.
             taskStep(work.id, 'integrate', `merging the advanced ${project.target} into the task scope`, currentAttempt());
@@ -1267,37 +1318,75 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             } catch (error) { rejected(error); }
             save({ integration: { ...integration, step: 'checks' } });
           } else if (integration.step === 'checks') {
+            try { assertWork(activeWork()); } catch (error) { rejected(error); }
+            // A failing setup or product check is a rejection; its stdout and stderr reach the send-back session.
+            let rows: CheckRecord[] | undefined; let failure: unknown;
             try {
-              assertWork(activeWork());
               checks(work, project.setup ?? [], 'setup');
-              const rows = runProductChecks(work);
-              save({ checks: rows, documentationChecks: rows, integration: { ...integration, step: 'review' } });
-            } catch (error) { rejected(error); }
+              rows = runProductChecks(work);
+            } catch (error) {
+              if (cancelled(error)) throw error;
+              failure = error;
+            }
+            if (rows) save({ checks: rows, documentationChecks: rows, integration: { ...integration, step: 'review' } });
+            else await sendBackOrReject('checks', [failureDetail(failure)]);
           } else if (integration.step === 'review') {
+            let review!: ReviewRecord;
             try {
               taskStep(work.id, 'review', 'starting the implementation review session of the merged result');
-              const review = await session(activeWork(), 'review', prompt + implementationReview(config.coverage) + ' ' +
+              review = await session(activeWork(), 'review', prompt + implementationReview(config.coverage) + ' ' +
                 merged, true);
               save({ reviews: [...(activeWork().reviews ?? []), review] });
-              if (review.outcome !== 'accepted' || review.findings.length) {
-                save({ findings: review.findings });
-                throw new Error('The implementation review did not accept the integration');
-              }
+            } catch (error) { rejected(error); }
+            if (review.outcome !== 'accepted' || review.findings.length) {
+              await sendBackOrReject('review', review.findings);
+            } else {
               save({ review: { ...review, accepted: true }, findings: [],
                 integration: { ...integration, step: 'document-review' } });
-            } catch (error) { rejected(error); }
-          } else {
+            }
+          } else if (integration.step === 'document-review') {
+            let review!: ReviewRecord;
             try {
               taskStep(work.id, 'documentation review', 'starting the documentation review session of the merged result');
-              const review = await session(activeWork(), 'document-review', prompt + DOCUMENTATION_REVIEW + ' ' + merged);
-              const documentationReviews = [...(activeWork().documentationReviews ?? []), review];
-              if (review.outcome !== 'accepted' || review.findings.length) {
-                save({ documentationReviews, findings: review.findings });
-                throw new Error('The documentation review did not accept the integration');
+              review = await session(activeWork(), 'document-review', prompt + DOCUMENTATION_REVIEW + ' ' + merged);
+            } catch (error) { rejected(error); }
+            const documentationReviews = [...(activeWork().documentationReviews ?? []), review];
+            if (review.outcome !== 'accepted' || review.findings.length) {
+              save({ documentationReviews });
+              await sendBackOrReject('document-review', review.findings);
+            } else {
+              let finished = integration;
+              if (integration.sendBack) {
+                taskStep(work.id, 'send-back', 'the merged result was accepted after the send-back session',
+                  currentAttempt());
+                finished = { ...integration, sendBack: { ...integration.sendBack, outcome: 'accepted' } };
               }
               save({ documentationReviews, findings: [], integration: undefined, stage: 'receipt',
-                integrations: [...(activeWork().integrations ?? []), integration] });
-            } catch (error) { rejected(error); }
+                integrations: [...(activeWork().integrations ?? []), finished] });
+            }
+          } else {
+            // The one send-back session of a rejected clean integration, limited to the task scopes. `started` is
+            // saved before the session, so a restart commits what is in the worktree and never starts it again.
+            const sendBack = integration.sendBack!;
+            if (sendBack.session === 'pending') {
+              taskStep(work.id, 'implementation', 'starting the send-back session of the merged result', currentAttempt());
+              save({ integration: { ...integration, sendBack: { ...sendBack, session: 'started' } } });
+              let failed = false;
+              try {
+                await session(activeWork(), 'work', prompt + sendBackPrompt(sendBack), false, undefined,
+                  [...work.scopes]);
+              } catch (error) {
+                if (cancelled(error)) throw error;
+                failed = true;
+              }
+              // A failed session is the rejection after the send-back: it blocks with the original cause and findings.
+              if (failed) await sendBackOrReject(sendBack.cause, sendBack.findings);
+              await cancellable(afterEffect('send-back', activeWork()), signal);
+            }
+            taskStep(work.id, 'commit', 'committing the send-back result', currentAttempt());
+            try { assertWork(activeWork()); commitSendBack(work); } catch (error) { rejected(error); }
+            const current = activeWork().integration!;
+            save({ integration: { ...current, step: 'checks', sendBack: { ...current.sendBack!, session: 'finished' } } });
           }
         }
         if (activeWork().stage === 'receipt') {
