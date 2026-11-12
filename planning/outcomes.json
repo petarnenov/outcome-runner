@@ -569,6 +569,23 @@
         "README describes merge eligibility retries, merge-not-eligible and the release-commit exception to the attempt limit.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-32",
+      "title": "Time limit for product checks",
+      "change": "check-time-limit",
+      "priority": 27,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-31"],
+      "criteria": [
+        "Every product check command, run by a worker session through the broker or by the runner before publishing and merging, has a time limit. It defaults to 30 minutes and may be set by the invocation field checkTimeoutMinutes, an integer from 1 through 240; an invalid value is refused at startup with exit code 4, reason invalid-check-timeout and diagnostics naming checkTimeoutMinutes. checkTimeoutMinutes is not part of the invocation identity.",
+        "When a check runs past its limit, the runner stops it and every process it started: SIGTERM to the process group, then SIGKILL after 10 seconds if any process is left. No process of the check remains after the check is recorded.",
+        "A timed-out check is recorded as a failed check with outcome timed-out, the limit and the last 16000 characters of its output followed by a line naming the limit. It counts as one used check attempt of the stage budget, and the worker receives it like any other failed check.",
+        "A timed-out check is logged as a step line naming the check and the limit, before the next effect.",
+        "Tests use scripted adapters, Git fixtures and a check that sleeps longer than a limit of a few hundred milliseconds set through a test hook. They cover: a hanging check stopped and recorded as timed-out with its output; a check that starts a child process ignoring SIGTERM, with no process left afterwards; a worker that fixes the hang after the timed-out result, so the task is accepted; checks within the limit unchanged; and invalid checkTimeoutMinutes values refused.",
+        "README describes the check time limit, checkTimeoutMinutes and the timed-out outcome.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
