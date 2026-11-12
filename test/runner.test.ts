@@ -34,9 +34,18 @@ const passingSelection: RunOptions['selection'] = { interactive: false,
 // test/test-framework-preflight.test.ts covers the analysis, setup and ordering.
 // Scripted runs also archive through a scripted command, so no test runs openspec archive;
 // test/document-archive.test.ts covers the archive stage.
-const runQueue: typeof runQueueWithPreflight = (config, options = {}) =>
-  runQueueWithPreflight(config, { openspec: passingOpenspec, selection: passingSelection, testFramework: preparedTestFramework,
-    mergePolling: { delay: async () => {} }, runCommand: separateArchive(), ...options });
+// A run that waits for work held elsewhere is cancelled by its first fake sleep instead of polling for real;
+// test/wait-for-free-work.test.ts covers the waits themselves.
+const runQueue: typeof runQueueWithPreflight = (config, options = {}) => {
+  const abort = new AbortController();
+  const signal = options.signal ? AbortSignal.any([options.signal, abort.signal]) : abort.signal;
+  const sleep = options.sleep ?? (async () => {
+    if (abort.signal.aborted) throw new Error('fake sleep: poll limit reached');
+    abort.abort();
+  });
+  return runQueueWithPreflight(config, { openspec: passingOpenspec, selection: passingSelection, testFramework: preparedTestFramework,
+    mergePolling: { delay: async () => {} }, runCommand: separateArchive(), ...options, signal, sleep });
+};
 const withPassingOpenspec = (portable: typeof runQueueWithPreflight): typeof runQueueWithPreflight =>
   (config, options = {}) => portable(config, { openspec: passingOpenspec, selection: passingSelection,
     testFramework: preparedTestFramework, runCommand: separateArchive(), ...options });
@@ -267,10 +276,11 @@ test('protected result stays incomplete while independent work proceeds without 
   assert.deepEqual(result.remaining, ['A', 'B', 'C']);
   assert.ok(!JSON.stringify(result).includes('Private text'));
   assert.ok(!JSON.stringify(result).includes('Please approve'));
-  // Another invocation of the clone runs; the unfinished claim of A keeps it and its dependents out of reach.
+  // Another invocation of the clone runs; the unfinished claim of A keeps it and its dependents out of reach, so it
+  // waits for the claim until its first poll cancels it.
   const other = await runQueue({ ...f.config, invocation: 'other', stateDirectory: join(f.base, 'other') },
     { host: f.host, createAdapter: scripted });
-  assert.equal(other.status, 'incomplete'); assert.ok(other.claimedElsewhere!.A);
+  assert.equal(other.status, 'cancelled'); assert.equal(other.blockers!.A.kind, 'waiting-for-claim');
   const count = f.records.length;
   const retry = await runQueue(f.config, { host: f.host, createAdapter: scripted });
   assert.equal(retry.status, 'incomplete'); assert.equal(f.records.length, count);
@@ -735,8 +745,9 @@ test('two machines take different tasks and integrate each other results', async
       assert.equal(claimAt(f, 'A').branch.startsWith('outcome/A-'), true);
       parallel = await runQueue({ ...second, leaves: ['A', 'D'] }, { host: f.host, createAdapter: scripted });
     } });
-  assert.equal(parallel.status, 'incomplete', JSON.stringify(parallel));
-  assert.deepEqual(parallel.accepted, ['D']); assert.ok(parallel.claimedElsewhere!.A);
+  // The second machine accepts D, then waits for the first machine's claim of A until its first poll cancels it.
+  assert.equal(parallel.status, 'cancelled', JSON.stringify(parallel));
+  assert.deepEqual(parallel.accepted, ['D']); assert.equal(parallel.blockers!.A.kind, 'waiting-for-claim');
   assert.equal(result.status, 'exhausted', JSON.stringify(result));
   assert.equal(f.records.filter(pr => pr.branch!.startsWith('outcome/A-')).length, 1);
   assert.equal(git(first.root, 'status', '--porcelain'), '');
@@ -753,7 +764,8 @@ test('a foreign claim blocks tasks with overlapping scopes until accepted', asyn
   git(f.root, 'push', 'origin', 'HEAD:proposal');
   const result = await runQueue({ ...f.config, leaves: ['D'], authority: { ...f.config.authority,
     tasks: { D: hash(overlapping.tasks.find(task => task.id === 'D')) } } }, { host: f.host, createAdapter: scripted });
-  assert.equal(result.status, 'incomplete'); assert.equal(f.records.length, 0);
+  assert.equal(result.status, 'cancelled'); assert.equal(f.records.length, 0);
+  assert.deepEqual(result.blockers!.D.claim, { id: 'A', host: 'other' });
 });
 
 test('a lost claim race is not forced and the winner stays recorded', t => {
@@ -1296,11 +1308,12 @@ test('C: foreign task and scope claims are distinguished from dependent pending 
   git(f.root, 'push', 'origin', 'HEAD:proposal');
   const claims = new ClaimLedger(f.root, f.project.target);
   claims.acquire(claims.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'foreign', host: 'fixture' }, 'chore: claim A');
+  // Every remaining task waits for the foreign claim or a dependency, so the run waits until its first poll cancels it.
   const result = await runQueue({ ...f.config, authority: { ...f.config.authority,
     tasks: Object.fromEntries(changed.tasks.map(task => [task.id, hash(task)])) } }, {
     statistics, host: f.host, createAdapter: () => { throw new Error('No worker expected'); },
   });
-  assert.equal(result.status, 'incomplete');
+  assert.equal(result.status, 'cancelled');
   const record = statistics.finish('incomplete', 3);
   assert.deepEqual(record.tasks.map(task => [task.id, task.outcome]),
     [['A', 'claimed-elsewhere'], ['B', 'not-started'], ['C', 'not-started'], ['D', 'claimed-elsewhere']]);

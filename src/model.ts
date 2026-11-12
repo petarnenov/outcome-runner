@@ -58,6 +58,11 @@ export interface RunConfig {
   model?: string;
   effort?: string;
   coverage?: number;
+  /**
+   * Seconds between two polls while the run waits for work claimed elsewhere or for a dependency; an integer from 5
+   * through 3600, 60 when omitted. Operational only: it never enters the invocation identity.
+   */
+  pollSeconds?: number;
 }
 
 export interface ResolvedRunConfig extends RunConfig {
@@ -308,8 +313,24 @@ export function resolveCoverage(value: unknown = 85): number {
   return value;
 }
 
+/** The default seconds between two polls of a run that waits for free work. */
+export const DEFAULT_POLL_SECONDS = 60;
+
+/**
+ * The poll interval in seconds: `value`, or 60 when omitted. Anything but a safe integer from 5 through 3600 throws
+ * an error with `reason` `invalid-poll-seconds` and `details` naming the `pollSeconds` setting and the value.
+ */
+export function resolvePollSeconds(value: unknown = DEFAULT_POLL_SECONDS): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 5 || value > 3600) {
+    throw Object.assign(new Error('Invalid pollSeconds: expected an integer from 5 through 3600'),
+      { reason: 'invalid-poll-seconds', details: { setting: 'pollSeconds', value } });
+  }
+  return value;
+}
+
 export function validateConfig<T extends RunConfig>(config: T): T {
   resolveCoverage(config.coverage);
+  resolvePollSeconds(config.pollSeconds);
   const project = config.project;
   if ((config.mode ?? 'OFF') !== 'OFF' || !config.root || !config.stateDirectory ||
       !config.invocation || !config.authority?.reference || !config.authority?.instruction ||

@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "id": "OR-29",
+  "taskHash": "80230934d792b4989e62a3660f23089bc35e78ecb1c1480d0ec3447c0d84ae9e",
+  "authority": "owner-2026-11-12-outcome-runner-claude-11",
+  "target": "main",
+  "specification": {
+    "openspec/changes/archive/2026-11-12-wait-for-free-work/design.md": "64ba606299759e2af2f219d1114fec7b6c8080c32b3f7757e3db1d128d44d7c3",
+    "openspec/changes/archive/2026-11-12-wait-for-free-work/proposal.md": "eb1ca308f2097623560b9d63a58a81e17217d7d93bfa2eb53d40bafd3148ae19",
+    "openspec/changes/archive/2026-11-12-wait-for-free-work/specs/runner-step-log/spec.md": "d136676feac5275edce2a28a8753e75715d76ac25b2e79be0e3ee06af0cf4e7e",
+    "openspec/changes/archive/2026-11-12-wait-for-free-work/specs/unfinished-results/spec.md": "e4454ac57174500e7739cdfcf0bbf15dcbdb48ec9090449504017d67ca82b09b",
+    "openspec/changes/archive/2026-11-12-wait-for-free-work/specs/wait-for-free-work/spec.md": "75448bace49352b88ae50e1b7c456801a2a79a717b1926684df89d73d34efe32"
+  },
+  "review": {
+    "reviewer": "claude:8d9dd2d2-01d8-4c33-8d46-f8b4c20bab8f",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "0fd2a6d72ae112eedfe0ff4c519522c9d1fc9e6df904527d4cb9aa7724b71512"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-wait-for-free-work/design.md",
+      "hash": "64ba606299759e2af2f219d1114fec7b6c8080c32b3f7757e3db1d128d44d7c3"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-wait-for-free-work/proposal.md",
+      "hash": "eb1ca308f2097623560b9d63a58a81e17217d7d93bfa2eb53d40bafd3148ae19"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-wait-for-free-work/specs/runner-step-log/spec.md",
+      "hash": "d136676feac5275edce2a28a8753e75715d76ac25b2e79be0e3ee06af0cf4e7e"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-wait-for-free-work/specs/unfinished-results/spec.md",
+      "hash": "e4454ac57174500e7739cdfcf0bbf15dcbdb48ec9090449504017d67ca82b09b"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-wait-for-free-work/specs/wait-for-free-work/spec.md",
+      "hash": "75448bace49352b88ae50e1b7c456801a2a79a717b1926684df89d73d34efe32"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-wait-for-free-work/tasks.md",
+      "hash": "a710755893b5df4c3cf3950ceb8f4a475d227912a4576be2eea13d74703d9d88"
+    },
+    {
+      "path": "openspec/specs/runner-step-log/spec.md",
+      "hash": "37a8e84be124f7fa59614b827b82eec802865db6b5706ae214b0dbf1990a1185"
+    },
+    {
+      "path": "openspec/specs/unfinished-results/spec.md",
+      "hash": "3b099702cbbb8e745be2898627a682865561a27fa49c9898f957abf198a27080"
+    },
+    {
+      "path": "openspec/specs/wait-for-free-work/spec.md",
+      "hash": "a0de4698db7d10bfa84636fb13809c18eef1df314cc11d69658e79c03e088c0b"
+    },
+    {
+      "path": "src/model.ts",
+      "hash": "5c0d876c6db8534b57803db9a681343c444ae73f8c335e537393fa457b66d9a5"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "cc53d0f8aa2a6aeedbff5fccf3363bcc098949dc5bec8d7888d0afe07d824a9a"
+    },
+    {
+      "path": "test/concurrent-runners.test.ts",
+      "hash": "6cc45dee5862cda0d4f6ce4ac58157bf4036931114832fb00fb09b728935a3a8"
+    },
+    {
+      "path": "test/dispose.test.ts",
+      "hash": "44a5f4cba6062c364609ea609d1420b9984f7c25cedb645fa0ca3b02bb7a1ef4"
+    },
+    {
+      "path": "test/runner.test.ts",
+      "hash": "ebe4335a0decb69ba66442f8545a9795f810bad515b1cf3f56a35dfd1123f5bd"
+    },
+    {
+      "path": "test/support/runner-fixture.ts",
+      "hash": "83804b5629a25e89a594a03e06d10dd66b7201a9745d6eb8c816ce22dc2bc46b"
+    },
+    {
+      "path": "test/unfinished-results.test.ts",
+      "hash": "44e2e061dde5af15afc965c9be9a7f012c24e85d9cb2880834e07871ee75faea"
+    },
+    {
+      "path": "test/wait-for-free-work.test.ts",
+      "hash": "4f4128aa8d6d3130de20c8013c162578e3c6df0481eb82a4f4880181e4db548d"
+    }
+  ],
+  "head": "a54da233357cdf5f48b79c13aa75a81f2e93a890",
+  "base": "9958b5cf6c8464ce9d849194a7b3c8a965a7c05c",
+  "retries": [
+    {
+      "task": "OR-29",
+      "at": "2026-11-12T18:10:36.380Z",
+      "stage": "plan",
+      "previous": {
+        "plan": {
+          "reviews": 4,
+          "checks": 1
+        },
+        "work": {
+          "reviews": 0,
+          "checks": 0
+        },
+        "document": {
+          "reviews": 0,
+          "checks": 0
+        }
+      },
+      "exhausted": {
+        "stage": "plan",
+        "exhausted": "reviews",
+        "reviews": {
+          "used": 4,
+          "limit": 4
+        },
+        "checks": {
+          "used": 1,
+          "limit": 4
+        }
+      }
+    }
+  ]
+}
