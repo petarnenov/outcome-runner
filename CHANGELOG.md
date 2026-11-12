@@ -1,3 +1,9 @@
+## 0.24.2 - 2026-11-12
+
+### Fixes
+
+- push claims and branch deletions without client hooks (f49ba08)
+
 ## 0.24.1 - 2026-11-12
 
 ### Fixes
