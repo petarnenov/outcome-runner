@@ -7,7 +7,7 @@ import { git } from '../src/git.ts';
 import type { BudgetExhaustion, ReviewRecord, RunConfig, Work } from '../src/model.ts';
 import { BudgetExhausted, CHECK_ATTEMPTS, REVIEW_ROUNDS, budgetMessage, budgetOf, explainUnfinished, runQueue }
   from '../src/runner.ts';
-import type { RunOptions } from '../src/runner.ts';
+import type { RunOptions, RunResult } from '../src/runner.ts';
 import { main, parseFlags } from '../src/cli.ts';
 import { resolveRunPaths } from '../src/run-paths.ts';
 import type { HarnessAdapter, HarnessOptions, ToolInput } from '../src/harness-adapter.ts';
@@ -137,6 +137,10 @@ type Scripted = ReturnType<typeof scripted>;
 
 const readState = (config: RunConfig) => JSON.parse(readFileSync(join(config.stateDirectory, 'state.json'), 'utf8'));
 const receiptOf = (f: RunnerFixture, id = 'A') => JSON.parse(git(f.remote, 'show', `main:evidence/results/${id}.json`));
+/** The number of commits on the claims ledger branch of origin; 0 before the first claim. */
+const claimCommits = (f: RunnerFixture): number =>
+  git(f.remote, 'for-each-ref', '--format=%(refname)', 'refs/heads/work-queue-claims-main') ?
+    Number(git(f.remote, 'rev-list', '--count', 'work-queue-claims-main')) : 0;
 
 /** An invocation file for `main` and the configuration `main` resolves from it. */
 function invocationFile(f: RunnerFixture, patch: Partial<RunConfig> = {}) {
@@ -157,6 +161,39 @@ async function throughMain(t: TestContext, f: RunnerFixture, path: string, env: 
   for (const line of parsed) if (line.diagnostics) t.after(() => rmSync(join(line.diagnostics, '..'), { recursive: true, force: true }));
   return { code, lines: parsed };
 }
+
+/** Asserts the blocker of a budget-exhausted task and that its blocked entry in state.json has the same budget. */
+function assertBudgetBlock(result: RunResult, config: RunConfig, budget: BudgetExhaustion, stage = budget.stage) {
+  const state = readState(config);
+  assert.equal(state.blocked.A.reason, budgetMessage(budget));
+  assert.deepEqual(state.blocked.A.budget, budget);
+  assert.deepEqual(result.blockers?.A, { kind: 'blocked', stage,
+    reason: budget.exhausted === 'reviews' ? 'review-budget-exhausted' : 'check-budget-exhausted',
+    diagnostics: join(config.stateDirectory, 'state.json'), budget });
+  return state;
+}
+
+const REVIEWS_RAN_OUT = exhaustion('work', 'reviews', 4, 0);
+
+/** The 5.7 run: every implementation review of `s` rejects until A is blocked with an exhausted review budget. */
+async function reviewsRanOut(f: RunnerFixture, config: RunConfig, s: Scripted) {
+  const result = await f.run(config, { createAdapter: s.createAdapter });
+  assert.equal(result.status, 'incomplete', JSON.stringify(result));
+  assert.equal(s.count('review'), 4); assert.equal(s.count('work'), 4);
+  const state = assertBudgetBlock(result, config, REVIEWS_RAN_OUT);
+  assert.equal(state.blocked.A.reason,
+    'Implementation review budget exhausted: 4 of 4 review rounds and 0 of 4 check attempts used');
+  assert.equal(state.blocked.A.work.stage, 'work');
+  assert.equal(state.retries, undefined);
+  return state;
+}
+
+/** Asserts a refusal with reason `retry-not-blocked` that names `tasks`. */
+const retryNotBlocked = (tasks: string[]) => (error: Error & { reason?: string; details?: unknown }) => {
+  assert.equal(error.reason, 'retry-not-blocked');
+  assert.deepEqual(error.details, { tasks });
+  return true;
+};
 
 // 5.5 (D) (required)
 test('D: main passes --retry as a run option, never in the configuration, and refuses an invalid --retry', async t => {
@@ -194,3 +231,71 @@ test('D: a task accepted without --retry has a receipt without retries and one c
   assert.equal(readState(config).retries, undefined);
   assert.equal(s.count('review'), 1);
 });
+
+// 5.7 (C) (required)
+test('C: reviews ran out: four rejected implementation reviews block with review-budget-exhausted', async t => {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const s = scripted({ reject: { review: () => true } }); const config = f.config();
+  const state = await reviewsRanOut(f, config, s);
+  assert.deepEqual(state.blocked.A.work.budget.work, { reviews: 4, checks: 0 });
+  assert.equal(s.count('document'), 0);
+});
+
+// 5.8 (C) (required)
+test('C: checks ran out: four failing check runs block with check-budget-exhausted and no review', async t => {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const s = scripted({ failingWork: () => true }); const config = f.config();
+  const result = await f.run(config, { createAdapter: s.createAdapter });
+  assert.equal(result.status, 'incomplete', JSON.stringify(result));
+  const budget = { stage: 'work', exhausted: 'checks', reviews: { used: 0, limit: 4 }, checks: { used: 4, limit: 4 } } as const;
+  const state = assertBudgetBlock(result, config, budget);
+  assert.equal(state.blocked.A.reason,
+    'Implementation check budget exhausted: 0 of 4 review rounds and 4 of 4 check attempts used');
+  assert.deepEqual(result.blockers!.A.budget, budget); assert.deepEqual(state.blocked.A.budget, budget);
+  assert.equal(state.blocked.A.work.budget.work.checks, 4);
+  assert.equal(s.count('work'), 4); assert.equal(s.count('review'), 0);
+});
+
+// 5.9 (C) (required)
+test('C: planning check failures use the planning check budget and the task proceeds to the work stage', async t => {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const s = scripted({ incompletePlan: n => n <= 2 }); const config = f.config();
+  const result = await f.run(config, { createAdapter: s.createAdapter });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  const completed = readState(config).completed.A as Work;
+  assert.deepEqual(completed.budget!.plan, { checks: 2, reviews: 1 });
+  assert.deepEqual(completed.budget!.work, { checks: 0, reviews: 1 });
+  assert.equal(s.count('plan'), 3); assert.equal(s.count('planReview'), 1); assert.equal(s.count('work'), 1);
+});
+
+// 5.10 (C) (required)
+test('C: --retry of a task that is not blocked is refused before any claim, session or budget change', async t => {
+  // (a) Nothing is blocked yet.
+  const f = runnerFixture(t, { ids: ['A', 'B'] });
+  const s = scripted(); const config = f.config();
+  await assert.rejects(f.run(config, { createAdapter: s.createAdapter, retry: ['B'] }), retryNotBlocked(['B']));
+  assert.equal(claimCommits(f), 0); assert.equal(s.prompts.length, 0);
+  assert.equal(readState(config).retries, undefined);
+  const cli = invocationFile(f);
+  const refused = await throughMain(t, f, cli.path, cli.env, ['--retry', 'B'], s.createAdapter);
+  assert.equal(refused.code, 4);
+  assert.equal(refused.lines.length, 1); assert.equal(refused.lines[0].reason, 'retry-not-blocked');
+  assert.deepEqual(JSON.parse(readFileSync(refused.lines[0].diagnostics, 'utf8')).details, { tasks: ['B'] });
+  assert.equal(claimCommits(f), 0); assert.equal(s.prompts.length, 0);
+  assert.equal(readState(cli.config).retries, undefined);
+  // (b) A mixed list: A is blocked with an exhausted budget, B is not blocked.
+  const g = runnerFixture(t, { ids: ['A', 'B'] });
+  const r = scripted({ reject: { review: () => true } }); const leaves = g.config('one', { leaves: ['A'] });
+  await reviewsRanOut(g, leaves, r);
+  const before = readState(leaves); const claims = claimCommits(g); const prompts = r.prompts.length;
+  assert.equal(before.blocked.A.work.retries, undefined);
+  await assert.rejects(g.run(leaves, { createAdapter: r.createAdapter, retry: ['A', 'B'] }), retryNotBlocked(['B']));
+  const after = readState(leaves);
+  assert.deepEqual(after.blocked.A, before.blocked.A);
+  assert.deepEqual(after.blocked.A.work.budget, before.blocked.A.work.budget);
+  assert.equal(after.blocked.A.work.retries, undefined);
+  assert.equal(after.retries, undefined);
+  assert.equal(claimCommits(g), claims); assert.equal(r.prompts.length, prompts);
+});
+
+// 5.11 (C) (coverage-only): not needed, coverage reached.
