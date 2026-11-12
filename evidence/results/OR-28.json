@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "id": "OR-28",
+  "taskHash": "4f860dc4aa8f9a44bfa54d4c0d493134ac94e0667427e6974f3b964ee05f25cc",
+  "authority": "owner-2026-11-12-outcome-runner-or-27-28",
+  "target": "main",
+  "specification": {
+    "openspec/changes/archive/2026-11-12-integration-rejection-send-back/design.md": "5919930c1ea2d0086057c2caaee0089ed356b0573efb794a8e261d29ea921629",
+    "openspec/changes/archive/2026-11-12-integration-rejection-send-back/proposal.md": "b6c07590edd9e227ddf7c81fa5281b85d62105ccecf124d2545854a51ce26a8c",
+    "openspec/changes/archive/2026-11-12-integration-rejection-send-back/specs/integration-rejection-send-back/spec.md": "def860f01642cbc66215f74d8a5aeaa5d8f7024b1faa02ad1d169734827d7d95",
+    "openspec/changes/archive/2026-11-12-integration-rejection-send-back/specs/target-scope-recovery/spec.md": "29c9e01ffb86759e5d2982b2edb2188e6a38f4bbb1452035926b45cad317eb9c"
+  },
+  "review": {
+    "reviewer": "claude:ac282a37-33fd-4a1c-8efa-0a2ea085011c",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "ddfc949ac466c579ec6312f5f3c4a97e0258279da5751f0dd8ddede5eb566a66"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-integration-rejection-send-back/design.md",
+      "hash": "5919930c1ea2d0086057c2caaee0089ed356b0573efb794a8e261d29ea921629"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-integration-rejection-send-back/proposal.md",
+      "hash": "b6c07590edd9e227ddf7c81fa5281b85d62105ccecf124d2545854a51ce26a8c"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-integration-rejection-send-back/specs/integration-rejection-send-back/spec.md",
+      "hash": "def860f01642cbc66215f74d8a5aeaa5d8f7024b1faa02ad1d169734827d7d95"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-integration-rejection-send-back/specs/target-scope-recovery/spec.md",
+      "hash": "29c9e01ffb86759e5d2982b2edb2188e6a38f4bbb1452035926b45cad317eb9c"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-integration-rejection-send-back/tasks.md",
+      "hash": "68cb969c67495de74295016b66620878ca5394e7089552d90c55e11a24ccc3be"
+    },
+    {
+      "path": "openspec/specs/integration-rejection-send-back/spec.md",
+      "hash": "85b01c94d14373afc018d15488fc17ff8d542c6922d8fbe77ef8ce78e298694a"
+    },
+    {
+      "path": "openspec/specs/target-scope-recovery/spec.md",
+      "hash": "3858957627d413423f4ff035956d5e724a42e47e4a7fedd03f96ac735b7378e1"
+    },
+    {
+      "path": "src/model.ts",
+      "hash": "ff377214ec9b7507231fe9e5706d9cca458b96fe9a6163ed67db52c2902c0f9c"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "fb70b9eaa749fe2c575812f780722e2dbce7054a41e4dfd96d6f005549aa91a4"
+    },
+    {
+      "path": "test/integration-send-back.test.ts",
+      "hash": "e431b26dd727d96968069f240e7a30afa741239abb295397d83c7ea6529ebe75"
+    },
+    {
+      "path": "test/target-scope-recovery.test.ts",
+      "hash": "6914eef2d8fbe120e1633e7414461d04ebf075e370cf1ad15e8c83e878588337"
+    }
+  ],
+  "head": "0ef33bbeea0c3d204b06fe2b9a96de566d0be141",
+  "base": "11ada0490d6fe61fb4c99812f15a90939ed604eb"
+}
