@@ -5,15 +5,18 @@ Git repository, implements each through its own OpenSpec change and Pull Request
 and records accepted results in the repository.
 
 ```sh
-npm i -g --allow-git=root github:petarnenov/outcome-runner
+npm i -g --allow-git=root --allow-scripts=outcome-runner github:petarnenov/outcome-runner
 ```
 
-npm 12 refuses Git installs unless `--allow-git=root` is given.
+npm 12 refuses Git installs unless `--allow-git=root` is given. The package is
+built from its TypeScript sources during the Git install;
+`--allow-scripts=outcome-runner` lets npm run that build script of this package
+(and of no other package).
 
 To run it without a global install, replace `outcome-runner` in any command below:
 
 ```sh
-npx --allow-git=root github:petarnenov/outcome-runner hash planning/outcomes.json
+npx --allow-git=root --allow-scripts=outcome-runner github:petarnenov/outcome-runner hash planning/outcomes.json
 ```
 
 Run it from any directory inside the repository to work on. The project needs
@@ -21,6 +24,32 @@ Git, Node 24 or newer, the selected harness CLI, OpenSpec CLI, the configured
 build tools and (for GitHub hosting) authenticated `gh`. The package has no
 runtime dependencies beyond Node built-ins; TypeScript is used only to build it
 during installation.
+
+## Updating the runner
+
+The install command also updates a global runner to the latest version:
+
+```sh
+npm i -g --allow-git=root --allow-scripts=outcome-runner github:petarnenov/outcome-runner
+outcome-runner --version
+```
+
+`outcome-runner --version` prints the version of the runner that is actually
+installed, so an outdated global install is visible at once. Every run state,
+ownership file, diagnostics file and statistics record also names the runner
+version that wrote it (`runnerVersion`; see
+[Runner version in run files](#runner-version-in-run-files)).
+
+**Update the global runner only while no invocation is unfinished, or after
+checking that the unfinished invocation can resume with the new runner.** Never
+update it while a run is in progress. An invocation is unfinished while the
+`status` in its `state.json` (under `~/.local/state/outcome-runner/`) is not
+`released`. Before updating with an unfinished invocation, read
+[Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation)
+and the changelog of the new version: a newer runner resumes the same
+invocation, but it may require a setting the invocation file lacks. Otherwise
+finish the invocation first, or end it with
+[`outcome-runner dispose`](#disposing-of-an-invocation).
 
 ## Quick start
 
@@ -31,12 +60,14 @@ approval, the run ends incomplete and the Pull Request waits.
 **1. Install once per machine, or use npx**
 
 ```sh
-npm i -g --allow-git=root github:petarnenov/outcome-runner
+npm i -g --allow-git=root --allow-scripts=outcome-runner github:petarnenov/outcome-runner
+outcome-runner --version
 ```
 
 With npx nothing needs installing. Wherever a step below says `outcome-runner`,
-write `npx --allow-git=root github:petarnenov/outcome-runner` instead, and run it
-from inside the repository in the same way.
+write `npx --allow-git=root --allow-scripts=outcome-runner github:petarnenov/outcome-runner`
+instead, and run it from inside the repository in the same way.
+`outcome-runner --help` lists every command with its arguments.
 
 You also need Git with a commit identity, OpenSpec CLI, authenticated `gh`, and
 authenticated Claude Code 2.1.321 or newer (or Codex 0.167.0 or newer). Started
@@ -107,9 +138,12 @@ git push origin main
 
 ```sh
 outcome-runner hash planning/outcomes.json
+outcome-runner hash planning/outcomes.json TASK-1
 ```
 
-If you change a task later, its hash changes and step 6 must be updated.
+Without task ids every task is printed; with task ids only those. If you change
+a task later, its hash changes and step 6 must be updated. See
+[Version, help and task hashes](#version-help-and-task-hashes).
 
 **6. Create an invocation file outside the repository**
 
@@ -516,9 +550,12 @@ Without it, paste the ticket text and use the Text source.
 outcome-runner hash planning/outcomes.json
 ```
 
-A printed ID-to-hash map means the format is valid. On `unavailable`, the reason
-is in the `diagnostics` file. Scope overlap with the queue, receipts or changes
-is only detected when a run starts.
+A printed ID-to-hash map means the format is valid. A queue file that does not
+exist is reported in one line on stderr, for example
+`outcome-runner hash: queue file not found: planning/outcomes.json`, with exit
+code 4. On `unavailable` (an invalid or malformed queue), the reason is in the
+`diagnostics` file. Scope overlap with the queue, receipts or changes is only
+detected when a run starts.
 
 **6. Continue from Quick start step 4**
 
@@ -661,9 +698,11 @@ security decisions.
 
 ```sh
 cd /path/to/repository
-outcome-runner hash path/to/queue.json
+outcome-runner hash path/to/queue.json [<task id>...]
 outcome-runner /path/to/invocation.json [--harness=<claude|codex>] [--model=<id>] [--effort=<level>] [--coverage=<n>] [--no-mascot] [--retry <task id>]...
 outcome-runner dispose /path/to/invocation.json [--remove-work]
+outcome-runner --version
+outcome-runner --help
 ```
 
 Every start first resolves the [target branch](#target-branch), then runs the
@@ -673,6 +712,45 @@ Every start first resolves the [target branch](#target-branch), then runs the
 lock, the authority check of the selected tasks and the
 [dependency check](#dependency-check) follow, before any run state, ownership,
 claim or worktree is created.
+
+### Version, help and task hashes
+
+- `outcome-runner --version` prints the version of the executing installation,
+  read from its `package.json`, as one line on stdout (for example `0.20.1`) and
+  exits with code 0.
+- `outcome-runner --help` and `outcome-runner -h` print the commands and their
+  arguments on stdout and exit with code 0.
+
+Both must be the first argument; anything after them is ignored. They read no
+queue, invocation or state file, play no mascot, append no
+[run statistics](#run-statistics-ledger) record and create no diagnostics file.
+
+`outcome-runner hash <queue file> [<task id>...]` prints one JSON line on stdout
+that maps task ids to their hashes, in queue order, and exits with code 0.
+Without task ids every task of the queue is printed; with task ids only those,
+and an id given twice is printed once:
+
+```sh
+outcome-runner hash planning/outcomes.json TASK-2
+{"TASK-2":"<hash of TASK-2>"}
+```
+
+A missing queue file argument, a queue file that does not exist (or is not a
+regular file) and task ids the queue does not contain are reported as **one line
+on stderr** naming the argument, without a stack trace, with exit code 4 and
+nothing on stdout:
+
+```text
+outcome-runner hash: missing queue file argument
+outcome-runner hash: queue file not found: planning/missing.json
+outcome-runner hash: unknown task id: TASK-9
+outcome-runner hash: unknown task ids: TASK-8, TASK-9
+```
+
+An argument containing a control character or a newline is shown quoted as JSON,
+so the message stays one line. These errors create no diagnostics file. An
+invalid or malformed queue still prints the `unavailable` line with a private
+`diagnostics` file (exit code 4).
 
 ### Dependency check
 
@@ -918,12 +996,14 @@ hashes in `tasks`), the project `target`, `queue`, `changes` and `receipts`, the
 harness, model, effort and coverage, the checks (`checks`, `planningCheck` and
 `setup`; an omitted `setup` equals `[]`) and the leaves. Runner defaults such as
 the `archive` command, operational settings such as `maxAccepted`,
-`commitScope`, `commitSuffix` and `repository`, and settings a newer runner
-introduces are not part of it, so they never make a resumed invocation
-incompatible.
+`commitScope`, `commitSuffix` and `repository`, the runner version, and settings
+a newer runner introduces are not part of it, so they never make a resumed
+invocation incompatible.
 
-**Upgrading the runner.** Install the newer runner and run the same command
-with the same invocation file from the same branch. The unfinished task resumes
+**Upgrading the runner.** Stop every run of the invocation, install the newer
+runner (see [Updating the runner](#updating-the-runner)), check it with
+`outcome-runner --version`, and run the same command with the same invocation
+file from the same branch. The unfinished task resumes
 at its recorded stage with the same claim, branch and worktree, and the
 operations, reviews and accepted tasks recorded before are kept. A harness,
 model, effort or coverage that neither a flag nor the invocation file sets is
@@ -952,7 +1032,8 @@ setting and a hash of its value are stored, never the value. This release of
 the runner requires no such setting.
 
 **Adding tasks.** Add the new tasks to the queue on `origin/<target>`, print
-their hashes with `outcome-runner hash`, add them to `authority.tasks` of the
+their hashes with `outcome-runner hash <queue file> <task id>...`, add them to
+`authority.tasks` of the
 unfinished invocation (and to `leaves`, when the file sets `leaves`) and run the
 same command again. The added tasks pass the same authority and
 [dependency checks](#dependency-check) as the others. Existing claims,
@@ -980,6 +1061,26 @@ authority field is refused in the same way.
 Every receipt written afterwards lists the changes recorded so far in
 `invocationChanges`. Receipts of invocations without changes have no such
 field.
+
+### Runner version in run files
+
+Every file the runner writes for an invocation outside the repository history
+names the version of the runner that wrote it in `runnerVersion`, the `version`
+of the installed `package.json` (`unknown` only when no `package.json` of the
+installation can be read):
+
+| File | `runnerVersion` is |
+|---|---|
+| `state.json` in the invocation's state directory | the runner that last wrote the state; every write, also by `dispose`, sets it |
+| the ownership file `.work-queue-locks/<hash>-<hash>-owner.json` beside the checkout | the runner that last wrote it, including when it is released at the end of a run or by `dispose` |
+| every diagnostics file `error.json` named by an `unavailable` line | the runner that refused or failed |
+| every [run statistics](#run-statistics-ledger) record | the executing runner |
+
+A `state.json` or ownership file written by an older runner without
+`runnerVersion` is still read and resumed as before; the next write adds the
+field. The runner version is never part of the invocation identity and never
+decides ownership, so updating the runner never makes a resume incompatible.
+Receipts committed to the repository do not carry it.
 
 ## Disposing of an invocation
 
@@ -1018,6 +1119,9 @@ Then it:
 3. with `--remove-work`, removes the worktrees, local branches and remote
    branches of the unaccepted tasks;
 4. marks the invocation's ownership file released.
+
+The `state.json` and ownership file it writes carry the `runnerVersion` of the
+runner that disposed (see [Runner version in run files](#runner-version-in-run-files)).
 
 **Untouched.** Accepted tasks, their claims, receipts and `completed` entries and
 their merged Pull Requests are never changed. Claims of other invocations, the
@@ -1276,8 +1380,8 @@ Each runner execution appends one compact JSON object and newline to
 `$XDG_STATE_HOME/outcome-runner/runs.jsonl`. The default is
 `~/.local/state/outcome-runner/runs.jsonl`; unset, empty or relative
 `XDG_STATE_HOME` uses that default. The hash command never creates a ledger,
-even when hashing fails, and neither does the dispose command. A resumed
-invocation is a new execution with a new `runId`.
+even when hashing fails, and neither do the dispose command, `--version` and
+`--help`. A resumed invocation is a new execution with a new `runId`.
 
 Missing directories are created with mode 0700 and the ledger is created or
 secured with mode 0600. Prior bytes are preserved. Each complete record uses
@@ -1293,7 +1397,7 @@ not reached; arrays are empty when no entries exist.
 | --- | --- |
 | schemaVersion | integer literal 1 |
 | runId | string, fresh UUID per execution |
-| runnerVersion | string, executing package version, not a hardcoded release |
+| runnerVersion | string, executing package version, not a hardcoded release (the same value `outcome-runner --version` prints) |
 | hostname | string, machine hostname |
 | repositoryTopLevel | string or null, canonical Git top-level path once discovered |
 | originUrl | string or null, origin remote once discovered; omit embedded credentials from URL userinfo |
@@ -1510,7 +1614,7 @@ mood are in [mascot/README.md](mascot/README.md).
   before the cancelled result is written.
 - A failing mascot never changes the result line, the exit code, the run state
   or the statistics ledger.
-- The `hash` and `dispose` commands show no mascot.
+- The `hash` and `dispose` commands, `--version` and `--help` show no mascot.
 
 Turn the mascot off with the flag `--no-mascot`, which may appear once in any
 order with the other flags:
@@ -1570,7 +1674,12 @@ is rewritten the way an older runner wrote it, and `RunOptions.requiredSettings`
 declares a required setting. The review and check budgets and `--retry` are
 tested in `test/review-budgets.test.ts` with the same fixtures and scripted
 adapters that reject chosen reviews, write failing results or incomplete
-planning artifacts, or fail chosen sessions, across restarts and retries. The
+planning artifacts, or fail chosen sessions, across restarts and retries.
+`--version`, `--help`, `hash` with task ids and its one-line errors, and
+`runnerVersion` in the diagnostics, state and ownership files are tested in
+`test/cli-usage.test.ts`, in-process through `run` with captured output and by
+spawning `bin/outcome-runner.ts` with a temporary state home and temporary
+directory. The
 `live:*` scripts exercise a real harness; set `OUTCOME_TEST_HARNESS` to
 `claude` or `codex` (default `codex`). Step lines are captured through
 `RunOptions.steps`.
