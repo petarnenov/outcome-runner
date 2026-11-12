@@ -10,7 +10,7 @@
     "openspec/changes/archive/2026-11-12-no-diagnostic-leftovers/specs/diagnostic-leftovers/spec.md": "8fc1e23b49f2408505cc6739e8f88c3331e2451bace30b0edb9dbb4316b0df1e"
   },
   "review": {
-    "reviewer": "claude:07972b4f-cf51-47ab-8796-df27bb151c30",
+    "reviewer": "claude:beb9f06f-3ced-4b34-8524-c14da76c6875",
     "outcome": "accepted",
     "accepted": true
   },
@@ -44,7 +44,7 @@
   "manifest": [
     {
       "path": "README.md",
-      "hash": "953830239e132b0cef806d3eb6d044f649752cdbedc96e3e312397ff2c818144"
+      "hash": "3377efa585bbaf2bf2f930ded9dfe48fd5bf131e85d437e36274d59a4ecc8719"
     },
     {
       "path": "openspec/changes/archive/2026-11-12-no-diagnostic-leftovers/design.md",
@@ -68,7 +68,7 @@
     },
     {
       "path": "src/runner.ts",
-      "hash": "47370c68cd2ce4c2847918824be4c650b13258e8a16a2c6d007e9d6debea1c38"
+      "hash": "3ef8d4bb09de97df35d8bfec2172127d766b9ff134a2fa2de7b1c176f7a3e582"
     },
     {
       "path": "test/diagnostic-leftovers.test.ts",
@@ -83,8 +83,8 @@
       "hash": null
     }
   ],
-  "head": "8378a00537fcfd85d8754a865fcdd903ee1793ee",
-  "base": "bc67732f7e1fdf8d53520e5e45d857c429df0ab4",
+  "head": "62e99e766425a9fb920d1eaeaa78e736efa135ad",
+  "base": "5e678bf3ef001d4bc85bbca87a10f11a76bb180d",
   "invocationChanges": [
     {
       "kind": "identity-upgraded",
