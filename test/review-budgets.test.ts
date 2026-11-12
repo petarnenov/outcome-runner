@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { git } from '../src/git.ts';
-import type { BudgetExhaustion, ReviewRecord, RunConfig, Work } from '../src/model.ts';
+import type { BudgetExhaustion, RetryRecord, ReviewRecord, RunConfig, Work } from '../src/model.ts';
 import { BudgetExhausted, CHECK_ATTEMPTS, REVIEW_ROUNDS, budgetMessage, budgetOf, explainUnfinished, runQueue }
   from '../src/runner.ts';
 import type { RunOptions, RunResult } from '../src/runner.ts';
@@ -351,3 +351,57 @@ test('B: a restart of an exhausted task blocks again without any session', async
 });
 
 // 5.15 (B) (coverage-only): not needed, coverage reached.
+
+/**
+ * 5.16: in its own fixture, repeats the 5.7 run, then makes exactly one retry run of A, through `runQueue` or
+ * through `main` with `--retry A`, and checks the new session, acceptance, retry record and receipt.
+ */
+async function retriedOnce(t: TestContext, through: 'runQueue' | 'main') {
+  const f = runnerFixture(t, { ids: ['A'] });
+  const s = scripted({ reject: { review: n => n <= 4 } });
+  const cli = invocationFile(f); const config = cli.config;
+  const blocked = (await reviewsRanOut(f, config, s)).blocked.A;
+  let result: RunResult;
+  if (through === 'main') {
+    const { code, lines } = await throughMain(t, f, cli.path, cli.env, ['--retry', 'A'], s.createAdapter);
+    assert.equal(code, 0, JSON.stringify(lines));
+    result = lines.at(-1);
+  } else {
+    result = await f.run(config, { createAdapter: s.createAdapter, retry: ['A'] });
+  }
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.deepEqual(result.accepted, ['A']);
+  // The retry starts one new implementation session and one review, which accepts.
+  assert.equal(s.count('work'), 5); assert.equal(s.count('review'), 5);
+  const state = readState(config);
+  assert.equal(state.retries.length, 1);
+  const record = state.retries[0] as RetryRecord;
+  assert.equal(record.task, 'A'); assert.equal(record.stage, 'work');
+  assert.ok(Number.isFinite(Date.parse(record.at)));
+  assert.equal(record.previous.work.reviews, 4);
+  assert.deepEqual(record.previous, blocked.work.budget);
+  assert.deepEqual(record.exhausted, blocked.budget);
+  assert.deepEqual(record.exhausted, REVIEWS_RAN_OUT);
+  const completed = state.completed.A as Work;
+  assert.equal(completed.retries!.length, 1);
+  assert.deepEqual(completed.retries, [record]);
+  assert.deepEqual(completed.budget!.work, { reviews: 1, checks: 0 });
+  assert.deepEqual(receiptOf(f).retries, [record]);
+  return { f, s, config };
+}
+
+// 5.16 (A) (required)
+test('A: --retry grants one new budget through runQueue, records it once and is refused afterwards', async t => {
+  const { f, s, config } = await retriedOnce(t, 'runQueue');
+  const prompts = s.prompts.length;
+  await assert.rejects(f.run(config, { createAdapter: s.createAdapter, retry: ['A'] }), retryNotBlocked(['A']));
+  assert.equal(readState(config).retries.length, 1);
+  assert.equal(s.prompts.length, prompts);
+});
+
+test('A: --retry A through main grants one new budget and records it in state and receipt', async t => {
+  await retriedOnce(t, 'main');
+});
+
+// 5.17 (A) (coverage-only): not needed, coverage reached.
+// 5.18 (A) (coverage-only): not needed, coverage reached.
