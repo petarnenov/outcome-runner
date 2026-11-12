@@ -12,7 +12,7 @@
     "openspec/changes/archive/2026-11-12-wait-for-free-work/specs/wait-for-free-work/spec.md": "75448bace49352b88ae50e1b7c456801a2a79a717b1926684df89d73d34efe32"
   },
   "review": {
-    "reviewer": "claude:7489cc5c-652c-49ec-9053-0c6c0a8c7ff5",
+    "reviewer": "claude:8d9dd2d2-01d8-4c33-8d46-f8b4c20bab8f",
     "outcome": "accepted",
     "accepted": true
   },
@@ -46,7 +46,7 @@
   "manifest": [
     {
       "path": "README.md",
-      "hash": "59f638de0b363629cc2d7f9f4be7fec0005943793b1123a01075ef304f32cc35"
+      "hash": "0fd2a6d72ae112eedfe0ff4c519522c9d1fc9e6df904527d4cb9aa7724b71512"
     },
     {
       "path": "openspec/changes/archive/2026-11-12-wait-for-free-work/design.md",
@@ -90,7 +90,7 @@
     },
     {
       "path": "src/runner.ts",
-      "hash": "405adef14d6713035ec6947851bf6a2d43fc3451eb8d7477abaf818f1215735b"
+      "hash": "cc53d0f8aa2a6aeedbff5fccf3363bcc098949dc5bec8d7888d0afe07d824a9a"
     },
     {
       "path": "test/concurrent-runners.test.ts",
@@ -117,8 +117,8 @@
       "hash": "4f4128aa8d6d3130de20c8013c162578e3c6df0481eb82a4f4880181e4db548d"
     }
   ],
-  "head": "9c3e517e11f79e33b94895f8f72a16397cb47da9",
-  "base": "fd3ff32b4f52ad0c7d9fb1d08c4f08debc221a21",
+  "head": "a54da233357cdf5f48b79c13aa75a81f2e93a890",
+  "base": "9958b5cf6c8464ce9d849194a7b3c8a965a7c05c",
   "retries": [
     {
       "task": "OR-29",
