@@ -517,6 +517,58 @@
         "README describes the send-back session in the integration section and the target-integration-rejected reason.",
         "npm run typecheck and npm test pass."
       ]
+    },
+    {
+      "id": "OR-29",
+      "title": "Wait for claimed and dependent tasks instead of ending the run",
+      "change": "wait-for-free-work",
+      "priority": 24,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-28"],
+      "criteria": [
+        "When no remaining task can be picked and every blocker of every remaining task is waiting-for-claim or waiting-for-dependency, the runner does not end with incomplete: it waits a poll interval, pulls the claims ledger and the target again, recomputes done tasks, and picks the next free task.",
+        "The poll interval defaults to 60 seconds and may be set by the invocation field pollSeconds, an integer from 5 through 3600; an invalid value is refused at startup with exit code 4 and diagnostics naming it.",
+        "The run still ends with incomplete and the existing blockers when a remaining task is blocked in this invocation's own state or depends on such a task, so a run never waits for work nobody can finish; it ends with exhausted or limit-reached exactly as before when those apply.",
+        "While waiting the runner logs one step line per poll naming the tasks it waits for and the hosts holding them, and a cancel signal during the wait ends the run with cancelled without a further effect.",
+        "Tests use scripted adapters, a fake clock and Git fixtures and cover: a task claimed elsewhere that becomes done and lets the run pick the next task; a dependency merged by another runner that becomes free; a claim released by dispose that becomes free; a self-blocked task ending incomplete without waiting; a cancel during the wait; and an invalid pollSeconds refused.",
+        "README describes waiting for free work, pollSeconds and when a run still ends incomplete.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-30",
+      "title": "Claim leases so a stale or blocked claim does not freeze its scopes",
+      "change": "claim-leases",
+      "priority": 25,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-29"],
+      "criteria": [
+        "A runner that holds a claim renews it in the claims ledger at least every leaseSeconds / 3 while it works the task; leaseSeconds defaults to 1800 and may be set in the invocation as an integer from 300 through 86400, invalid values refused at startup with exit code 4.",
+        "A claim whose last renewal is older than its lease is stale: other runners ignore it when choosing free work and when explaining blockers, and a runner may claim that task with a ledger update that only succeeds if the stale claim is still the current one, so two runners never both win a takeover.",
+        "When a task is blocked, the runner that holds its claim releases the claim in the ledger before continuing, keeping the blocked work and its branch for inspection, so the scopes of a blocked task stop excluding other tasks on every host.",
+        "A runner whose claim was taken over notices it before its next effect on the target or the pull request, stops that task without pushing or merging, and records reason claim-lost.",
+        "Claims written by earlier runner versions without renewal data are treated as renewed at claimedAt.",
+        "Tests use scripted adapters, a fake clock and Git fixtures and cover: renewal during long work; takeover of a stale claim by exactly one of two competing runners; release of a blocked task's claim letting another runner pick an overlapping task; claim-lost stopping the previous holder before merge; and a legacy claim without renewal data.",
+        "README describes claim leases, renewal, takeover, release on block, claim-lost and leaseSeconds.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-31",
+      "title": "Merge retries that tolerate pending checks, a behind pull request and release commits",
+      "change": "merge-retry-states",
+      "priority": 26,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-30"],
+      "criteria": [
+        "When the settled pull request is OPEN with the checked head but mergeStateStatus is BEHIND, the runner treats it as an advanced target and returns to the catch-up and publish steps instead of blocking with operation-incomplete.",
+        "When mergeStateStatus is BLOCKED, UNSTABLE or UNKNOWN while required checks are still pending, the runner keeps polling the pull request for up to 30 minutes before blocking with reason merge-not-eligible and the last status; a failed required check blocks at once with merge-not-eligible and the check names.",
+        "A target advance whose changed paths are only package.json version fields, package-lock.json version fields and CHANGELOG.md from a release commit does not count toward the target attempt limit, and the limit of target attempts is raised from 5 to 10.",
+        "Each retry and its reason are recorded in durable state before the next effect and logged as step lines, so a restart resumes at the recorded attempt count.",
+        "Tests use scripted adapters and Git fixtures and cover: BEHIND leading to catch-up and a merge; pending checks that turn green and merge; a failed required check blocking with merge-not-eligible; a release-only advance not consuming an attempt; and the attempt limit reached with target-keeps-advancing.",
+        "README describes merge eligibility retries, merge-not-eligible and the release-commit exception to the attempt limit.",
+        "npm run typecheck and npm test pass."
+      ]
     }
   ]
 }
