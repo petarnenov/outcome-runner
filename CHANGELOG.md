@@ -1,3 +1,20 @@
+## 0.20.1 - 2026-11-12
+
+### Fixes
+
+- record deleted paths in the receipt manifest with hash null (9da4a2b)
+
+## 0.20.0 - 2026-11-12
+
+### Features
+
+- implement OR-22 (78a1d76)
+- implement OR-22 (4cc6a11)
+- implement OR-22 (51dee69)
+- implement OR-22 (bcf851c)
+- implement OR-22 (7f4a6e1)
+- implement OR-22 (1c64bb1)
+
 ## 0.19.0 - 2026-11-12
 
 ### Features
