@@ -198,6 +198,38 @@ test('D: receipt validation accepts archived specification paths and existing un
   assert.throws(() => receiptAt(root, 'HEAD', 'evidence/receipts/A.json', 'other', null), /Invalid accepted outcome receipt/u);
 });
 
+// D (required): a path the task deleted is recorded with hash null and is valid only while it is absent.
+function deletionRepository(t: TestContext, nullPath: string) {
+  const root = mkdtempSync(join(tmpdir(), 'deletion-receipt-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  git(root, 'init', '-b', 'main');
+  git(root, 'config', 'user.name', 'Fixture'); git(root, 'config', 'user.email', 'fixture@example.invalid');
+  const specification = `${archived}/specs/finite-counter/spec.md`;
+  const leftover = 'test/zz-debug-capture.test.ts';
+  const files: Record<string, string> = { [specification]: '## ADDED Requirements\n', 'src/a/result.mjs': 'export {};\n' };
+  for (const [path, content] of Object.entries({ ...files, [leftover]: 'debug\n' })) {
+    mkdirSync(join(root, path, '..'), { recursive: true }); writeFileSync(join(root, path), content);
+  }
+  git(root, 'add', '.'); git(root, 'commit', '-m', 'test: base with a leftover');
+  rmSync(join(root, leftover));
+  const manifest = [...Object.entries(files).map(([path, content]) => ({ path, hash: digest(content) })),
+    { path: leftover, hash: null }].map(entry => entry.path === nullPath ? { ...entry, hash: null } : entry);
+  const receipt = { version: 1, id: 'A', taskHash: 'task', authority: 'fixture-owner-off',
+    specification: { [specification]: digest(files[specification]) },
+    review: { reviewer: 'claude:review', outcome: 'accepted', accepted: true },
+    checks: [{ command: 'node', args: ['checks.mjs'], outcome: 'passed' }], manifest, head: 'head', base: 'base' };
+  mkdirSync(join(root, 'evidence/receipts'), { recursive: true });
+  writeFileSync(join(root, 'evidence/receipts/A.json'), JSON.stringify(receipt));
+  git(root, 'add', '-A'); git(root, 'commit', '-m', 'test: delete the leftover and record receipt');
+  return root;
+}
+
+test('D: receipt validation accepts a deleted path with hash null and rejects null for a present file', t => {
+  const deleted = deletionRepository(t, 'test/zz-debug-capture.test.ts');
+  assert.ok(receiptAt(deleted, 'HEAD', 'evidence/receipts/A.json', 'task', null));
+  const present = deletionRepository(t, 'src/a/result.mjs');
+  assert.throws(() => receiptAt(present, 'HEAD', 'evidence/receipts/A.json', 'task', null), /Accepted result differs from receipt/u);
+});
+
 // D (required): the manifest accepts scopes, the archived change and archive spec files and rejects anything else.
 test('D: the result manifest accepts scope, archived change and archive spec paths only', () => {
   const work = { scopes: ['src/a'], directory: 'openspec/changes/counter-a',
