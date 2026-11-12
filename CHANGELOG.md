@@ -1,3 +1,16 @@
+## 0.19.0 - 2026-11-12
+
+### Features
+
+- implement OR-21 (d15a70e)
+- implement OR-21 (b4f8598)
+- implement OR-21 (3296f9e)
+- implement OR-21 (9046885)
+- implement OR-21 (f024cdd)
+- implement OR-21 (a5017d7)
+- implement OR-21 (34c5362)
+- implement OR-21 (a1147a7)
+
 ## 0.18.0 - 2026-11-11
 
 ### Features
