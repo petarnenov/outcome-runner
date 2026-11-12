@@ -190,6 +190,9 @@ Save it as, for example, `~/invocations/my-project-1.json`:
   [Dependency check](#dependency-check).
 - Leave out `coverage` (and `harness`, `model`, `effort`) to be asked for it
   when the run starts from a terminal; see [Harness selection](#harness-selection).
+- The optional `pollSeconds` (an integer from 5 through 3600, default 60) sets
+  how often a run polls while it waits for work held by other runners; see
+  [Waiting for free work](#waiting-for-free-work).
 
 **7. Run it from the repository, on the target branch**
 
@@ -232,8 +235,8 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 | Exit code | Meaning |
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
-| 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked, a foreign claim or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)) |
-| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
+| 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked, a task waiting for a blocked scope or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)). Work only claimed by other runners is waited for instead (see [Waiting for free work](#waiting-for-free-work)). A run cancelled by SIGINT or SIGTERM (`cancelled`) also exits 3 |
+| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `invalid-poll-seconds`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
 
 After an interruption, run the **same command with the same file** from the same
 branch to resume. Do not delete the state under `~/.local/state/outcome-runner/`.
@@ -611,11 +614,73 @@ clone and invocation under `$XDG_STATE_HOME/outcome-runner` (default
 `~/.local/state/outcome-runner`). The invocation file must not set `root` or
 `stateDirectory`, so one file serves every machine and every repository. Tasks
 claimed by another run, or overlapping its scopes, are skipped until accepted. A
-run with only claimed work left returns incomplete; restart it later with the
-same configuration. Claims are never taken over automatically. When the owner of
-an invocation no longer wants it, release its claims with
-`outcome-runner dispose` on the machine and clone that ran it; see
+run whose remaining work is only claimed by other runners, or waits for
+dependencies they are still working, does not end: it waits for that work and
+continues as soon as a task becomes free; see
+[Waiting for free work](#waiting-for-free-work). Claims are never taken over
+automatically. When the owner of an invocation no longer wants it, release its
+claims with `outcome-runner dispose` on the machine and clone that ran it; see
 [Disposing of an invocation](#disposing-of-an-invocation).
+
+### Waiting for free work
+
+When no remaining task can be picked, the runner looks at the blockers of every
+remaining task and of every blocked task of the invocation (see
+[Unfinished results](#unfinished-results)). When each of them is
+`waiting-for-claim` (another runner holds a claim on the task or on overlapping
+scopes) or `waiting-for-dependency` (a dependency is not accepted yet), the work
+becomes free without any action of this invocation: another runner merges its
+task, or its owner releases the claim with `outcome-runner dispose`. The run
+therefore does not end. It waits one poll interval, then fetches
+`origin/<target>`, pulls the claims ledger again, recomputes which tasks are
+accepted and picks the next free task, and repeats this until a task can be
+picked or another ending applies (`exhausted`, `limit-reached`, `incomplete` or
+`cancelled`). While it waits, `state.json` keeps `status` `running`, and the
+invocation lock and the ownership stay held.
+
+**Poll interval.** The optional invocation field `pollSeconds` sets the interval
+in seconds: an integer from 5 through 3600, 60 when omitted. Any other value,
+for example `4`, `3601`, `7.5` or `"60"`, is refused at startup, before any
+preflight, lock, state, ownership file, claim or worktree, with exit code 4 and
+reason `invalid-poll-seconds`; the private diagnostics file names the setting
+`pollSeconds` and the refused value. `pollSeconds` is operational: it is not
+part of the invocation identity, so a resumed invocation may use another
+interval. Each poll costs one fetch and one claims ledger pull.
+
+**Step line per poll.** Immediately before each sleep the runner writes one
+`run wait` step line naming the tasks it waits for, sorted, each with the host
+recorded in the claim that holds it (`unknown host` when the claim records no
+host, `unclaimed` for a dependency no runner has claimed), for example:
+
+```text
+[outcome-runner] 10:02:00 run wait: waiting 60s for TASK-1 on build-host-1, TASK-3 on build-host-2
+```
+
+Unlike the task-level waits, which log once, this line is written on every poll;
+see [Step lines](#step-lines).
+
+**Cancel during the wait.** A SIGINT or SIGTERM during the wait ends the run at
+once with `cancelled` (exit code 3); no further fetch, claims ledger pull, claim,
+worktree or worker session follows. The `cancelled` result keeps the `blockers`
+of the remaining tasks, `state.json` gets `status` `incomplete` and the ownership
+stays held, so the same command resumes the invocation later.
+
+**When a run still ends incomplete.** A run never waits for work nobody else can
+finish. It ends at once with `incomplete` (exit code 3) and the existing
+`blockers` when any remaining task or task of the invocation has a blocker of
+another kind: a task `blocked` in this invocation's own state (including a
+merged task whose acceptance recording failed), a task that depends on such a
+task, or a task `waiting-for-blocked-scope`. Repair or retry the blocked task
+(see [Review and check budgets](#review-and-check-budgets)) and run the same
+command again. The `exhausted` and `limit-reached` endings are unchanged: a
+reached `maxAccepted` ends the run with `limit-reached` without waiting, also
+while other tasks are claimed elsewhere.
+
+**A claim that never frees.** A claim held by a runner that crashed and never
+comes back makes the waiting run wait until it is cancelled. End that stale
+invocation with `outcome-runner dispose` on the machine and clone that ran it
+(see [Disposing of an invocation](#disposing-of-an-invocation)); the waiting run
+claims the task at its next poll.
 
 ### Worktrees and cleanup
 
@@ -676,8 +741,9 @@ Commit a version 1 queue containing `tasks`. Each task has `id`, `title`,
 change and one PR. Scopes cannot overlap queue, receipt or OpenSpec roots.
 
 Keep the invocation JSON outside the checkout. Supply a stable `invocation` name
-(letters, digits, `.`, `_`, `-`), optional selected `leaves` and optional
-positive `maxAccepted`. Omitted mode is OFF. `authority` contains the actual
+(letters, digits, `.`, `_`, `-`), optional selected `leaves`, optional
+positive `maxAccepted` and optional `pollSeconds` (see
+[Waiting for free work](#waiting-for-free-work)). Omitted mode is OFF. `authority` contains the actual
 instruction `reference`, `instruction`, the optional `target` (the branch the
 runner starts from) and a `tasks` object
 mapping IDs to canonical SHA256 hashes printed by `outcome-runner hash <queue>`.
@@ -855,8 +921,10 @@ merged tasks of the invocation whose acceptance recording failed. It does not
 count prior completion, tasks accepted by other runners, proposals, attempts or
 worker sessions. A reached bound is successful (`limit-reached`, exit 0) with the
 remaining task IDs reported and explained. Too few accepted results, blocked
-tasks, dependencies inside the run that are blocked, foreign claims or protected
-merges return incomplete without asking a person anything. Independent work may
+tasks, dependencies inside the run that are blocked, tasks waiting for a blocked
+scope or protected merges return incomplete without asking a person anything;
+work that only waits for foreign claims or their dependencies is waited for (see
+[Waiting for free work](#waiting-for-free-work)). Independent work may
 proceed only without overlapping held scopes. Receipts validate outputs at their
 first accepted target commit; later ordinary
 changes preserve historical acceptance. Removed or altered receipts do not prove
@@ -902,7 +970,12 @@ For example:
 
 The private failure message of a blocked task stays in `state.json`; it is never
 written to stdout. `claimedElsewhere` still lists foreign claims by task id. A
-`cancelled` result carries no `blockers`.
+run whose blockers are all `waiting-for-claim` or `waiting-for-dependency` does
+not return `incomplete`; it waits (see
+[Waiting for free work](#waiting-for-free-work)). A `cancelled` result carries
+`blockers` only when it was cancelled during that wait; then they are the
+blockers of its remaining tasks computed before the wait. Any other `cancelled`
+result carries no `blockers`.
 
 ### Review and check budgets
 
@@ -978,11 +1051,11 @@ invocation status the runner reached, written before the process exits:
 | `status` | When |
 |---|---|
 | `starting` | The state was just created; the run has not reached its first task selection |
-| `running` | Written after the leftover sweep, before the first task is selected; a run that ends with an error after that keeps it |
+| `running` | Written after the leftover sweep, before the first task is selected, and kept while the run [waits for free work](#waiting-for-free-work); a run that ends with an error after that keeps it |
 | `released` | The ownership was released: every task accepted without a blocked task, or the limit reached with no blocked task and no in-progress work, even when unstarted `max-accepted` tasks remain, or the invocation was [disposed](#disposing-of-an-invocation) (then `state.json` also has a `disposed` record) |
 | `blocked` | A `limit-reached`, `incomplete` or `cancelled` result keeps a blocked task of the invocation, including a merged task whose acceptance recording failed |
 | `completed` | A `limit-reached` result keeps in-progress work and has no blocked task |
-| `incomplete` | Any other `incomplete` or `cancelled` result, for example waiting for a foreign claim |
+| `incomplete` | Any other `incomplete` or `cancelled` result, for example a run cancelled while it waited for a foreign claim |
 
 In-progress work is the current task of the run or recovered work of an earlier
 run that is claimed but neither accepted nor blocked and is kept for a later
@@ -1002,7 +1075,7 @@ authority (`reference`, `instruction`, `target` and the task ids with their
 hashes in `tasks`), the project `target`, `queue`, `changes` and `receipts`, the
 harness, model, effort and coverage, the checks (`checks`, `planningCheck` and
 `setup`; an omitted `setup` equals `[]`) and the leaves. Runner defaults such as
-the `archive` command, operational settings such as `maxAccepted`,
+the `archive` command, operational settings such as `maxAccepted`, `pollSeconds`,
 `commitScope`, `commitSuffix` and `repository`, the runner version, and settings
 a newer runner introduces are not part of it, so they never make a resumed
 invocation incompatible.
@@ -1562,8 +1635,8 @@ Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
 `openspec-layout-created`, `harness-unavailable`, `test-framework-missing`,
 `test-framework-analysis-failed`, `test-framework-prepared`, `missing-setting`
 or `startup-or-run-failed` (target refusals, `invocation-running`,
-`invocation-disposed`, `retry-not-blocked` and `dependencies-outside-invocation`
-are recorded as `startup-or-run-failed`).
+`invocation-disposed`, `retry-not-blocked`, `invalid-poll-seconds` and
+`dependencies-outside-invocation` are recorded as `startup-or-run-failed`).
 Blocked tasks use safe `blockingReason` codes
 `operation-incomplete` or `cancelled`. SIGINT and SIGTERM are handled
 during startup and work through one guarded finalizer; SIGKILL, power loss and
@@ -1610,19 +1683,24 @@ For example:
 - Lines contain only fixed text and safe values: task ids, the invocation,
   harness, model and effort, the target branch name (in the `integrate`,
   `compare` and `retry` lines), a check or setup program name with its index,
-  the Pull Request number, attempt numbers and the run outcome. They never
+  the Pull Request number, attempt numbers, the poll interval and the hosts
+  recorded in claims (in the run `wait` line) and the run outcome. They never
   contain commits, secrets, worker output, file contents, check output, error
   messages, block reasons or other private diagnostics.
 
 The run steps are `start`, one `preflight` line for each preflight (OpenSpec,
 harness version, test framework), `cleanup` for each leftover worktree swept on
-start, and `end` with the run outcome (`unavailable` when the run fails). The
+start, `wait` once per poll while the run
+[waits for free work](#waiting-for-free-work), and `end` with the run outcome
+(`unavailable` when the run fails). The
 run start and run end lines cover the run from the OpenSpec preflight onward.
 Refusals before the OpenSpec preflight, such as an invalid flag, an unreadable
 invocation file or a [target branch](#target-branch) refusal, exit with code 4
 without writing any step line. A `missing-setting` refusal (see
 [Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation))
-writes only the run `start` line and the run `end` line with outcome
+and an `invalid-poll-seconds` refusal (see
+[Waiting for free work](#waiting-for-free-work))
+write only the run `start` line and the run `end` line with outcome
 `unavailable`, and no `preflight` line. The task steps are `claim`, `worktree`, `setup`
 (each setup command), `investigation`, `planning`, `planning check`,
 `planning review`, `implementation`, `commit`, `check` (each product check),
@@ -1668,10 +1746,15 @@ followed directly by `blocked: stopped at send-back`.
   comparison with the integrated target that finds an advanced target writes no
   `retry` line; the `integrate` line (a change outside the guarded paths) or the
   lines of the `integrate` stage (a change inside them) follow it directly.
-- **Waits** log once when the wait starts, never on every poll: one `wait` line
-  for mergeability and checks, one more when the pull request head is stale,
-  and one `git lock: waiting for the Git lock` line when another runner holds
-  the per-clone Git lock (nothing is written when the lock is free).
+- **Waits** of a task log once when the wait starts, never on every poll: one
+  `wait` line for mergeability and checks, one more when the pull request head
+  is stale, and one `git lock: waiting for the Git lock` line when another
+  runner holds the per-clone Git lock (nothing is written when the lock is
+  free). The run-level wait for free work is different: it writes one
+  `run wait` line per poll, immediately before each sleep, for example
+  `run wait: waiting 60s for TASK-1 on build-host-1`, so a run that sleeps twice
+  writes exactly two such lines (see
+  [Waiting for free work](#waiting-for-free-work)).
 - **Retries** log again with ` (attempt N)` from the second attempt or round
   on. Every line of a retried attempt or round carries the suffix: in a
   planning attempt the `planning`, `planning check` and `planning review`
@@ -1705,8 +1788,8 @@ mood are in [mascot/README.md](mascot/README.md).
 | The run ends `exhausted` | `celebrating` | `exhausted: <n> accepted, <m> remaining` |
 | The run ends `limit-reached` | `content` | `limit-reached: <n> accepted, <m> remaining` |
 | The run ends `incomplete` without `blockers`: nothing remains and nothing is blocked (a `maxAccepted` run that accepted every task before reaching the limit) | `sleepy` | `incomplete: <n> accepted, <m> remaining` |
-| The run ends `incomplete` with `blockers`, which includes every incomplete run with remaining tasks, also when they only wait for a dependency or a foreign claim | `sad` | `incomplete: <n> accepted, <m> remaining` |
-| The run is cancelled by SIGINT or SIGTERM | `startled` | `cancelled: <n> accepted, <m> remaining` |
+| The run ends `incomplete` with `blockers`, which includes every incomplete run with remaining tasks | `sad` | `incomplete: <n> accepted, <m> remaining` |
+| The run is cancelled by SIGINT or SIGTERM, also during the wait for free work | `startled` | `cancelled: <n> accepted, <m> remaining` |
 | The runner exits with code 4 (`unavailable`) | `dizzy` | `unavailable: 0 accepted, 0 remaining` |
 
 - The blocked reason has its whitespace (including newlines) collapsed to single
@@ -1776,7 +1859,12 @@ worktree cleanup are tested with Git fixtures (a bare origin and clones),
 scripted pull request hosts and child processes. The dependency check, the
 unfinished reasons and the invocation status are tested with scripted adapters,
 the scripted pull request host and Git fixtures with per-task dependencies and
-scopes. The dispose command is tested with Git fixtures, scripted adapters and
+scopes. The wait for free work is tested in `test/wait-for-free-work.test.ts`
+with the same fixtures and a fake sleep injected through `RunOptions.sleep`:
+another invocation merges the awaited task, a dependency is merged elsewhere, a
+claim is released by `dispose`, or the sleep aborts the run. The runner fixture
+gives every run a fake sleep that cancels it at its first poll, so a test whose
+remaining work is held elsewhere never waits for real. The dispose command is tested with Git fixtures, scripted adapters and
 scripted pull request hosts, through `disposeInvocation` and the exported
 `dispose` entry point with a temporary `XDG_STATE_HOME`. Target advances during
 a run (clean and conflicting merges, restarts and advances outside the scopes)

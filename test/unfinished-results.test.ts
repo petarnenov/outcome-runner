@@ -168,11 +168,11 @@ test('C (required): a foreign claim with overlapping scopes is named and leaves 
   assert.equal(ledger.acquire(ledger.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'foreign',
     host: 'elsewhere' }, 'chore: claim A'), true);
   const config = f.config('one', { leaves: ['A'] });
+  // The run waits for the foreign claim; the fixture's first poll cancels it with the blockers kept.
   const { code, line } = await cli(f, config, { createAdapter: () => { throw new Error('No worker expected'); } });
-  assert.equal(code, 3); assert.equal(line.status, 'incomplete'); assert.deepEqual(line.remaining, ['A']);
+  assert.equal(code, 3); assert.equal(line.status, 'cancelled'); assert.deepEqual(line.remaining, ['A']);
   assert.deepEqual(line.blockers, { A: { kind: 'waiting-for-claim', reason: 'waiting-for-claim',
     claim: { id: 'A', host: 'elsewhere' } } });
-  assert.deepEqual(line.claimedElsewhere, { A: { host: 'elsewhere' } });
   assert.equal(stateOf(config).status, 'incomplete');
 });
 

@@ -273,8 +273,10 @@ test('A (required): two invocations run concurrently in one clone on one branch 
     arrived.add(name); if (arrived.size === 2) release();
     await together;
   } });
+  // An invocation that finds its last remaining task claimed by the other waits for it; the fixture's first poll
+  // cancels that wait, so it ends `cancelled` with what it accepted so far.
   const [one, two] = await Promise.all(['one', 'two'].map(name => f.run(f.config(name), { createAdapter: worker(name) })));
-  for (const result of [one, two]) assert.ok(['exhausted', 'incomplete'].includes(result.status), JSON.stringify(result));
+  for (const result of [one, two]) assert.ok(['exhausted', 'incomplete', 'cancelled'].includes(result.status), JSON.stringify(result));
   assert.ok(one.accepted.length > 0 && two.accepted.length > 0, JSON.stringify([one, two]));
   assert.deepEqual([...one.accepted, ...two.accepted].sort(), ['A', 'B', 'C', 'D']);
   // No task was worked by both invocations.

@@ -212,8 +212,9 @@ test('C (required): an incomplete invocation without claims is disposed, release
   const two = f.config('two', { leaves: ['B'] });
   assert.equal((await f.run(two, { createAdapter: failing('B') })).status, 'incomplete');
   const one = f.config('one', { leaves: ['B'] });
+  // `one` waits for the claim of `two`; the fixture's first poll cancels it, which leaves it incomplete.
   const waiting = await f.run(one, { createAdapter: () => { throw new Error('No worker expected'); } });
-  assert.equal(waiting.status, 'incomplete'); assert.equal(waiting.blockers!.B.kind, 'waiting-for-claim');
+  assert.equal(waiting.status, 'cancelled'); assert.equal(waiting.blockers!.B.kind, 'waiting-for-claim');
   assert.equal(stateOf(one).status, 'incomplete'); assert.equal(ownershipOf(f, one).released, false);
   assert.deepEqual(ledgerFiles(f), ['B.json']);
   assert.equal(JSON.parse(claimText(f, 'B')).claimant, stateOf(two).claimant);
