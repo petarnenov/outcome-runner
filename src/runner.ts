@@ -198,13 +198,19 @@ const DOCUMENTATION_REVIEW = 'Review the documentation changes independently aga
   'criterion and the task scope. Documentation may change only README files, Markdown files and docs or doc ' +
   'directories inside the task scopes. Read files and context; the diff section shows all task changes. ' +
   'Report accepted only with zero findings; otherwise changes-required with concrete findings.';
+/** The implementation session instruction to delete every scratch or diagnostic file before finishing. */
+export const LEFTOVER_FILES_WORK = 'Before finishing, delete with delete_file every scratch or diagnostic file you created ' +
+  'during this task, such as temporary debug tests, captures or notes; keep only files the task needs.';
+/** The implementation review instruction to reject leftover diagnostic files and name them in findings. */
+export const LEFTOVER_FILES_REVIEW = 'Report changes-required when the task changes contain a file that only served ' +
+  'diagnosis, such as a temporary debug test, capture or scratch file, and name each such file by path in findings.';
 /** The implementation review prompt of the work stage and of an integration. */
 const implementationReview = (coverage: number | undefined): string =>
   'Review actual implementation independently against every criterion, scope, security and test evidence. ' +
   'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required. ' +
   'When reporting accepted, provide completion.summary with two or three English sentences describing what ' +
   'the whole task changed, and completion.grade for whole-task complexity: A (most complex), B, C, D, ' +
-  'E (easiest). Grade complexity, not correctness, quality or execution speed. ' +
+  'E (easiest). Grade complexity, not correctness, quality or execution speed. ' + LEFTOVER_FILES_REVIEW + ' ' +
   implementationReviewTestInstructions(coverage!);
 /** The number of sessions of `purpose` already started for `work`, as the session start counter records it. */
 const sessionsStarted = (work: Work, purpose: Purpose): number => work.sessionStarts ?
@@ -1050,7 +1056,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             await session(activeWork(), 'work', prompt +
               'Implement all approved OpenSpec scenarios and every test marked (required) within product scope; ' +
               'write (coverage-only) tests only as the graded test rules below allow. ' +
-              workTestInstructions(config.coverage) + ' Preserve bound specs. ' +
+              workTestInstructions(config.coverage) + ' Preserve bound specs. ' + LEFTOVER_FILES_WORK + ' ' +
               'Address private findings: ' + JSON.stringify(activeWork().findings ?? []), false, number);
             await cancellable(afterEffect('implementation', activeWork()), signal);
             taskStep(work.id, 'commit', 'committing the implementation', number);

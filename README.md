@@ -612,6 +612,20 @@ into the task's scope, an `integrate` stage merges it and checks and reviews the
 result again before the receipt is recorded anew; see
 [When the target advances during a run](#when-the-target-advances-during-a-run).
 
+Published work carries no temporary diagnostic files. Every implementation
+session of the work stage is told to delete, with `delete_file`, each scratch or
+diagnostic file it created before finishing, such as temporary debug tests,
+captures or notes, and to keep only files the task needs; the conflict
+resolution session after an integration does not get this instruction. The
+implementation review, in the work stage and after an integration, reports
+changes-required when the task changes still contain a file that only served
+diagnosis, such as a temporary debug test, and names each such file by path in
+its findings. In the work stage, like any other rejection, the findings go to
+the next implementation session, which deletes the files, and the round counts
+against the review budget. An integration review that names a leftover file
+blocks the task with the usual integration reason (see
+[When the target advances during a run](#when-the-target-advances-during-a-run)).
+
 ## Project and authority
 
 Commit a version 1 queue containing `tasks`. Each task has `id`, `title`,
