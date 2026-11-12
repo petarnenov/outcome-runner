@@ -71,6 +71,12 @@ export async function gitPage(cwd: string, offset: number, ...args: string[]): P
 export const gitWithInput = (cwd: string, input: string, ...args: string[]): string => runGit(full =>
   execFileSync('git', full, { ...runOptions(), cwd, input, stdio: ['pipe', 'pipe', 'pipe'] }).trim(), args);
 export const git = (cwd: string, ...args: string[]): string => runGit(full => command(cwd, 'git', full), args);
+/**
+ * Pushes runner bookkeeping (claims ledger commits and task branch deletions) without client-side hooks. These
+ * pushes carry no product code, are pushed from the start checkout while it has another commit checked out, and a
+ * project's pre-push verification can only check the checked-out commit. Tested task heads are pushed with hooks.
+ */
+export const pushBookkeeping = (cwd: string, ...args: string[]): string => git(cwd, 'push', '--no-verify', ...args);
 /** Whether `ref` (for example `refs/heads/<branch>`) exists in the repository of `root`. */
 export function hasRef(root: string, ref: string): boolean {
   try { git(root, 'show-ref', '--verify', '--quiet', ref); return true; } catch { return false; }
