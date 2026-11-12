@@ -87,11 +87,12 @@ test('E (coverage-only): explainUnfinished applies the rules in order', () => {
     { R: { kind: 'waiting-for-dependency', reason: 'waiting-for-dependency', dependencies: ['Q'] } });
   const blockedB = { B: { work: { stage: 'plan' as const, scopes: ['src/r/shared'] } } };
   assert.deepEqual(explainUnfinished(input({ ids: ['R', 'B'], remaining: ['R', 'B'], blocked: blockedB,
-    foreignClaims: [{ id: 'H', host: 'two', scopes: ['src/r/x'] }, { id: 'G', host: 'one', scopes: ['src'] }] })), {
+    foreignClaims: [{ id: 'H', host: 'two', scopes: ['src/r/x'] }, { id: 'R', host: 'one', scopes: ['src'] }] })), {
     B: { kind: 'blocked', stage: 'plan', reason: 'operation-incomplete', diagnostics: STATE },
-    R: { kind: 'waiting-for-claim', reason: 'waiting-for-claim', claim: { id: 'G', host: 'one' } } });
-  assert.deepEqual(explainUnfinished(input({ ids: ['R', 'B'], remaining: ['R', 'B'], blocked: blockedB })).R,
-    { kind: 'waiting-for-blocked-scope', reason: 'waiting-for-blocked-scope', task: 'B' });
+    R: { kind: 'waiting-for-claim', reason: 'waiting-for-claim', claim: { id: 'R', host: 'one' } } });
+  // Overlapping scopes are no blocker: neither a foreign claim on another task nor a blocked task explains R.
+  assert.throws(() => explainUnfinished(input({ ids: ['R', 'B'], remaining: ['R', 'B'], blocked: blockedB,
+    foreignClaims: [{ id: 'G', host: 'one', scopes: ['src'] }] })), /Unexplained unfinished task: R/u);
 });
 
 test('E (coverage-only): explainUnfinished refuses to leave a task unexplained', () => {
@@ -102,9 +103,9 @@ test('E (coverage-only): explainUnfinished refuses to leave a task unexplained',
 test('E (required): a task accepted by another runner does not count against maxAccepted', () => {
   const situation = input({ maxAccepted: 1, tasks: [{ id: 'R', dependencies: [], scopes: ['src/r'] },
     { id: 'F', dependencies: [], scopes: ['src/f'] }, { id: 'G', dependencies: [], scopes: ['src/r/g'] }],
-  done: ['F'], baselineDone: [], foreignClaims: [{ id: 'G', host: 'other', scopes: ['src/r/g'] }] });
+  done: ['F'], baselineDone: [], foreignClaims: [{ id: 'R', host: 'other', scopes: ['src/r'] }] });
   assert.deepEqual(explainUnfinished(situation),
-    { R: { kind: 'waiting-for-claim', reason: 'waiting-for-claim', claim: { id: 'G', host: 'other' } } });
+    { R: { kind: 'waiting-for-claim', reason: 'waiting-for-claim', claim: { id: 'R', host: 'other' } } });
   const { ids, completed, blocked, done, baselineDone } = situation;
   assert.deepEqual(acceptedThisRun({ ids, completed, blocked, done, baselineDone }), []);
 });
@@ -162,7 +163,7 @@ test('C (required): a leaf waiting for a blocked dependency names it and every r
   assert.ok(result.remaining.every(id => result.blockers![id]));
 });
 
-test('C (required): a foreign claim with overlapping scopes is named and leaves state.json incomplete', async t => {
+test('C (required): a foreign claim on the task is named and leaves state.json incomplete', async t => {
   const f = runnerFixture(t, { ids: ['A'] });
   const ledger = new ClaimLedger(f.root, 'main');
   assert.equal(ledger.acquire(ledger.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'foreign',
@@ -176,12 +177,12 @@ test('C (required): a foreign claim with overlapping scopes is named and leaves 
   assert.equal(stateOf(config).status, 'incomplete');
 });
 
-test('C (required): a task overlapping the scopes of a blocked task names the blocked task', async t => {
+test('C (required): a task overlapping the scopes of a blocked task is still worked and accepted', async t => {
   const f = runnerFixture(t, { ids: ['A', 'B'], scopes: { B: ['src/b', 'src/a/shared'] } });
   const result = await f.run(f.config('one', { leaves: ['A', 'B'] }), { createAdapter: failing('A') });
-  assert.equal(result.status, 'incomplete'); assert.deepEqual(result.remaining, ['A', 'B']);
-  assert.equal(result.blockers!.A.kind, 'blocked');
-  assert.deepEqual(result.blockers!.B, { kind: 'waiting-for-blocked-scope', reason: 'waiting-for-blocked-scope', task: 'A' });
+  assert.equal(result.status, 'incomplete'); assert.deepEqual(result.remaining, ['A']);
+  assert.deepEqual(result.accepted, ['B']);
+  assert.deepEqual(Object.keys(result.blockers!), ['A']); assert.equal(result.blockers!.A.kind, 'blocked');
 });
 
 test('C (required): state.json status is running inside the first session', async t => {

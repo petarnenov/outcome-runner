@@ -9,12 +9,18 @@ TBD - created by archiving change recover-target-scope-change. Update Purpose af
 
 When `origin/<target>` has changed files inside a task's guarded paths since the task's recorded base, the runner
 SHALL NOT block the task with `Target changed outcome scope`. It SHALL merge the new target into the task branch in
-the task worktree. The guarded paths are the task scopes, the change directory and, after the archive, the archived
-change and the spec files the archive wrote.
+the task worktree. The guarded paths are the files the task itself changed, its change directory and, after the
+archive, the archived change and the spec files the archive wrote. A target change to another file inside the task
+scopes is not guarded.
+
+#### Scenario: Advance to another file inside the task scopes
+
+- **WHEN** the target commits a change to a file inside the task scopes that the task did not change
+- **THEN** the runner merges it with the setup and final checks only and starts no extra review session
 
 #### Scenario: In-scope advance is merged
 
-- **WHEN** a task reaches publish and the target has committed a change to a file inside the task's scope since the
+- **WHEN** a task reaches publish and the target has committed a change to a file the task also changed since the
   task's base
 - **THEN** the task is not blocked with `Target changed outcome scope`
 - **AND** the task branch contains the new target commit
@@ -63,10 +69,10 @@ new review and a manifest of the task's changes relative to the new base.
 - **WHEN** a clean in-scope integration is accepted and the task is merged
 - **THEN** the merged receipt names the new base and the new review, and it validates on the target
 
-### Requirement: Rejected clean merge blocks
+### Requirement: Rejected merge blocks after one send-back
 
-When the checks, the implementation review or the documentation review after a clean in-scope merge do not accept
-the result, the runner SHALL first give the worker one send-back session and then run the checks and both reviews
+When the checks, the implementation review or the documentation review after an in-scope merge, clean or with
+resolved conflicts, do not accept the result, the runner SHALL first give the worker one send-back session and then run the checks and both reviews
 again. The runner SHALL block the task with reason `target-integration-rejected` only when the result is still not
 accepted after that one send-back session.
 
@@ -85,8 +91,8 @@ accepted after that one send-back session.
 ### Requirement: One worker session resolves a conflict
 
 When the merge of an in-scope target advance conflicts, the runner SHALL give the worker exactly one implementation
-session to resolve the conflicting paths inside the task scopes, conclude the merge, and then run the same checks and
-reviews as after a clean merge.
+session to resolve the conflicting paths, conclude the merge, and then run the same checks and reviews as after a
+clean merge. The session SHALL be allowed to write the task scopes and the conflicting paths, wherever they are.
 
 #### Scenario: Conflict resolved by the worker
 
@@ -97,8 +103,7 @@ reviews as after a clean merge.
 ### Requirement: Unresolved conflict blocks with its paths
 
 The runner SHALL block a conflicting integration with reason `target-conflict-unresolved` and the conflicting paths
-only when the resolution session fails, the merge cannot be concluded, or the checks or reviews do not accept the
-result.
+only when the resolution session fails or the merge cannot be concluded.
 
 #### Scenario: Resolution session fails
 
@@ -115,12 +120,14 @@ result.
 #### Scenario: Conflict outside the task scopes
 
 - **WHEN** a conflicting path lies outside the task scopes
-- **THEN** the task is blocked with reason `target-conflict-unresolved` and that path without a resolution session
+- **THEN** the resolution session may write that path, and the task is merged and accepted after the checks and both
+  reviews accept
 
 #### Scenario: Review rejects the resolution
 
 - **WHEN** the conflict is resolved but the implementation review reports `changes-required`
-- **THEN** the task is blocked with reason `target-conflict-unresolved` and the conflicting paths
+- **THEN** the worker gets one send-back session, and the task is blocked with reason `target-integration-rejected`
+  only when the result is still not accepted after it
 
 ### Requirement: Same recovery at every stage and after a restart
 
@@ -151,6 +158,12 @@ checks only, without new review sessions and without changing the recorded base.
 - **WHEN** the target commits a change outside the task's guarded paths before publish
 - **THEN** the runner merges it, runs the setup and final checks, starts no extra review session, keeps the recorded
   base and the task is merged and accepted
+
+#### Scenario: Final checks fail after a merge outside the guarded paths
+
+- **WHEN** the target commits a change outside the task's guarded paths and the final checks fail on the merged result
+- **THEN** the task is not blocked: the integration of that target starts, and the worker gets one send-back session
+  with the failed check output before the checks and both reviews run again
 
 ### Requirement: Documented behaviour
 
