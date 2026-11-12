@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "id": "OR-23",
+  "taskHash": "6dd35728dd883a2a97a7908cfc20bbc44430dbd54a0d3153b5cdaa006b53adff",
+  "authority": "owner-2026-11-11-outcome-runner-or-18-24",
+  "target": "main",
+  "specification": {
+    "openspec/changes/archive/2026-11-12-no-diagnostic-leftovers/design.md": "529e268c258bb4ed74262287ce492dc6b48864681f49f8a2835363bc48294d70",
+    "openspec/changes/archive/2026-11-12-no-diagnostic-leftovers/proposal.md": "4ff2ee78581efc57ccccf80179b963e6b2d1bff18fde13b387d8707f053bdcef",
+    "openspec/changes/archive/2026-11-12-no-diagnostic-leftovers/specs/diagnostic-leftovers/spec.md": "8fc1e23b49f2408505cc6739e8f88c3331e2451bace30b0edb9dbb4316b0df1e"
+  },
+  "review": {
+    "reviewer": "claude:07972b4f-cf51-47ab-8796-df27bb151c30",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "953830239e132b0cef806d3eb6d044f649752cdbedc96e3e312397ff2c818144"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-no-diagnostic-leftovers/design.md",
+      "hash": "529e268c258bb4ed74262287ce492dc6b48864681f49f8a2835363bc48294d70"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-no-diagnostic-leftovers/proposal.md",
+      "hash": "4ff2ee78581efc57ccccf80179b963e6b2d1bff18fde13b387d8707f053bdcef"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-no-diagnostic-leftovers/specs/diagnostic-leftovers/spec.md",
+      "hash": "8fc1e23b49f2408505cc6739e8f88c3331e2451bace30b0edb9dbb4316b0df1e"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-12-no-diagnostic-leftovers/tasks.md",
+      "hash": "56f3bd4fdcceedabd8a3b2955f5d080e30f375645cf893a3b1eea14617d6ccfa"
+    },
+    {
+      "path": "openspec/specs/diagnostic-leftovers/spec.md",
+      "hash": "19390a037003c2d089b7e0a6118f04b2e06cab212e846fb0e0fd5e667cade3fb"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "47370c68cd2ce4c2847918824be4c650b13258e8a16a2c6d007e9d6debea1c38"
+    },
+    {
+      "path": "test/diagnostic-leftovers.test.ts",
+      "hash": "1cc31bde03aec90c8a4c531c6fd504de254631467bdc52fd22a28d9c44961e68"
+    },
+    {
+      "path": "test/openspec-preflight.test.ts",
+      "hash": "fe8afc4681ef4ef9f9e7fa34e8fd9ab30444653614b0b1285ffcda19bd69ab93"
+    },
+    {
+      "path": "test/zz-debug-capture.test.ts",
+      "hash": null
+    }
+  ],
+  "head": "8378a00537fcfd85d8754a865fcdd903ee1793ee",
+  "base": "bc67732f7e1fdf8d53520e5e45d857c429df0ab4",
+  "invocationChanges": [
+    {
+      "kind": "identity-upgraded",
+      "from": 1,
+      "to": 2,
+      "at": "2026-11-12T07:26:56.580Z"
+    }
+  ]
+}
