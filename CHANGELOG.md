@@ -1,3 +1,9 @@
+## 0.20.1 - 2026-11-12
+
+### Fixes
+
+- record deleted paths in the receipt manifest with hash null (9da4a2b)
+
 ## 0.20.0 - 2026-11-12
 
 ### Features
