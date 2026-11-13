@@ -25,9 +25,16 @@ export interface Operation {
 
 /**
  * A blocked task: the private reason, the paths it concerns (for example unresolved conflicts), the budget that ran
- * out (when a review or check budget is exhausted) and its work.
+ * out (when a review or check budget is exhausted), the merge status and failed or pending required checks (when
+ * blocked with `merge-not-eligible`) and its work.
  */
-export interface BlockedEntry { reason: string; paths?: string[]; budget?: BudgetExhaustion; work: Work }
+export interface BlockedEntry {
+  reason: string;
+  paths?: string[];
+  budget?: BudgetExhaustion;
+  eligibility?: { status: string; checks: string[] };
+  work: Work;
+}
 
 /** The record `outcome-runner dispose` leaves: when it last disposed and the unaccepted work it disposed. */
 export interface DisposedRecord { at: string; tasks: Record<string, Work> }

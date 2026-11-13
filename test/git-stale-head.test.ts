@@ -35,6 +35,8 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     host.gh = (...args) => {
       calls.push(args);
       if (args[1] === 'merge') return '';
+      // A settled, non-stale status other than CLEAN reads the required checks; that is not a view.
+      if (args[0] === 'pr' && args[1] === 'checks') return '[]';
       assert.equal(args[1], 'view'); views += 1;
       const convergeAt = scenario === 'final' ? 100 : scenario === 'mixed' ? 3 : 4;
       const stale = scenario === 'exhausts' || views < convergeAt;
@@ -53,7 +55,9 @@ for (const scenario of ['converges', 'final', 'exhausts', 'foreign', 'moves', 'm
     if (success) assert.deepEqual(merges[0], ['pr', 'merge', '7', '--merge', '--match-head-commit', head]);
     assert.ok(delays.every(ms => ms === 3000));
     assert.equal(delays.length, views - 1);
-    assert.ok(calls.every(args => args[1] === 'view' || args[1] === 'merge'));
+    assert.ok(calls.every(args => ['view', 'merge', 'checks'].includes(args[1])));
+    // Only the settled UNKNOWN view of the checked head is a status-only refusal that reads the required checks.
+    assert.equal(calls.filter(args => args[1] === 'checks').length, scenario === 'shared-exhaustion' ? 1 : 0);
     if (['final', 'exhausts'].includes(scenario)) assert.equal(views, 100);
     if (scenario === 'shared-exhaustion') assert.equal(views, 5);
     if (['foreign', 'missing', 'read-failure', 'unknown-foreign'].includes(scenario)) assert.equal(views, 1);

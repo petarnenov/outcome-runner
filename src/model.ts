@@ -100,6 +100,28 @@ export interface RetryRecord {
 }
 
 /**
+ * Why the merge stage did not merge and tried again: the target advanced, the pull request was behind the target,
+ * the target advanced only by release commits (no attempt used), or required checks were still pending.
+ */
+export type MergeRetryReason = 'target-advanced' | 'behind' | 'release-commit' | 'checks-pending';
+
+/**
+ * One merge-stage retry. `attempt` is the attempt the retry leads to; it is unchanged for `release-commit` and
+ * `checks-pending`.
+ */
+export interface MergeRetry {
+  attempt: number;
+  reason: MergeRetryReason;
+  at: string;
+  status?: string;
+  target?: string;
+  checks?: string[];
+}
+
+/** A running wait for pending required checks: its start, the last status and pending checks and the views read. */
+export interface MergeWait { since: string; status: string; checks: string[]; views: number }
+
+/**
  * The durable steps of merging a target advance into the paths the task changed, in order. `send-back` is the one
  * worker session of a rejected integration; the checks and both reviews follow it again.
  */
@@ -214,6 +236,10 @@ export interface Work extends Task {
   integratedTargets?: string[];
   /** Consecutive comparisons that found origin/<target> different from the checked target. */
   targetAttempts?: number;
+  /** Every merge-stage retry and its reason, oldest first. */
+  mergeRetries?: MergeRetry[];
+  /** The wait for pending required checks in progress; cleared when the merge stage ends. */
+  mergeWait?: MergeWait;
   session?: SessionHandle & { purpose: Purpose };
   sessions?: WorkerSession[];
   sessionStarts?: Partial<Record<Purpose, number>>;
