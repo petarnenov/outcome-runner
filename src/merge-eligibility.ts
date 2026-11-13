@@ -7,6 +7,13 @@ export const MERGE_ELIGIBILITY_WAIT_MS = 30 * 60 * 1000;
 /** The default delay between two pull request views while required checks are pending. */
 export const MERGE_ELIGIBILITY_POLL_MS = 15000;
 
+/** The merge status of a pull request that can be merged now. */
+export const CLEAN = 'CLEAN';
+/** The merge status of a pull request whose branch is behind the target. */
+export const BEHIND = 'BEHIND';
+/** The eligibility of a host that does not report one. */
+export const ELIGIBLE: MergeEligibility = Object.freeze({ status: CLEAN, checks: [] });
+
 /**
  * `eligible`: merge now. `behind`: catch up with the target. `pending`: wait for required checks. `failed`: a
  * required check failed or was cancelled. `refused`: a status that waiting cannot fix.
@@ -23,8 +30,8 @@ const WAITABLE: readonly string[] = ['BLOCKED', 'UNSTABLE', 'UNKNOWN'];
  * refused.
  */
 export function classifyEligibility({ status, checks }: MergeEligibility): { kind: EligibilityClass; checks: string[] } {
-  if (status === 'CLEAN') return { kind: 'eligible', checks: [] };
-  if (status === 'BEHIND') return { kind: 'behind', checks: [] };
+  if (status === CLEAN) return { kind: 'eligible', checks: [] };
+  if (status === BEHIND) return { kind: 'behind', checks: [] };
   if (WAITABLE.includes(status)) {
     const names = (buckets: string[]): string[] => [...new Set((checks ?? [])
       .filter(check => buckets.includes(check.bucket)).map(check => check.name))].sort();

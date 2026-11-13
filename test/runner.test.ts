@@ -348,6 +348,8 @@ function mergeHost(GitHubHost: typeof import('../src/git.ts').GitHubHost, status
   const calls = { views: 0, merges: 0 };
   host.gh = (...args) => {
     if (args[1] === 'merge') { calls.merges += 1; return ''; }
+    // A settled status other than CLEAN reads the required checks; that is not a view.
+    if (args[0] === 'pr' && args[1] === 'checks') return '[]';
     const mergeStateStatus = statuses[Math.min(calls.views, statuses.length - 1)]; calls.views += 1;
     return JSON.stringify({ state: 'OPEN', headRefOid: 'head', baseRefName: 'staging', mergeStateStatus, isDraft: false });
   };
