@@ -32,7 +32,7 @@ import type { PreflightDeps } from './openspec-preflight.ts';
 import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions } from './test-grading.ts';
 import { useNetworkRetry, withNetworkRetryAsync } from './network-retry.ts';
-import { CHECK_KILL_GRACE_MS, CheckTimedOut, limitText, runLimitedCheck } from './check-process.ts';
+import { CHECK_KILL_GRACE_MS, CheckTimedOut, limitText, passedCheck, runLimitedCheck } from './check-process.ts';
 import type { LimitedCheckResult } from './check-process.ts';
 import { createStepLog, runStartMessage } from './step-log.ts';
 import type { StepLog, StepOutput } from './step-log.ts';
@@ -744,7 +744,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         try {
           result = product ? await withNetworkRetryAsync(() => runLimitedCheck(work.path, check.command, args,
             { limitMs: checkLimitMs, graceMs: checkGraceMs }), () => describeCommand(check.command, args)) :
-            { status: 'passed', output: command(work.path, check.command, args) };
+            passedCheck(command(work.path, check.command, args));
         } catch (error) {
           rows.push({ command: check.command, args, outcome: 'failed' });
           if (finalGate) save({ finalChecks: rows });

@@ -1,18 +1,27 @@
+import type { CommandSpec } from '../../src/model.ts';
+
 /** The marker file whose presence makes the hang script hang, relative to the check's working directory. */
 export const HANG_MARKER = 'src/a/hang.md';
 
 /**
- * A Node script for `node -e <script> <pid file>`. Without `src/a/hang.md` (relative to its working directory) it
+ * A shell script for `sh -c <script> sh <pid file>`. Without `src/a/hang.md` (relative to its working directory) it
  * exits 0 at once. With it, it prints `check started`, appends its pid to the pid file named by its argument and
- * sleeps for ten minutes.
+ * becomes a ten-minute `sleep` with the same pid. A shell starts in a few milliseconds, so the script decides well
+ * within a limit of a few hundred milliseconds even on a loaded machine.
  */
-export const HANG_SCRIPT = [
-  "const fs = require('node:fs');",
-  `if (!fs.existsSync('${HANG_MARKER}')) process.exit(0);`,
-  "console.log('check started');",
-  "fs.appendFileSync(process.argv[1], process.pid + '\\n');",
-  'setTimeout(() => {}, 600000);',
-].join('\n');
+export const HANG_SCRIPT = `[ -f ${HANG_MARKER} ] || exit 0; echo 'check started'; echo $$ >> "$1"; exec sleep 600`;
+
+/** The hang check of the runner tests, writing its pid to `pidFile`. */
+export const hangCheck = (pidFile: string): CommandSpec => ({ command: 'sh', args: ['-c', HANG_SCRIPT, 'sh', pidFile] });
+
+/**
+ * Product checks that start in a few milliseconds, for runs with a limit of a few hundred milliseconds: the fixture
+ * check script must exist, and the coverage gate argument must be a positive number.
+ */
+export const FAST_CHECKS: readonly CommandSpec[] = Object.freeze([
+  { command: 'sh', args: ['-c', 'test -f checks.mjs'] },
+  { command: 'sh', args: ['-c', 'test "$1" -ge 1', 'sh', '{coverage}'] },
+]);
 
 /**
  * A shell script for `sh -c <script> sh <pid file>`. It ignores SIGTERM, starts a `sleep` child that inherits the

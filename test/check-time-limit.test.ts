@@ -13,7 +13,7 @@ import type { HarnessOptions, ToolInput } from '../src/harness-adapter.ts';
 import { main } from './support/isolated-cli.ts';
 import { runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
 import type { RunnerFixture } from './support/runner-fixture.ts';
-import { HANG_MARKER, HANG_SCRIPT, IGNORE_TERM_SCRIPT, alive } from './support/check-scripts.ts';
+import { FAST_CHECKS, HANG_MARKER, HANG_SCRIPT, IGNORE_TERM_SCRIPT, alive, hangCheck } from './support/check-scripts.ts';
 
 const LIMIT_LINE = 'Check timed out after 300 ms';
 const CLAIMS = 'work-queue-claims-main';
@@ -25,15 +25,18 @@ function temporary(t: TestContext, prefix: string): string {
   return directory;
 }
 
-/** The pids recorded in `file`, one or more per line. */
+/** The pids recorded in `file`, separated by spaces or newlines. */
 const pidsIn = (file: string): number[] => existsSync(file) ?
   readFileSync(file, 'utf8').split(/\s+/u).filter(Boolean).map(Number) : [];
 
-/** A fixture with task A whose product checks start with the hang script; its pid file is in the fixture base. */
+/**
+ * A fixture with task A whose product checks are the hang check (first) and two fast checks, so a limit of 300 ms
+ * only stops the hang. The pid file is in the fixture base directory, outside the worktree.
+ */
 function hangFixture(t: TestContext): { f: RunnerFixture; pidFile: string } {
   const f = runnerFixture(t, { ids: ['A'] });
   const pidFile = join(f.base, 'hang-pids.txt');
-  f.project.checks.unshift({ command: 'node', args: ['-e', HANG_SCRIPT, pidFile] });
+  f.project.checks.splice(0, f.project.checks.length, hangCheck(pidFile), ...structuredClone(FAST_CHECKS));
   return { f, pidFile };
 }
 
@@ -53,6 +56,7 @@ async function deleteMarker(options: HarnessOptions): Promise<void> {
 
 const isImplementation = (prompt: string) => prompt.includes('Implement all approved');
 const receiptOf = (f: RunnerFixture) => JSON.parse(git(f.remote, 'show', 'refs/heads/main:evidence/results/A.json'));
+const allPassed = (checks: { outcome: string }[]) => checks.every(check => check.outcome === 'passed');
 
 // Grade E
 
@@ -107,7 +111,7 @@ test('D (required): a hanging check is stopped after its limit and recorded as t
   writeFileSync(join(cwd, HANG_MARKER), 'hang\n');
   const pidFile = join(temporary(t, 'check-pids-'), 'pids.txt');
   const started = Date.now();
-  const result = await runLimitedCheck(cwd, 'node', ['-e', HANG_SCRIPT, pidFile], { limitMs: 300 });
+  const result = await runLimitedCheck(cwd, 'sh', ['-c', HANG_SCRIPT, 'sh', pidFile], { limitMs: 300 });
   assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
   assert.equal(result.status, 'timed-out');
   assert.match(result.output, /check started/u);
@@ -178,7 +182,7 @@ test('C (required): checks within the default limit are unchanged and write no c
   assert.equal(lines.filter(line => / check timeout: /u.test(line)).length, 0);
   const receipt = receiptOf(f);
   assert.equal(receipt.checks.length, 2);
-  assert.ok(receipt.checks.every((check: { outcome: string }) => check.outcome === 'passed'), JSON.stringify(receipt.checks));
+  assert.ok(allPassed(receipt.checks), JSON.stringify(receipt.checks));
 });
 
 test('C (required): a blocked run resumed with another valid checkTimeoutMinutes is not refused as incompatible', async t => {
@@ -210,7 +214,7 @@ test('B (required): a hanging work-stage check is recorded, logged and uses one 
   assert.equal(result.blockers!.A.reason, 'check-budget-exhausted');
   const timeouts = lines.filter(line => / A check timeout: /u.test(line));
   assert.equal(timeouts.length, 4);
-  assert.match(timeouts[0], / A check timeout: node 1\/3 timed out after 300 ms\n$/u);
+  assert.match(timeouts[0], / A check timeout: sh 1\/3 timed out after 300 ms\n$/u);
   const implementations = lines.map((line, index) => / A implementation: /u.test(line) ? index : -1)
     .filter(index => index >= 0);
   assert.ok(lines.indexOf(timeouts[0]) < implementations[1]);
@@ -227,7 +231,7 @@ test('B (required): a hanging work-stage check is recorded, logged and uses one 
   assert.ok(record.output.endsWith(LIMIT_LINE), record.output);
   assert.ok(prompts[1].includes(LIMIT_LINE));
   const pids = pidsIn(pidFile);
-  assert.ok(pids.length >= 1);
+  assert.equal(pids.length, 4);
   for (const pid of pids) assert.equal(alive(pid), false, String(pid));
 });
 
@@ -246,10 +250,13 @@ test('B (required): a worker run_checks call that times out rejects with the lim
   const result = await f.run(f.config('one', { leaves: ['A'] }), { createAdapter: worker,
     checkLimits: { timeoutMs: 300 } });
   assert.ok(message.endsWith(LIMIT_LINE), message);
+  assert.match(message, /check started/u);
   assert.equal(before, 0);
   assert.equal(after, before);
   assert.equal(result.status, 'exhausted', JSON.stringify(result));
-  for (const pid of pidsIn(pidFile)) assert.equal(alive(pid), false, String(pid));
+  const pids = pidsIn(pidFile);
+  assert.equal(pids.length, 1);
+  assert.equal(alive(pids[0]), false);
 });
 
 // Grade A
@@ -271,8 +278,8 @@ test('A (required): a worker that fixes the hang after the timed-out result gets
   assert.equal(f.state('one').completed.A.budget.work.checks, 1);
   const receipt = receiptOf(f);
   assert.equal(receipt.checks.length, 3);
-  assert.ok(receipt.checks.every((check: { outcome: string }) => check.outcome === 'passed'), JSON.stringify(receipt.checks));
+  assert.ok(allPassed(receipt.checks), JSON.stringify(receipt.checks));
   const pids = pidsIn(pidFile);
-  assert.ok(pids.length >= 1);
-  for (const pid of pids) assert.equal(alive(pid), false, String(pid));
+  assert.equal(pids.length, 1);
+  assert.equal(alive(pids[0]), false);
 });

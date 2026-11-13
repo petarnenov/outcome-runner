@@ -54,6 +54,9 @@ export interface LimitedCheckOptions {
 
 export type LimitedCheckResult = { status: 'passed'; output: string } | { status: 'timed-out'; output: string };
 
+/** The result of a check that passed with `output`. */
+export const passedCheck = (output: string): LimitedCheckResult => ({ status: 'passed', output });
+
 /** A failing exit, with the shape of the `execFileSync` error: `message`, `status`, `signal`, `stdout`, `stderr`. */
 export interface CheckFailure extends Error {
   status: number | null;
@@ -139,7 +142,7 @@ export async function runLimitedCheck(cwd: string, program: string, args: string
   const first = await Promise.race([closed, limit]);
   if (first !== 'timeout') {
     clearTimeout(timer);
-    if (first.code === 0) return { status: 'passed', output: stdout().trim() };
+    if (first.code === 0) return passedCheck(stdout().trim());
     const out = stdout(); const err = stderr();
     throw Object.assign(new Error(`Command failed: ${[program, ...args].join(' ')}\n${err}`),
       { status: first.code, signal: first.signal, stdout: out, stderr: err }) as CheckFailure;

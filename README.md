@@ -189,6 +189,9 @@ Save it as, for example, `~/invocations/my-project-1.json`:
 - The optional `pollSeconds` (an integer from 5 through 3600, default 60) sets
   how often a run polls while it waits for work held by other runners; see
   [Waiting for free work](#waiting-for-free-work).
+- The optional `checkTimeoutMinutes` (an integer from 1 through 240, default
+  30) sets the time limit of every product check command; see
+  [Check time limit](#check-time-limit).
 
 **7. Run it from the repository, on the target branch**
 
@@ -232,7 +235,7 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
 | 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)). Work only claimed by other runners is waited for instead (see [Waiting for free work](#waiting-for-free-work)). A run cancelled by SIGINT or SIGTERM (`cancelled`) also exits 3 |
-| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `invalid-poll-seconds`, `openspec-missing` or `harness-unavailable` |
+| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `invalid-poll-seconds`, `invalid-check-timeout`, `openspec-missing` or `harness-unavailable` |
 
 After an interruption, run the **same command with the same file** from the same
 branch to resume. Do not delete the state under `~/.local/state/outcome-runner/`.
@@ -667,8 +670,9 @@ change and one PR. Scopes cannot overlap queue, receipt or OpenSpec roots.
 
 Keep the invocation JSON outside the checkout. Supply a stable `invocation` name
 (letters, digits, `.`, `_`, `-`), optional selected `leaves`, optional
-positive `maxAccepted` and optional `pollSeconds` (see
-[Waiting for free work](#waiting-for-free-work)). Omitted mode is OFF. `authority` contains the actual
+positive `maxAccepted`, optional `pollSeconds` (see
+[Waiting for free work](#waiting-for-free-work)) and optional
+`checkTimeoutMinutes` (see [Check time limit](#check-time-limit)). Omitted mode is OFF. `authority` contains the actual
 instruction `reference`, `instruction`, the optional `target` (the branch the
 runner starts from) and a `tasks` object
 mapping IDs to canonical SHA256 hashes printed by `outcome-runner hash <queue>`.
@@ -682,7 +686,8 @@ the optional Git `target` (see [Target branch](#target-branch)), explicit PR
 Arguments may contain `{coverage}`, `{change}`, `{target}` and `{scope}` (the first authorized product scope). They run as argument arrays,
 not worker-supplied shell strings. The owner must review these commands and
 include every project-required gate. A check exiting successfully is evidence
-only for what that check actually validates. The `archive` command accepts only
+only for what that check actually validates. Every `checks` command runs with a
+time limit; see [Check time limit](#check-time-limit). The `archive` command accepts only
 the `{change}` placeholder; see [Documentation and archive](#documentation-and-archive).
 
 Normal branch protection applies. A suitable planning check is
@@ -931,7 +936,8 @@ Every task has a durable budget, saved in its work state in `state.json` as
 - **Check budget.** A failing planning check or product check run of the stage
   uses one check attempt and **never a review round**; the worker gets another
   session of the same stage to fix it while attempts remain, and no review
-  starts for the failing run. The `run_checks` calls a worker makes inside its
+  starts for the failing run. A product check that ran past its
+  [time limit](#check-time-limit) is such a failing run. The `run_checks` calls a worker makes inside its
   own session do not count. The integration checks and reviews of an
   [advanced target](#when-the-target-advances-during-a-run), the send-back
   session and the final checks have no budget. A clean integration gets one
@@ -978,6 +984,60 @@ earlier retry) is refused with exit code 4 and reason `retry-not-blocked`, befor
 any ownership, claim or session and without changing any budget or retry record;
 the private diagnostics file lists the ids in `details.tasks`.
 
+### Check time limit
+
+Every product check command (each entry of `project.checks`) has a time limit,
+wherever it runs: in a worker session through `run_checks`, in the work stage,
+in the final checks, in the checks of an
+[integration](#when-the-target-advances-during-a-run) and in the checks the
+runner runs before publishing and merging. The `setup` commands and the
+`planningCheck` have no limit.
+
+**Limit.** The limit is 30 minutes per check command. The optional invocation
+field `checkTimeoutMinutes` sets it: an integer from 1 through 240. Any other
+value, for example `0`, `241`, `7.5` or `"30"`, is refused at startup, before
+any preflight, lock, state, ownership file, claim or worktree, with exit code 4
+and reason `invalid-check-timeout`; the private diagnostics file names the
+setting `checkTimeoutMinutes` and the refused value. `checkTimeoutMinutes` is
+operational: it is not part of the invocation identity, so a resumed invocation
+may use another limit.
+
+**Stopping a check.** Every check command starts as the leader of its own
+process group, which every process it starts joins. When it runs past its limit,
+the runner sends SIGTERM to the whole group and, when any process of the group
+is left after 10 seconds, SIGKILL. The check is recorded only after no process
+of the group remains. A process that leaves the group by itself (for example
+with `setsid`) is not stopped. Process groups are a POSIX mechanism; the runner
+targets macOS and Linux.
+
+**The `timed-out` outcome.** A check that ran past its limit is a failed check
+with outcome `timed-out`. Its record in `state.json` (`checks` of the work, or
+`finalChecks` in the checks before publishing) has `timeLimitMs`, the limit in
+milliseconds, and as `output` the last 16000 characters of its stdout and stderr
+followed by a line naming the limit, for example
+`Check timed out after 30 minutes`. Public check records, in the Pull Request
+body and in `run_checks` results, show only `command`, `args` and `outcome`.
+A timed-out check is handled like any other failed check:
+
+- in the work stage it uses one check attempt of the stage budget (see
+  [Review and check budgets](#review-and-check-budgets)), and its output, ending
+  with the limit line, is the finding of the next implementation session;
+- a worker's `run_checks` call fails with that output, and uses no check
+  attempt; the worker can also read the record through the `checks` context
+  section;
+- the final checks block the task, the checks of an integration send the merged
+  result back, and the checks before publishing fail as for any other failed
+  check.
+
+**Step line.** Before anything else happens after the timeout, the runner
+writes a `check timeout` step line naming the check program, its index and the
+limit, for example
+`[outcome-runner] 09:42:40 TASK-1 check timeout: node 1/3 timed out after 30 minutes`.
+
+A cancelled run (SIGINT or SIGTERM to the runner) does not interrupt a running
+check; the check ends by itself or at its limit. If the runner itself is killed
+while a check runs, the check's process group is not stopped.
+
 ### Invocation status
 
 `state.json` in the invocation's state directory records in `status` the last
@@ -1011,7 +1071,7 @@ hashes in `tasks`), the project `target`, `queue`, `changes` and `receipts`, the
 harness, model, effort and coverage, the checks (`checks`, `planningCheck` and
 `setup`; an omitted `setup` equals `[]`) and the leaves. Runner defaults such as
 the `archive` command, operational settings such as `maxAccepted`, `pollSeconds`,
-`commitScope`, `commitSuffix` and `repository`, the runner version, and settings
+`checkTimeoutMinutes`, `commitScope`, `commitSuffix` and `repository`, the runner version, and settings
 a newer runner introduces are not part of it, so they never make a resumed
 invocation incompatible.
 
@@ -1286,8 +1346,9 @@ blocked with
 `Documentation review budget exhausted: 4 of 4 review rounds and 0 of 0 check attempts used`
 and the public reason `review-budget-exhausted`. A restart in `document-review`
 after the fourth review session failed blocks again without a fifth review.
-After acceptance the project `checks` run again (`final-checks`); a failure
-blocks the task before the archive.
+After acceptance the project `checks` run again (`final-checks`); a failure,
+including a check that ran past its [time limit](#check-time-limit), blocks the
+task before the archive.
 
 **Archive.** The runner archives the change with the project command
 `archive`, run as an argument array (never through a shell) in the task
@@ -1553,8 +1614,9 @@ Documentation sessions and documentation reviews are not counted there, but
 their token usage is part of `tokenUsage`.
 Review counts and ordered findings arrays describe known durable history once,
 including recovered history. `finalChecks[].command` is a string,
-`.args` is string[] and `.outcome` is a string (`passed` or `failed`);
-failed/thrown final gates retain actual failure outcomes without their output.
+`.args` is string[] and `.outcome` is a string (`passed`, `failed` or
+`timed-out`); failed/thrown final gates retain actual failure outcomes without
+their output.
 `pr.number` is an integer and `pr.url` is a string when known; `pr` is
 null otherwise. Only accepted tasks have nonnull `durationSeconds`,
 `complexityGrade` and `completionSummary`, reused from the persisted approved
@@ -1573,8 +1635,9 @@ Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
 `failureReason`: `openspec-missing`, `openspec-not-initialized`,
 `openspec-layout-created`, `harness-unavailable`, `missing-setting`
 or `startup-or-run-failed` (target refusals, `invocation-running`,
-`invocation-disposed`, `retry-not-blocked`, `invalid-poll-seconds` and
-`dependencies-outside-invocation` are recorded as `startup-or-run-failed`).
+`invocation-disposed`, `retry-not-blocked`, `invalid-poll-seconds`,
+`invalid-check-timeout` and `dependencies-outside-invocation` are recorded as
+`startup-or-run-failed`).
 Blocked tasks use safe `blockingReason` codes
 `operation-incomplete` or `cancelled`. SIGINT and SIGTERM are handled
 during startup and work through one guarded finalizer; SIGKILL, power loss and
@@ -1621,6 +1684,7 @@ For example:
 - Lines contain only fixed text and safe values: task ids, the invocation,
   harness, model and effort, the target branch name (in the `integrate`,
   `compare` and `retry` lines), a check or setup program name with its index,
+  the check time limit (in the `check timeout` line),
   the Pull Request number, attempt numbers, the poll interval and the hosts
   recorded in claims (in the run `wait` line) and the run outcome. They never
   contain commits, secrets, worker output, file contents, check output, error
@@ -1635,13 +1699,17 @@ run start and run end lines cover the run from the OpenSpec preflight onward.
 Refusals before the OpenSpec preflight, such as an invalid flag, an unreadable
 invocation file or a [target branch](#target-branch) refusal, exit with code 4
 without writing any step line. A `missing-setting` refusal (see
-[Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation))
-and an `invalid-poll-seconds` refusal (see
-[Waiting for free work](#waiting-for-free-work))
+[Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation)),
+an `invalid-poll-seconds` refusal (see
+[Waiting for free work](#waiting-for-free-work)) and an `invalid-check-timeout`
+refusal (see [Check time limit](#check-time-limit))
 write only the run `start` line and the run `end` line with outcome
 `unavailable`, and no `preflight` line. The task steps are `claim`, `worktree`, `setup`
 (each setup command), `investigation`, `planning`, `planning check`,
 `planning review`, `implementation`, `commit`, `check` (each product check),
+`check timeout` (a product check that ran past its
+[time limit](#check-time-limit), for example
+`check timeout: node 1/3 timed out after 30 minutes`),
 `review`, `documentation`, `documentation review`, `final checks`, `archive`,
 `receipt`, `compare` (each comparison with origin), `integrate` (only when the
 target advanced), `send-back` (only when a rejected clean integration is sent
@@ -1696,8 +1764,8 @@ followed directly by `blocked: stopped at send-back`.
 - **Retries** log again with ` (attempt N)` from the second attempt or round
   on. Every line of a retried attempt or round carries the suffix: in a
   planning attempt the `planning`, `planning check` and `planning review`
-  lines; in an implementation attempt the `implementation`, `commit`, `check`
-  and `review` lines; in a documentation round the `documentation`, `commit`
+  lines; in an implementation attempt the `implementation`, `commit`, `check`,
+  `check timeout` and `review` lines; in a documentation round the `documentation`, `commit`
   (committing the documentation) and `documentation review` lines; and in a
   publish pass repeated after the target advanced during the merge the
   `compare`, `integrate`, `setup`, `check`, `push`, `pull request`, `wait` and
@@ -1820,6 +1888,12 @@ declares a required setting. The review and check budgets and `--retry` are
 tested in `test/review-budgets.test.ts` with the same fixtures and scripted
 adapters that reject chosen reviews, write failing results or incomplete
 planning artifacts, or fail chosen sessions, across restarts and retries.
+The check time limit is tested in `test/check-time-limit.test.ts` with the same
+fixtures, scripted adapters and small check scripts from
+`test/support/check-scripts.ts`: a check that hangs while a marker file exists,
+and one that starts a child and both ignore SIGTERM. The test hook
+`RunOptions.checkLimits` sets a limit of a few hundred milliseconds (and a
+shorter kill grace); it never enters the identity or the state.
 `--version`, `--help`, `hash` with task ids and its one-line errors, and
 `runnerVersion` in the diagnostics, state and ownership files are tested in
 `test/cli-usage.test.ts`, in-process through `run` with captured output and by
