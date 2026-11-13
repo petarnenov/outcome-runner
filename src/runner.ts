@@ -15,7 +15,7 @@ import { command, git, gitPage, fileAt, hasRef, pushBookkeeping, receiptAt, GitH
   MERGE_STATE_POLL_MS, MergeIneligible } from './git.ts';
 import type { MergeEligibility } from './git.ts';
 import { classifyEligibility, releaseOnlyAdvance, MergeNotEligible, MERGE_ELIGIBILITY_POLL_MS,
-  MERGE_ELIGIBILITY_WAIT_MS } from './merge-eligibility.ts';
+  MERGE_ELIGIBILITY_WAIT_MS, BEHIND, ELIGIBLE } from './merge-eligibility.ts';
 import type { EligibilityClass } from './merge-eligibility.ts';
 import { lockRootOf, withGitLock } from './git-lock.ts';
 import { pageOffset, readPage } from './text-page.ts';
@@ -166,9 +166,6 @@ class TargetAdvanced extends Error {
 
 /** The consecutive attempts that may end with an advanced target before the task blocks with `target-keeps-advancing`. */
 export const TARGET_ATTEMPTS = 10;
-
-/** The eligibility of a host that does not report one. */
-const ELIGIBLE: MergeEligibility = Object.freeze({ status: 'CLEAN', checks: [] });
 
 /** Whether `text` has a line starting with a Git conflict marker (`<<<<<<< ` or `>>>>>>> `). */
 export const conflictMarkers = (text: string): boolean => /^(?:<<<<<<<|>>>>>>>) /mu.test(text);
@@ -1665,7 +1662,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
                 `origin/${project.target} advanced; integrating it again`, attempts + 1);
               save({ targetAttempts: attempts, stage: 'publish', mergeWait: undefined,
                 mergeRetries: [...records, { attempt: attempts + 1, reason: retry, at, target: targetNow,
-                  ...(retry === 'behind' ? { status: 'BEHIND' } : {}) }] });
+                  ...(retry === 'behind' ? { status: BEHIND } : {}) }] });
             }
             await cancellable(afterEffect('retry', activeWork()), signal);
             continue;
