@@ -110,6 +110,22 @@ export interface RetryRecord {
  */
 export type IntegrationStep = 'merge' | 'resolve' | 'checks' | 'review' | 'document-review' | 'send-back';
 
+/** The session an attempt record belongs to. */
+export interface SessionAttemptOwner {
+  purpose: Purpose;
+  stage: Stage;
+  /** Set only in the `integrate` stage: the integrated target commit and the integration step of the session. */
+  integration?: { target: string; step: IntegrationStep };
+}
+
+/** The attempts of the session in progress; cleared when it reports, fails for another reason or is cancelled. */
+export interface SessionAttempt extends SessionAttemptOwner {
+  /** The number of attempts started. */
+  attempt: number;
+  /** The detail of the last failed attempt, if any. */
+  failure?: string;
+}
+
 /**
  * What did not accept the merged result: the setup or product checks, the implementation review or the
  * documentation review.
@@ -226,6 +242,8 @@ export interface Work extends Task {
   session?: SessionHandle & { purpose: Purpose };
   sessions?: WorkerSession[];
   sessionStarts?: Partial<Record<Purpose, number>>;
+  /** The attempts of the session in progress after a transport failure; absent when no session is retried. */
+  sessionAttempt?: SessionAttempt;
   lastToolError?: { purpose: Purpose; input: unknown; message: string };
   lastReportAttempt?: { purpose: Purpose; input: unknown };
   head?: string;

@@ -34,6 +34,8 @@ import { planTestInstructions, planningReviewTestInstructions, workTestInstructi
 import { useNetworkRetry, withNetworkRetryAsync } from './network-retry.ts';
 import { CHECK_KILL_GRACE_MS, CheckTimedOut, limitText, passedCheck, runLimitedCheck } from './check-process.ts';
 import type { LimitedCheckResult } from './check-process.ts';
+import { SESSION_ATTEMPTS, SESSION_RETRY_DELAYS_MS, SessionAttemptsExhausted, isSessionTransportFailure,
+  sameSessionAttemptOwner, sessionAttemptOwner, sessionFailureDetail, sessionRetryMessage } from './session-retry.ts';
 import { createStepLog, runStartMessage } from './step-log.ts';
 import type { StepLog, StepOutput } from './step-log.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
@@ -130,6 +132,12 @@ export interface RunOptions {
    * or the state.
    */
   checkLimits?: { timeoutMs?: number; killGraceMs?: number };
+  /**
+   * The wait before a session is started again after a transport failure (10 and 30 seconds). It receives the wait in
+   * milliseconds and a signal that aborts on cancellation; the default is a timer that ends early when the signal
+   * aborts. Operational only: it never enters the invocation identity.
+   */
+  sessionRetrySleep?: Sleep;
 }
 
 interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
@@ -158,6 +166,14 @@ class TargetAdvanced extends Error {
   constructor() {
     super('Target advanced before the merge');
     this.name = 'TargetAdvanced';
+  }
+}
+
+/** One session attempt ended without a report because of a transport failure; `cause` is the original error. */
+class SessionTransportFailure extends Error {
+  constructor(cause: unknown) {
+    super('Session transport failure', { cause });
+    this.name = 'SessionTransportFailure';
   }
 }
 
@@ -498,6 +514,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   const checkLimitMs = options.checkLimits?.timeoutMs ?? checkTimeoutMinutes * 60000;
   const checkGraceMs = options.checkLimits?.killGraceMs ?? CHECK_KILL_GRACE_MS;
   const sleep = options.sleep ?? defaultSleep;
+  const sessionRetrySleep = options.sessionRetrySleep ?? defaultSleep;
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
   // the lock, claims and worktrees.
   const statistics = options.statistics;
@@ -856,9 +873,10 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       if (section !== 'findings' && section !== 'checks') throw new Error('Unknown context section');
       return { section, ...await readPage([Buffer.from(JSON.stringify(activeWork()[section] ?? []))], offset) };
     };
-    // `writablePaths`, when given, replaces the default writable paths of `purpose` (the send-back session passes
-    // only the task scopes).
-    const session = async (work: Work, purpose: Purpose, prompt: string, implementationReview = false,
+    // One attempt of a session. `writablePaths`, when given, replaces the default writable paths of `purpose` (the
+    // send-back session passes only the task scopes). An unreported, uncancelled and uninterrupted transport failure
+    // throws `SessionTransportFailure`; every other failure is thrown unchanged.
+    const sessionOnce = async (work: Work, purpose: Purpose, prompt: string, implementationReview = false,
       attempt?: number, writablePaths?: string[]): Promise<ReviewRecord> => {
       let result: WorkerReport | undefined;
       const files = git(work.path, 'ls-files', '-z').split('\0').filter(Boolean);
@@ -913,6 +931,10 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           if (purpose === 'investigate' && !input.inspected?.length) throw new Error('Investigation references required');
           result = input as WorkerReport; return { status: 'recorded' };
         } });
+      // Only a harness lost before any report is a transport failure that may be retried.
+      const transportFailure = (error: unknown): unknown => result === undefined && !stopped && !signal?.aborted &&
+        !(error as InterruptedFailure)?.interrupted && isSessionTransportFailure(error) ?
+        new SessionTransportFailure(error) : error;
       try {
         if (adapter.probe().status !== 'interface-ready') throw new Error('Selected harness interface unavailable');
       const starts = activeWork().sessionStarts ?? Object.fromEntries(
@@ -935,7 +957,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           'run_checks takes input {} and runs only frozen project checks after specification binding; ' +
           'read their output through the checks section. ' +
           'Read applicable AGENTS.md. Report blockers privately. No shell or approval tools.\n' +
-          `Resolved coverage threshold: ${config.coverage}%.\n` + prompt), signal);
+          `Resolved coverage threshold: ${config.coverage}%.\n` + prompt), signal)
+          .catch((error: unknown) => { throw transportFailure(error); });
         for (const event of reply.events) {
           if (event.type === 'token-usage') usage?.(tokenUsage({ inputTokens: event.inputTokens, outputTokens: event.outputTokens, totalTokens: event.totalTokens }));
         }
@@ -944,6 +967,56 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         if (!result || result.outcome === 'blocked') throw new Error(`Worker ${purpose} incomplete`);
         return { ...result, reviewer: `${config.harness}:${reply.threadId}` };
       } finally { try { adapter?.close(); } finally { adapter = null; } }
+    };
+    /**
+     * A session with up to `SESSION_ATTEMPTS` attempts: an attempt that ended without a report because of a transport
+     * failure is started again after the wait of `SESSION_RETRY_DELAYS_MS`. Each attempt is recorded in the durable
+     * work, bound to its session, before it starts, so a restart that starts the same session continues the count.
+     * The record is cleared when the session reports, fails for another reason, is cancelled or runs out of attempts.
+     */
+    const session = async (work: Work, purpose: Purpose, prompt: string, implementationReview = false,
+      attempt?: number, writablePaths?: string[]): Promise<ReviewRecord> => {
+      const owner = sessionAttemptOwner(activeWork(), purpose);
+      const recorded = activeWork().sessionAttempt;
+      // A record of another session is stale: it is ignored here and replaced by the record of this session.
+      const previous = sameSessionAttemptOwner(recorded, owner) ? recorded : undefined;
+      let number = (previous?.attempt ?? 0) + 1;
+      let failure = previous?.failure;
+      if (number > SESSION_ATTEMPTS) {
+        // The runner stopped during the last attempt: no further attempt starts.
+        save({ sessionAttempt: undefined });
+        throw new SessionAttemptsExhausted(purpose, SESSION_ATTEMPTS, failure ?? 'the run stopped during the last attempt');
+      }
+      for (;;) {
+        if (number >= 2) {
+          const wait = SESSION_RETRY_DELAYS_MS[number - 2];
+          taskStep(work.id, 'session retry', sessionRetryMessage(purpose, wait), number);
+          await sessionRetrySleep(wait, waitSignal);
+          if (stopped || signal?.aborted) {
+            save({ sessionAttempt: undefined });
+            signal?.throwIfAborted();
+            throw new Error('Run stopped before the session was started again');
+          }
+        }
+        save({ sessionAttempt: { ...owner, attempt: number, ...(failure ? { failure } : {}) } });
+        try {
+          const review = await sessionOnce(work, purpose, prompt, implementationReview, attempt, writablePaths);
+          save({ sessionAttempt: undefined });
+          return review;
+        } catch (error) {
+          if (!(error instanceof SessionTransportFailure)) {
+            save({ sessionAttempt: undefined });
+            throw error;
+          }
+          failure = sessionFailureDetail(error.cause);
+          if (number >= SESSION_ATTEMPTS) {
+            save({ sessionAttempt: undefined });
+            throw new SessionAttemptsExhausted(purpose, SESSION_ATTEMPTS, failure);
+          }
+          save({ sessionAttempt: { ...owner, attempt: number, failure } });
+          number += 1;
+        }
+      }
     };
     process.on('SIGINT', stop); process.on('SIGTERM', stop);
     // Each retried task gets a fresh budget and a retry record on its work and in the state, in one update.
@@ -1249,9 +1322,13 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               stage: 'document-review' });
           }
           if (activeWork().stage === 'document-review') {
-            // A restart in document-review skips the branch above, so the review budget is guarded here as well.
-            countReview('document');
-            taskStep(work.id, 'documentation review', 'starting the documentation review session', round);
+            // A restart in document-review skips the branch above, so the review budget is guarded here as well. A
+            // restart that continues the attempts of this round's review session counts no second round.
+            const resumed = sameSessionAttemptOwner(activeWork().sessionAttempt,
+              sessionAttemptOwner(activeWork(), 'document-review'));
+            if (!resumed) countReview('document');
+            taskStep(work.id, 'documentation review', 'starting the documentation review session',
+              resumed ? round - 1 : round);
             const review = await session(activeWork(), 'document-review', prompt + DOCUMENTATION_REVIEW);
             const reviews = [...(activeWork().documentationReviews ?? []), review];
             if (review.outcome === 'accepted' && !review.findings.length) {
@@ -1323,10 +1400,11 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           const merged = `The task branch was merged with the advanced ${project.target} ${integration.target} ` +
             `(previous base ${integration.previousBase}, new base ${activeWork().base}, conflicts ` +
             `${JSON.stringify(integration.conflicts)}); review the merged result.`;
-          // A failure after the merge blocks with the integration reason; a cancellation keeps the recorded step.
+          // A failure after the merge blocks with the integration reason; a cancellation keeps the recorded step. A
+          // session that ran out of attempts keeps its own reason, which names the attempts and the last failure.
           const rejected = (error: unknown): never => {
             if (stopped || signal?.aborted || (error as InterruptedFailure).interrupted ||
-                error instanceof IntegrationFailure) throw error;
+                error instanceof IntegrationFailure || error instanceof SessionAttemptsExhausted) throw error;
             throw integration.outcome === 'conflict' ?
               new IntegrationFailure('target-conflict-unresolved', integration.conflicts) :
               new IntegrationFailure('target-integration-rejected', []);
@@ -1462,13 +1540,17 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
                 await session(activeWork(), 'work', prompt + sendBackPrompt(sendBack), false, undefined,
                   integrationPaths(work, integration.conflicts));
               } catch (error) {
-                if (cancelled(error)) throw error;
+                // A send-back that ran out of attempts blocks with its own reason and is not recorded as rejected.
+                if (cancelled(error) || error instanceof SessionAttemptsExhausted) throw error;
                 failed = true;
               }
               // A failed session is the rejection after the send-back: it blocks with the original cause and findings.
               if (failed) await sendBackOrReject(sendBack.cause, sendBack.findings);
               await cancellable(afterEffect('send-back', activeWork()), signal);
             }
+            // A resumed send-back is not started again, so the record of its abandoned attempt is cleared before the
+            // commit; a later session never inherits it.
+            if (activeWork().sessionAttempt) save({ sessionAttempt: undefined });
             taskStep(work.id, 'commit', 'committing the send-back result', currentAttempt());
             try { assertWork(activeWork()); commitSendBack(work, integration.conflicts); } catch (error) { rejected(error); }
             const current = activeWork().integration!;
