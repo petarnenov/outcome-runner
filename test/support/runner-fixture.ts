@@ -9,7 +9,6 @@ import type { Project, PullRequest, Queue, RunConfig, Work } from '../../src/mod
 import { runQueue } from '../../src/runner.ts';
 import type { PullRequestHost, RunOptions } from '../../src/runner.ts';
 import type { HarnessAdapter, HarnessOptions, ToolInput, WorkerReply } from '../../src/harness-adapter.ts';
-import { preparedTestFramework } from './prepared-test-framework.ts';
 import { separateArchive } from './scripted-archive.ts';
 
 /** A pull request of the scripted host, with the base branch it was opened against. */
@@ -150,7 +149,7 @@ export function runnerFixture(t: TestContext, { target = 'main', ids = ['A', 'B'
     return { host: hostFor(config.project.target),
       createAdapter: scriptedWorker(), openspec: { probe: () => ({ status: 0 }), configPresent: () => true },
       selection: { interactive: false, probe: harness => ({ harness, available: true, version: 'scripted' }) },
-      testFramework: preparedTestFramework, mergePolling: { delay: async () => {} }, runCommand: separateArchive(), ...extra,
+      mergePolling: { delay: async () => {} }, runCommand: separateArchive(), ...extra,
       signal, sleep };
   };
   const run = (candidate: RunConfig, extra: RunOptions = {}) => runQueue(candidate, options(candidate, extra));

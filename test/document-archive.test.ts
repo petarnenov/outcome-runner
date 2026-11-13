@@ -11,14 +11,13 @@ import { manifestScopes, outsideManifest, pullRequestBody, rekeyBinding, runQueu
 import type { RunOptions } from '../src/runner.ts';
 import { RunStore } from '../src/run-store.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
-import { preparedTestFramework } from './support/prepared-test-framework.ts';
 import { archiveDate, scriptedArchive } from './support/scripted-archive.ts';
 import type { ArchiveCall } from './support/scripted-archive.ts';
 
 // Every run uses scripted adapters, Git fixtures and a scripted archive command; the real openspec never runs.
 const passing: RunOptions = { openspec: { probe: () => ({ status: 0 }), configPresent: () => true },
   selection: { interactive: false, probe: harness => ({ harness, available: true, version: 'scripted' }) },
-  testFramework: preparedTestFramework, mergePolling: { delay: async () => {} } };
+  mergePolling: { delay: async () => {} } };
 const interrupted = () => Object.assign(new Error('Interrupted'), { interrupted: true });
 
 function fixture(t: TestContext) {

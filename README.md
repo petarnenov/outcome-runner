@@ -91,11 +91,6 @@ Started from a terminal, the runner offers to create the missing OpenSpec files
 for you in a setup worktree outside your checkout; you still commit, push and
 merge them yourself.
 
-Every technology in the project also needs a test framework that enforces line,
-branch and function coverage at the resolved threshold. The runner checks this
-at startup and, from a terminal, offers to set one up; see
-[Test framework preflight](#test-framework-preflight).
-
 **3. Describe the tasks in `planning/outcomes.json`**
 
 Write it by hand or generate it from Jira, text or a file; see
@@ -237,7 +232,7 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
 | 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)). Work only claimed by other runners is waited for instead (see [Waiting for free work](#waiting-for-free-work)). A run cancelled by SIGINT or SIGTERM (`cancelled`) also exits 3 |
-| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `invalid-poll-seconds`, `openspec-missing`, `harness-unavailable` or `test-framework-missing` |
+| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `invalid-poll-seconds`, `openspec-missing` or `harness-unavailable` |
 
 After an interruption, run the **same command with the same file** from the same
 branch to resume. Do not delete the state under `~/.local/state/outcome-runner/`.
@@ -382,8 +377,6 @@ worktrees:
    its `defaultReasoningEffort` from `model/list`).
 7. **Coverage**: the coverage threshold, with 85 preselected. Only an integer
    from 1 to 100 is accepted; anything else is asked again.
-8. **Test framework analysis**: see
-   [Test framework preflight](#test-framework-preflight).
 
 Steps 4 to 7 are questions only when the start is interactive (both stdin and
 stderr are terminals, as in the OpenSpec preflight). The harness statuses, the
@@ -414,84 +407,6 @@ lists each harness with its reason, for example
 The chosen values are frozen in the invocation identity exactly like flag
 values. With Codex, its configuration and model list are read once per start
 and reused to validate the selection.
-
-## Test framework preflight
-
-After the OpenSpec preflight and the harness, model, effort and coverage
-selection, and before the lock or any claim, the runner checks that every
-technology in the repository has a test framework that enforces the resolved
-coverage threshold (85 by default).
-
-**Analysis.** The runner fetches `origin <target>` and creates a temporary
-detached worktree of `origin/<target>` in a new directory outside the
-repository. It runs exactly one **read-only** session there with the selected
-harness, model and effort. The session can only read tracked files through the
-usual file broker (`read_file`, and `context` for the tracked file list); it has
-no `write_file`, no `run_checks`, no shell and no approval tools. It reports
-privately through the `test_framework_report` tool. The temporary worktree is
-removed after the session in every case (success, failure, invalid report or
-cancellation), before anything is asked or changed.
-
-The report must list:
-
-- every detected technology (kind `language`, `runtime`, `framework` or
-  `build-tool`) with the tracked repository paths that prove it;
-- for each technology, the test frameworks already present, with their evidence
-  paths and the line, branch and function coverage thresholds they enforce (a
-  number, or `null` when not enforced);
-- for each technology without a prepared test framework, one to three
-  recommended test frameworks, each with a one-sentence rationale, the install
-  commands as command and argument arrays, and the exact file changes (path and
-  full content) that run the tests with line, branch and function thresholds
-  equal to the resolved coverage threshold.
-
-The runner refuses a report that misses any of these parts, names an untracked
-evidence path, or recommends thresholds other than the resolved coverage
-threshold. A technology is **prepared** when one of its frameworks enforces
-line, branch and function thresholds of at least the resolved threshold. When
-every technology is prepared, startup continues without any test framework
-prompt.
-
-**Choosing and confirming.** Interactive starts (both stdin and stderr are
-terminals, as in the OpenSpec preflight; all output on stderr) print the
-detected technologies with their evidence and existing frameworks. For each
-technology that is not prepared the runner lists the recommendations and asks
-`Choose 1-n or s to skip [1]: `; Enter selects the first recommendation, a
-number selects that recommendation and anything else skips the technology.
-Before running anything it shows the exact install commands (as JSON argument
-arrays) and file changes of the chosen recommendation and asks
-`Run these commands and apply these changes? [y/N] `; only `y` or `yes`
-confirms. The setup happens in the setup worktree
-`<primary>-outcomes/setup-<operation>` on branch
-`outcome/setup-<operation[0..12]>`, created from `origin/<target>` when the first
-recommendation is chosen and reused by later setups; the checkout you started
-the runner from is never changed. After a yes it runs the install commands in
-order in the setup worktree, as argument arrays and never through a shell (their
-output goes to stderr), and then writes the file changes there. A failing install
-command stops that recommendation: later commands and its file changes are not
-applied. A file change outside the repository, under `.git`, or inside the queue,
-the receipts or the OpenSpec changes directory refuses the whole recommendation
-without asking for confirmation.
-
-The runner **never commits or pushes** these changes. After a successful setup
-it prints on stderr the files the setup changed (compared with a snapshot of the
-setup worktree taken before it, so changes already there are not listed), names
-the setup worktree path and branch, asks you to commit the files there, push the
-branch and merge it into `<target>`, then run again, and exits with code 4 and
-reason `test-framework-prepared`. When you skip or decline a technology, or an
-install command fails, it prints the unprepared technologies on stderr and exits
-with code 4 and reason `test-framework-missing`.
-
-**Non-interactive** starts still run the analysis, but nothing is asked,
-installed or changed. When any technology is not prepared, the run exits with
-code 4 and reason `test-framework-missing`; the private diagnostics file
-contains the analysis report.
-
-When the analysis session fails (for example the harness is unavailable, the
-session throws, the temporary worktree cannot be created or removed) or ends
-without a valid report, the run exits with code 4 and reason
-`test-framework-analysis-failed`; no lock, claim or task worktree is created.
-The last validation message is kept in the private diagnostics file.
 
 ## Creating the queue file
 
@@ -788,8 +703,7 @@ outcome-runner --help
 
 Every start first resolves the [target branch](#target-branch), then runs the
 [OpenSpec preflight](#openspec-preflight), then the
-[harness availability check and selection](#harness-selection), then the
-[test framework preflight](#test-framework-preflight). After the invocation
+[harness availability check and selection](#harness-selection). After the invocation
 lock, the authority check of the selected tasks and the
 [dependency check](#dependency-check) follow, before any run state, ownership,
 claim or worktree is created.
@@ -1657,8 +1571,7 @@ history, whereas token totals never include resumed historical usage.
 Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
 `cancelled` use 3; `unavailable` uses 4. Only unavailable has a nonnull
 `failureReason`: `openspec-missing`, `openspec-not-initialized`,
-`openspec-layout-created`, `harness-unavailable`, `test-framework-missing`,
-`test-framework-analysis-failed`, `test-framework-prepared`, `missing-setting`
+`openspec-layout-created`, `harness-unavailable`, `missing-setting`
 or `startup-or-run-failed` (target refusals, `invocation-running`,
 `invocation-disposed`, `retry-not-blocked`, `invalid-poll-seconds` and
 `dependencies-outside-invocation` are recorded as `startup-or-run-failed`).
@@ -1714,7 +1627,7 @@ For example:
   messages, block reasons or other private diagnostics.
 
 The run steps are `start`, one `preflight` line for each preflight (OpenSpec,
-harness version, test framework), `cleanup` for each leftover worktree swept on
+harness version), `cleanup` for each leftover worktree swept on
 start, `wait` once per poll while the run
 [waits for free work](#waiting-for-free-work), and `end` with the run outcome
 (`unavailable` when the run fails). The
@@ -1873,10 +1786,7 @@ function coverage of the sources falls below 85%. Tests script the OpenSpec
 preflight's prompts, processes and files, so the preflight never runs npm,
 `openspec` or a real TTY under test. Tests likewise script the harness
 selection's answers, harness probes and Codex reader, so no test starts a real
-`claude` or `codex`. The test framework preflight is scripted the same way: a
-scripted analysis session, answers, install executor, snapshots and in-memory
-file writes, so no test starts a real harness, runs a package manager or uses a
-real TTY. The archive command runs through an injectable command runner, so
+`claude` or `codex`. The archive command runs through an injectable command runner, so
 tests archive with a scripted command and never run `openspec archive`. The
 mascot tests inject a recording player through `main`, so they
 need no real terminal or timers. Concurrent runners, the per-clone Git lock and

@@ -29,8 +29,6 @@ import { selectHarness } from './harness-selection.ts';
 import type { SelectionDeps } from './harness-selection.ts';
 import { openspecPreflight } from './openspec-preflight.ts';
 import type { PreflightDeps } from './openspec-preflight.ts';
-import { testFrameworkPreflight } from './test-framework-preflight.ts';
-import type { TestFrameworkDeps } from './test-framework-preflight.ts';
 import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions } from './test-grading.ts';
 import { useNetworkRetry } from './network-retry.ts';
@@ -106,8 +104,6 @@ export interface RunOptions {
   openspec?: Partial<PreflightDeps>;
   /** Injectable prompts, harness probes, Codex reader and recorded state of the harness selection. */
   selection?: Partial<SelectionDeps>;
-  /** Injectable session, worktree, prompts, installs, writes and snapshots of the test framework preflight. */
-  testFramework?: Partial<TestFrameworkDeps>;
   /** Injectable runner of the archive command; the default executes the program without a shell. */
   runCommand?: CommandRunner;
   /** Receives each step line (with its newline) before the step starts; the default writes to stderr. */
@@ -484,7 +480,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   const pollSeconds = resolvePollSeconds((requested as Partial<RunConfig> | undefined)?.pollSeconds);
   const sleep = options.sleep ?? defaultSleep;
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
-  // the test framework analysis, the lock, claims and worktrees.
+  // the lock, claims and worktrees.
   const statistics = options.statistics;
   const signal = options.signal;
   step('run', 'preflight', 'checking OpenSpec');
@@ -508,10 +504,6 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   statistics?.resolved(config, sources, harnessVersion);
   const { afterEffect = async () => {}, report = () => {}, now = Date.now, runCommand = command } = options;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
-  // One read-only analysis of origin/<target> with the resolved harness, model and effort precedes the lock and claims.
-  // Its Git groups have released the Git lock before the invocation lock is requested below.
-  step('run', 'preflight', 'checking the test framework');
-  await cancellable(testFrameworkPreflight(config, { createAdapter, signal, ...options.testFramework }), signal);
   const root = realpathSync(config.root); const project = config.project;
   const primary = dirname(resolve(root, git(root, 'rev-parse', '--git-common-dir')));
   let stateAncestor = resolve(config.stateDirectory); const missing: string[] = [];

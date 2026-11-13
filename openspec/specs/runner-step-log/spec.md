@@ -14,7 +14,7 @@ ends, each before the step has any effect.
 
 - **WHEN** a run starts, runs its preflights and ends
 - **THEN** a run start line names the invocation, harness, model and effort
-- **AND** one line is written before each preflight (OpenSpec, harness version, test framework)
+- **AND** one line is written before each preflight (OpenSpec, harness version)
 - **AND** the last line is the run end line naming the outcome
 
 #### Scenario: Long invocation or model id

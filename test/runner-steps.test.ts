@@ -206,7 +206,7 @@ test('B (required): a contended Git lock writes one wait line before the Git gro
   const bodies = lines.map(body);
   assert.deepEqual(bodies.filter(line => line.includes('git lock')), ['run git lock: waiting for the Git lock']);
   const waited = bodies.indexOf('run git lock: waiting for the Git lock');
-  assert.ok(bodies.indexOf('run preflight: checking the test framework') < waited);
+  assert.ok(bodies.indexOf('run preflight: checking the harness version') < waited);
   assert.ok(waited < bodies.indexOf('A claim: claiming the task'));
   const free = capture();
   assert.equal((await f.run(f.config('two', { leaves: ['B'] }), { steps: free.steps })).status, 'exhausted');
@@ -345,7 +345,6 @@ test('A (required): an accepted task writes the ordered step lines, each before 
     'run start: invocation=one harness=claude model=claude-opus-5-5 effort=medium',
     'run preflight: checking OpenSpec',
     'run preflight: checking the harness version',
-    'run preflight: checking the test framework',
     'A claim: claiming the task',
     'A worktree: preparing the worktree',
     'A setup: running 1/1: node',

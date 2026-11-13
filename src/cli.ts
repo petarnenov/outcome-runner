@@ -71,7 +71,7 @@ export const USAGE = 'Usage:\n' +
   'Documentation: https://github.com/petarnenov/outcome-runner#readme\n';
 
 /**
- * Uses an error's specific `reason` (for example from the OpenSpec or test framework preflight) or the generic
+ * Uses an error's specific `reason` (for example from the OpenSpec preflight) or the generic
  * startup reason. A `missing-setting` refusal also names the missing `setting` and an `example` of it. The message,
  * stack, any `details` and the `runnerVersion` stay in the private diagnostics file.
  * Returns the line object it wrote; the exit code is always 4.

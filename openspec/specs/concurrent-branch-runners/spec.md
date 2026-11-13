@@ -73,7 +73,7 @@ receipt.
 
 Every task SHALL be worked in its own worktree outside the checkout and SHALL reach the target only through a pull
 request into that branch, merged by the runner. The runner SHALL NOT change the working tree, index or local branch
-of the checkout it was started from, including during the interactive OpenSpec and test framework setup, whose
+of the checkout it was started from, including during the interactive OpenSpec setup, whose
 install commands and file writes SHALL happen in a setup worktree outside the checkout.
 
 #### Scenario: Start checkout unchanged
@@ -89,12 +89,6 @@ install commands and file writes SHALL happen in a setup worktree outside the ch
 - **THEN** the layout files are written into the setup worktree on branch `outcome/setup-...`, the start checkout's
   HEAD, branch, index and porcelain status are unchanged, and the refusal message names the setup worktree path and
   branch
-
-#### Scenario: Interactive test framework setup outside the checkout
-
-- **WHEN** an interactive run accepts a recommended test framework
-- **THEN** its install commands run with the setup worktree as working directory and its files are written there,
-  the start checkout is unchanged, and the refusal message names the setup worktree path and branch
 
 ### Requirement: Per-invocation lock and ownership
 
