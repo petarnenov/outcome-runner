@@ -545,11 +545,11 @@
       "criteria": [
         "A runner that holds a claim renews it in the claims ledger at least every leaseSeconds / 3 while it works the task; leaseSeconds defaults to 1800 and may be set in the invocation as an integer from 300 through 86400, invalid values refused at startup with exit code 4.",
         "A claim whose last renewal is older than its lease is stale: other runners ignore it when choosing free work and when explaining blockers, and a runner may claim that task with a ledger update that only succeeds if the stale claim is still the current one, so two runners never both win a takeover.",
-        "When a task is blocked, the runner that holds its claim releases the claim in the ledger before continuing, keeping the blocked work and its branch for inspection, so the scopes of a blocked task stop excluding other tasks on every host.",
+        "When a task is blocked, the runner that holds its claim marks the claim as blocked in the ledger before continuing. A blocked claim does not expire and is never taken over, so a task that blocks for a lasting reason is not started again by every other runner; it is continued only by its own invocation or released by dispose.",
         "A runner whose claim was taken over notices it before its next effect on the target or the pull request, stops that task without pushing or merging, and records reason claim-lost.",
         "Claims written by earlier runner versions without renewal data are treated as renewed at claimedAt.",
-        "Tests use scripted adapters, a fake clock and Git fixtures and cover: renewal during long work; takeover of a stale claim by exactly one of two competing runners; release of a blocked task's claim letting another runner pick an overlapping task; claim-lost stopping the previous holder before merge; and a legacy claim without renewal data.",
-        "README describes claim leases, renewal, takeover, release on block, claim-lost and leaseSeconds.",
+        "Tests use scripted adapters, a fake clock and Git fixtures and cover: renewal during long work; takeover of a stale claim by exactly one of two competing runners; a blocked claim that is older than its lease not taken over; claim-lost stopping the previous holder before merge; and a legacy claim without renewal data.",
+        "README describes claim leases, renewal, takeover, blocked claims, claim-lost and leaseSeconds.",
         "npm run typecheck and npm test pass."
       ]
     },
@@ -559,11 +559,11 @@
       "change": "merge-retry-states",
       "priority": 26,
       "scopes": ["src", "test", "README.md"],
-      "dependencies": ["OR-30"],
+      "dependencies": ["OR-29"],
       "criteria": [
         "When the settled pull request is OPEN with the checked head but mergeStateStatus is BEHIND, the runner treats it as an advanced target and returns to the catch-up and publish steps instead of blocking with operation-incomplete.",
         "When mergeStateStatus is BLOCKED, UNSTABLE or UNKNOWN while required checks are still pending, the runner keeps polling the pull request for up to 30 minutes before blocking with reason merge-not-eligible and the last status; a failed required check blocks at once with merge-not-eligible and the check names.",
-        "A target advance whose changed paths are only package.json version fields, package-lock.json version fields and CHANGELOG.md from a release commit does not count toward the target attempt limit, and the limit of target attempts is raised from 5 to 10.",
+        "A target advance whose changed paths are only package.json version fields, package-lock.json version fields and CHANGELOG.md from a release commit does not count toward the target attempt limit.",
         "Each retry and its reason are recorded in durable state before the next effect and logged as step lines, so a restart resumes at the recorded attempt count.",
         "Tests use scripted adapters and Git fixtures and cover: BEHIND leading to catch-up and a merge; pending checks that turn green and merge; a failed required check blocking with merge-not-eligible; a release-only advance not consuming an attempt; and the attempt limit reached with target-keeps-advancing.",
         "README describes merge eligibility retries, merge-not-eligible and the release-commit exception to the attempt limit.",
@@ -576,7 +576,7 @@
       "change": "check-time-limit",
       "priority": 27,
       "scopes": ["src", "test", "README.md"],
-      "dependencies": ["OR-31"],
+      "dependencies": ["OR-29"],
       "criteria": [
         "Every product check command, run by a worker session through the broker or by the runner before publishing and merging, has a time limit. It defaults to 30 minutes and may be set by the invocation field checkTimeoutMinutes, an integer from 1 through 240; an invalid value is refused at startup with exit code 4, reason invalid-check-timeout and diagnostics naming checkTimeoutMinutes. checkTimeoutMinutes is not part of the invocation identity.",
         "When a check runs past its limit, the runner stops it and every process it started: SIGTERM to the process group, then SIGKILL after 10 seconds if any process is left. No process of the check remains after the check is recorded.",
@@ -593,7 +593,7 @@
       "change": "converging-reviews",
       "priority": 28,
       "scopes": ["src", "test", "README.md"],
-      "dependencies": ["OR-32"],
+      "dependencies": ["OR-29"],
       "criteria": [
         "Every planning, implementation and documentation review prompt tells the reviewer to report every finding it can find in this round, not only the first ones, and to report accepted only with zero findings.",
         "From the second review round of a stage, the review prompt lists the findings of the earlier rounds of that stage for the task and tells the reviewer to check first that each of them was resolved. The reviewer may still report new findings.",
@@ -611,7 +611,7 @@
       "change": "session-retry",
       "priority": 29,
       "scopes": ["src", "test", "README.md"],
-      "dependencies": ["OR-33"],
+      "dependencies": ["OR-29"],
       "criteria": [
         "When a worker or review session ends without an outcome report because the harness process exited, its transport closed or timed out, or its connection failed, the runner starts the same session again instead of blocking the task at once: up to 3 attempts in total, waiting 10 seconds before the second and 30 seconds before the third.",
         "A session that reported an outcome, a cancelled run, an interrupted run and an exhausted budget are not retried and behave as before.",
@@ -620,6 +620,26 @@
         "After the last failed attempt the task is blocked as before, and its private reason names the number of attempts and the last failure.",
         "Tests use scripted adapters, a fake clock and Git fixtures and cover: a session that fails once and then succeeds, with the task accepted; three failures blocking the task with the attempt count; a session that reports a refusal not retried; a restart after a failed attempt continuing the count; and a retried review session using one review round.",
         "README describes the session retry, its waits, what is not retried and the blocked reason after the last attempt.",
+        "npm run typecheck and npm test pass."
+      ]
+    },
+    {
+      "id": "OR-35",
+      "title": "Tasks without scopes",
+      "change": "tasks-without-scopes",
+      "priority": 30,
+      "scopes": ["src", "test", "README.md"],
+      "dependencies": ["OR-30", "OR-31", "OR-32", "OR-33", "OR-34"],
+      "criteria": [
+        "A queue task no longer needs scopes: a task without the field is valid. A task that still has the field is accepted and the field is ignored, so the hashes of existing tasks, their receipts and their claims stay valid.",
+        "A work session, a conflict resolution session and a send-back session may write any path of the worktree except the protected paths (the queue file, the receipts directory, the claims and the OpenSpec changes of other tasks). A planning session still writes only the change directory of its task, a documentation session only documentation files (README files, Markdown files and docs or doc directories) anywhere in the repository, and a review session nothing.",
+        "Every commit of a task stages all changed paths of the worktree except the protected paths, and the result manifest may contain any path except the protected paths. A manifest with a protected path is refused as before.",
+        "The {scope} placeholder in check arguments is removed: an invocation whose checks, planningCheck or setup use it is refused at startup with exit code 4, reason scope-placeholder-removed and diagnostics naming the argument.",
+        "Claims written to the ledger carry scopes as an empty list, so runners of earlier versions keep reading the ledger; the field is ignored when a claim is read.",
+        "A documentation session no longer reports documentation outside the scopes, and no prompt, step line, blocked reason or run result mentions scopes.",
+        "State written by earlier versions, with scopes in the work and with outside-scope documentation findings, is resumed at its recorded stage.",
+        "Tests use scripted adapters and Git fixtures and cover: a queue task without scopes accepted and worked; an existing task with scopes keeping its hash and its accepted receipt; a work session writing a new top-level directory and its commit and manifest containing it; a write to each protected path refused; a documentation session writing a Markdown file outside the former scopes; a {scope} check argument refused; a claim written with an empty scopes list; and a state with scopes resumed.",
+        "README, the invocation example and the queue file description no longer require or describe scopes, and describe the protected paths and the removed {scope} placeholder.",
         "npm run typecheck and npm test pass."
       ]
     }
