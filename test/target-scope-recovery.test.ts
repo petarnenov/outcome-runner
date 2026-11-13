@@ -9,7 +9,7 @@ import type { CheckRecord, RunConfig, Work } from '../src/model.ts';
 import { IntegrationFailure, conflictMarkers, explainUnfinished } from '../src/runner.ts';
 import type { PullRequestHost, RunEvent, RunOptions } from '../src/runner.ts';
 import type { HarnessAdapter, HarnessOptions, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
-import { runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
+import { RESULT_TEST, runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
 import type { RunnerFixture } from './support/runner-fixture.ts';
 
 // Every run uses the Git fixture of runnerFixture (a bare origin and an integrator clone), scripted adapters and the
@@ -17,6 +17,7 @@ import type { RunnerFixture } from './support/runner-fixture.ts';
 
 const RESOLVED = 'export function next(n) { if (!Number.isFinite(n)) throw new TypeError(); return n + 1; }\n' +
   '// Resolved with the advanced target.\n';
+const RESOLVED_TEXT = '# Resolved with the advanced target\n';
 const FOREIGN = 'export function next(n) { return n + 1; }\n';
 const SUBJECT = 'chore(fixture): integrate main into A';
 const isPostMergeReview = (prompt: string) => prompt.includes('Review actual implementation') &&
@@ -47,7 +48,7 @@ function advance(f: RunnerFixture, path: string, content: string): string {
 }
 
 interface WorkerScript {
-  /** `write` resolves src/a/result.mjs, `ready` reports ready without writing, `fail` fails the session. */
+  /** `write` resolves every conflicting path, `ready` reports ready without writing, `fail` fails the session. */
   resolution?: 'write' | 'ready' | 'fail';
   /** The implementation review after the merge reports changes-required. */
   rejectMerged?: boolean;
@@ -67,10 +68,12 @@ function worker(s: Scenario, script: WorkerScript = {}) {
       if (isResolution(prompt)) {
         if (script.resolution === 'fail') throw new Error('Scripted resolution failure');
         if (script.resolution !== 'ready') {
-          const before = await call('backlog_tool', { operation: 'read_file', input: { path: 'src/a/result.mjs' } } as ToolInput);
-          assert.ok(conflictMarkers(before.content));
-          await call('backlog_tool', { operation: 'write_file',
-            input: { path: 'src/a/result.mjs', content: RESOLVED, expectedHash: before.hash } } as ToolInput);
+          for (const path of JSON.parse(/in these paths: (\[.*?\])\. Keep/u.exec(prompt)![1]) as string[]) {
+            const before = await call('backlog_tool', { operation: 'read_file', input: { path } } as ToolInput);
+            assert.ok(conflictMarkers(before.content));
+            await call('backlog_tool', { operation: 'write_file', input: { path, expectedHash: before.hash,
+              content: path === 'src/a/result.mjs' ? RESOLVED : RESOLVED_TEXT } } as ToolInput);
+          }
         }
         await call('outcome_report', { outcome: 'ready', summary: 'Resolved', findings: [] } as ToolInput);
         return reply;
@@ -143,13 +146,14 @@ test('E: README describes what happens when the target advances during a run', (
 });
 
 // 4.3 (D) (required)
-test('D: a target advance outside the scopes is still merged, set up and finally checked without new reviews', async t => {
+for (const path of ['docs/other.md', 'src/a/notes.md']) test(`D: a target advance of ${path}, which the task did not ` +
+  'change, is still merged, set up and finally checked without new reviews', async t => {
   const plain = scenario(t);
   assert.equal((await run(plain)).status, 'exhausted');
   const baseline = plain.f.state().completed.A as Work;
   const s = scenario(t); let base = '';
   const result = await run(s, { afterEffect: async (kind, subject) => {
-    if (kind === 'archive') { base = (subject as Work).base; advance(s.f, 'docs/other.md', '# Other\n'); }
+    if (kind === 'archive') { base = (subject as Work).base; advance(s.f, path, '# Other\n'); }
   } });
   assert.equal(result.status, 'exhausted', JSON.stringify(result));
   const completed = s.f.state().completed.A as Work;
@@ -173,7 +177,7 @@ test('C: a clean in-scope advance before publish is merged, re-checked, re-revie
   const baseline = plain.f.state().completed.A as Work;
   const s = scenario(t); let base = ''; let target = '';
   const result = await run(s, { afterEffect: async (kind, subject) => {
-    if (kind === 'archive') { base = (subject as Work).base; target = advance(s.f, 'src/a/notes.md', '# Notes\n'); }
+    if (kind === 'archive') { base = (subject as Work).base; target = advance(s.f, 'src/a/result.test.mjs', RESULT_TEST); }
   } });
   assert.equal(result.status, 'exhausted', JSON.stringify(result));
   const state = s.f.state();
@@ -194,14 +198,14 @@ test('C: a clean in-scope advance before publish is merged, re-checked, re-revie
   assert.equal(receipt.base, target);
   assert.equal(receipt.review.reviewer, completed.review!.reviewer);
   assert.ok(!receipt.manifest.some(entry => entry.path === 'evidence/results/A.json'));
-  assert.equal(git(s.f.root, 'show', 'origin/main:src/a/notes.md'), '# Notes');
+  assert.equal(git(s.f.root, 'show', 'origin/main:src/a/result.test.mjs'), RESULT_TEST.trimEnd());
 });
 
 // 4.5 (C) (required)
 test('C: an earlier acceptance is not reused when the review after a clean merge rejects it', async t => {
   const s = scenario(t);
   const result = await run(s, { afterEffect: async kind => {
-    if (kind === 'archive') advance(s.f, 'src/a/notes.md', '# Notes\n');
+    if (kind === 'archive') advance(s.f, 'src/a/result.test.mjs', RESULT_TEST);
   } }, { rejectMerged: true });
   assert.equal(result.status, 'incomplete');
   const blocked = s.f.state().blocked.A;
@@ -224,13 +228,13 @@ for (const moment of ['pr', 'wait'] as const) {
     const host = s.f.hostFor('main');
     const wrapped: PullRequestHost = { ...host, find: branch => {
       if (moment === 'wait' && !advanced && s.f.state().current?.stage === 'merge') {
-        advanced = true; target = advance(s.f, 'src/a/notes.md', '# Notes\n');
+        advanced = true; target = advance(s.f, 'src/a/result.test.mjs', RESULT_TEST);
       }
       return host.find(branch);
     } };
     const result = await run(s, { host: wrapped, afterEffect: async kind => {
       if (moment === 'pr' && kind === 'pr' && !advanced) {
-        advanced = true; target = advance(s.f, 'src/a/notes.md', '# Notes\n');
+        advanced = true; target = advance(s.f, 'src/a/result.test.mjs', RESULT_TEST);
       }
     } });
     assert.equal(result.status, 'exhausted', JSON.stringify(result));
@@ -240,7 +244,7 @@ for (const moment of ['pr', 'wait'] as const) {
     const integrate = at(s.lines, ' A integrate: ');
     assert.ok(at(s.lines, ' A push: ') < integrate);
     assertRecheckedBeforePush(s.lines, integrate);
-    assert.equal(git(s.f.root, 'show', 'origin/main:src/a/notes.md'), '# Notes');
+    assert.equal(git(s.f.root, 'show', 'origin/main:src/a/result.test.mjs'), RESULT_TEST.trimEnd());
   });
 }
 
@@ -262,13 +266,13 @@ test('B: a conflicting in-scope advance is resolved by the worker, re-checked, r
 });
 
 // 4.8 (B) (required)
-for (const failure of ['fails', 'markers', 'review'] as const) {
+for (const failure of ['fails', 'markers'] as const) {
   test(`B: an unresolved conflict blocks with its paths when the resolution ${failure === 'fails' ? 'session fails' :
-    failure === 'markers' ? 'leaves markers' : 'is rejected by the review'}`, async t => {
+    'leaves markers'}`, async t => {
     const s = scenario(t); const reports: { event: RunEvent; detail?: { reason?: string } }[] = [];
     const result = await run(s, { report: (event, detail) => reports.push({ event, detail }),
       afterEffect: async kind => { if (kind === 'archive') advance(s.f, 'src/a/result.mjs', FOREIGN); } },
-    { resolution: failure === 'fails' ? 'fail' : failure === 'markers' ? 'ready' : 'write', rejectMerged: failure === 'review' });
+    { resolution: failure === 'fails' ? 'fail' : 'ready' });
     assert.equal(result.status, 'incomplete');
     const blocked = s.f.state().blocked.A;
     assert.equal(blocked.reason, 'target-conflict-unresolved');
@@ -280,27 +284,37 @@ for (const failure of ['fails', 'markers', 'review'] as const) {
     assert.equal(report?.detail?.reason, 'target-conflict-unresolved');
     assert.equal(s.f.records.length, 0);
     assert.equal(s.prompts.filter(isResolution).length, 1);
-    // A conflict integration keeps its own handling: it never gets a send-back session.
     assert.equal(s.prompts.filter(isSendBack).length, 0);
   });
 }
 
+test('B: a resolved conflict still rejected after its send-back blocks with target-integration-rejected', async t => {
+  const s = scenario(t);
+  const result = await run(s, { afterEffect: async kind => { if (kind === 'archive') advance(s.f, 'src/a/result.mjs', FOREIGN); } },
+    { resolution: 'write', rejectMerged: true });
+  assert.equal(result.status, 'incomplete');
+  assert.equal(s.f.state().blocked.A.reason, 'target-integration-rejected');
+  assert.equal(result.blockers!.A.reason, 'target-integration-rejected');
+  assert.equal(result.blockers!.A.paths, undefined);
+  assert.equal(s.prompts.filter(isResolution).length, 1);
+  assert.equal(s.prompts.filter(isSendBack).length, 1);
+  assert.equal(s.f.records.length, 0);
+});
+
 // 4.9 (B) (required)
-test('B: a conflict outside the task scopes blocks with its path without a resolution session', async t => {
+test('B: a conflict outside the task scopes is resolved by the session and the task is accepted', async t => {
   const s = scenario(t); let path = '';
   const result = await run(s, { afterEffect: async (kind, subject) => {
     if (kind === 'archive') {
       path = `${(subject as Work).archive!.directory}/tasks.md`;
       advance(s.f, path, '# Foreign tasks\n');
     }
-  } });
-  assert.equal(result.status, 'incomplete');
-  const blocked = s.f.state().blocked.A;
-  assert.equal(blocked.reason, 'target-conflict-unresolved');
-  assert.deepEqual(blocked.paths, [path]);
-  assert.deepEqual(result.blockers!.A.paths, [path]);
-  assert.equal(s.prompts.filter(isResolution).length, 0);
-  assert.equal(s.f.records.length, 0);
+  } }, { resolution: 'write' });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  const [integration] = (s.f.state().completed.A as Work).integrations!;
+  assert.equal(integration.outcome, 'conflict'); assert.deepEqual(integration.conflicts, [path]);
+  assert.equal(s.prompts.filter(isResolution).length, 1);
+  assert.equal(git(s.f.root, 'show', `origin/main:${path}`), RESOLVED_TEXT.trimEnd());
 });
 
 // 4.10 (A) (required)

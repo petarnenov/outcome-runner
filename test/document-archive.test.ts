@@ -492,9 +492,9 @@ test('A: a restart between archive and receipt resumes without running the archi
   assert.deepEqual(g.state().completed.A.archive.specs, ['openspec/specs/finite-counter/spec.md']);
 });
 
-// A (required): a target change to the same openspec/specs file conflicts outside the task scopes, so it blocks with
-// target-conflict-unresolved and that path without a resolution session.
-test('A: a target advance changing the same spec file blocks with target-conflict-unresolved and its path', async t => {
+// A (required): a target change to the same openspec/specs file conflicts outside the task scopes; the worker gets its
+// resolution session, and the task blocks with target-conflict-unresolved and that path when the markers remain.
+test('A: a target advance changing the same spec file blocks with its path when the resolution leaves markers', async t => {
   const f = fixture(t); const prompts: { kind: Kind; prompt: string }[] = [];
   const path = 'openspec/specs/finite-counter/spec.md';
   const result = await runQueue(f.config, { ...passing, host: f.host, createAdapter: worker({ prompts }),
@@ -505,7 +505,7 @@ test('A: a target advance changing the same spec file blocks with target-conflic
   assert.deepEqual(blocked.paths, [path]);
   assert.equal(blocked.work.stage, 'integrate');
   assert.deepEqual(result.blockers!.A.paths, [path]);
-  assert.ok(!prompts.some(entry => entry.prompt.includes('Resolve the merge conflicts')));
+  assert.equal(prompts.filter(entry => entry.prompt.includes('Resolve the merge conflicts')).length, 1);
 });
 
 // A (required): a target change to the archived change is merged, and the result is checked and reviewed again.

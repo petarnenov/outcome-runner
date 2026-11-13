@@ -22,6 +22,9 @@ export interface WorkerHooks {
   fail?: (prompt: string) => boolean;
 }
 
+/** The content of `src/<id>/result.test.mjs` written by the scripted worker; a target commit with it merges cleanly. */
+export const RESULT_TEST = "import assert from 'node:assert/strict'; import {next} from './result.mjs'; assert.equal(next(1), 2);\n";
+
 /** A scripted worker for counter tasks; it never starts a real harness. */
 export function scriptedWorker(hooks: WorkerHooks = {}) {
   return (options: HarnessOptions): HarnessAdapter => ({ probe: () => ({ status: 'interface-ready' }), close() {},
@@ -45,7 +48,7 @@ export function scriptedWorker(hooks: WorkerHooks = {}) {
           'The function SHALL add one.\n\n#### Scenario: One\n- **WHEN** input is one\n- **THEN** the result is two\n');
       } else if (prompt.includes('Implement all approved')) {
         await write(`src/${id}/result.mjs`, 'export function next(n) { if (!Number.isFinite(n)) throw new TypeError(); return n + 1; }\n');
-        await write(`src/${id}/result.test.mjs`, "import assert from 'node:assert/strict'; import {next} from './result.mjs'; assert.equal(next(1), 2);\n");
+        await write(`src/${id}/result.test.mjs`, RESULT_TEST);
       } else if (!prompt.includes('Update the documentation inside')) {
         result.outcome = 'accepted';
         if (prompt.includes('Review actual implementation')) {

@@ -56,13 +56,12 @@ export interface RunEvent {
 }
 
 /** Why a task of the invocation was not finished. */
-export type BlockerKind = 'blocked' | 'waiting-for-dependency' | 'waiting-for-claim' | 'waiting-for-blocked-scope' |
-  'max-accepted';
+export type BlockerKind = 'blocked' | 'waiting-for-dependency' | 'waiting-for-claim' | 'max-accepted';
 
 /**
  * One unfinished task of the invocation: `blocked` carries `stage` and `diagnostics` (the state.json path),
- * `waiting-for-dependency` the `dependencies` not yet accepted, `waiting-for-claim` the foreign `claim`,
- * `waiting-for-blocked-scope` the blocked `task` whose scopes overlap and `max-accepted` the `limit`.
+ * `waiting-for-dependency` the `dependencies` not yet accepted, `waiting-for-claim` the foreign `claim`
+ * and `max-accepted` the `limit`.
  * A task blocked by an unresolved target conflict also carries the conflicting `paths`, and a task blocked by an
  * exhausted review or check budget carries the `budget`.
  */
@@ -75,7 +74,6 @@ export interface Blocker {
   budget?: BudgetExhaustion;
   dependencies?: string[];
   claim?: { id: string; host?: string };
-  task?: string;
   limit?: number;
 }
 
@@ -158,7 +156,7 @@ class TargetAdvanced extends Error {
 }
 
 /** The consecutive attempts that may end with an advanced target before the task blocks with `target-keeps-advancing`. */
-export const TARGET_ATTEMPTS = 5;
+export const TARGET_ATTEMPTS = 10;
 
 /** Whether `text` has a line starting with a Git conflict marker (`<<<<<<< ` or `>>>>>>> `). */
 export const conflictMarkers = (text: string): boolean => /^(?:<<<<<<<|>>>>>>>) /mu.test(text);
@@ -226,8 +224,6 @@ const failureDetail = (error: unknown): string => {
 
 const checkRecords = (rows: CheckRecord[]) => rows.map(({ command, args, outcome }) => ({ command, args, outcome }));
 const reviewRecord = ({ reviewer, outcome }: ReviewRecord) => ({ reviewer, outcome });
-const scopesOverlap = (first: string[], second: string[]): boolean => first.some(path =>
-  second.some(other => within(path, other) || within(other, path)));
 const DOCUMENTATION_REVIEW = 'Review the documentation changes independently against the implementation, every ' +
   'criterion and the task scope. Documentation may change only README files, Markdown files and docs or doc ' +
   'directories inside the task scopes. Read files and context; the diff section shows all task changes. ' +
@@ -302,7 +298,7 @@ export interface UnfinishedInput extends AcceptedInput {
 
 /**
  * A blocker for every blocked task of the invocation and every remaining task, using the first matching rule:
- * blocked, max-accepted, waiting-for-dependency, waiting-for-claim, waiting-for-blocked-scope. Throws
+ * blocked, max-accepted, waiting-for-dependency, waiting-for-claim. Throws
  * `Unexplained unfinished task` when no rule matches. A blocked task with an exhausted budget has the reason
  * `review-budget-exhausted` or `check-budget-exhausted` and a copy of the `budget`; a blocked task keeps the reason
  * `target-conflict-unresolved` (with its conflicting `paths`), `target-integration-rejected` or
@@ -339,15 +335,9 @@ export function explainUnfinished(input: UnfinishedInput): Record<string, Blocke
       blockers[id] = { kind: 'waiting-for-dependency', reason: 'waiting-for-dependency', dependencies };
       continue;
     }
-    const scopes = task?.scopes ?? [];
-    const claim = claims.find(item => item.id === id || scopesOverlap(item.scopes, scopes));
+    const claim = claims.find(item => item.id === id);
     if (claim) {
       blockers[id] = { kind: 'waiting-for-claim', reason: 'waiting-for-claim', claim: { id: claim.id, host: claim.host } };
-      continue;
-    }
-    const scoped = blockedIds.find(other => blocked[other].work && scopesOverlap(blocked[other].work!.scopes, scopes));
-    if (scoped) {
-      blockers[id] = { kind: 'waiting-for-blocked-scope', reason: 'waiting-for-blocked-scope', task: scoped };
       continue;
     }
     throw new Error(`Unexplained unfinished task: ${id}`);
@@ -772,9 +762,12 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         git(work.path, 'commit', '-m', commitSubject('docs', `document ${work.id}`));
       }
     };
-    // The send-back commit stages only the task scopes, never the (archived) change directory.
-    const commitSendBack = (work: Work): void => {
-      const paths = present(work, [...work.scopes]);
+    // The task scopes and the paths that conflicted with the advanced target: what a conflict resolution session
+    // and a send-back session may write, and what the send-back commit stages.
+    const integrationPaths = (work: Work, conflicts: string[]): string[] => [...new Set([...work.scopes, ...conflicts])];
+    // The send-back commit never stages the (archived) change directory, unless one of its files conflicted.
+    const commitSendBack = (work: Work, conflicts: string[]): void => {
+      const paths = present(work, integrationPaths(work, conflicts));
       if (paths.length) git(work.path, 'add', '-A', '--', ...paths);
       if (git(work.path, 'diff', '--cached', '--name-only')) {
         git(work.path, 'commit', '-m', commitSubject('fix', `address the integration findings of ${work.id}`));
@@ -791,17 +784,20 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
     };
     /**
      * `contained`: HEAD already contains the target. `merged`: an advance outside the guarded paths was merged and
-     * set up as before; the base is unchanged. `integrate`: an advance inside the guarded paths, or an outside-scope
-     * merge with conflicts (aborted first), started the durable `integrate` stage.
+     * set up as before; the base is unchanged. `integrate`: an advance inside the guarded paths (the files the task
+     * changed, its change and its archive), or a merge with conflicts (aborted first), started the durable
+     * `integrate` stage.
      */
     const integrateTarget = (work: Work, target: string, attempt?: number): 'contained' | 'merged' | 'integrate' => {
       if (git(work.path, 'merge-base', target, 'HEAD') === target) return 'contained';
       const recorded = activeWork();
       const changed = git(work.path, 'diff', '--name-only', recorded.base, target).split('\n').filter(Boolean);
+      // Tasks may share scopes, so only an advance that touches a file this task changed, its change or the
+      // specification files written by its archive needs the checks and reviews again.
       const archive = recorded.archive;
-      // The archived change and the specification files written by the archive belong to the task like its scopes.
-      const guarded = [...work.scopes, work.directory, ...(archive ? [archive.directory, ...archive.specs] : [])];
-      if (scopesOverlap(changed, guarded)) {
+      const owned = [work.directory, ...(archive ? [archive.directory, ...archive.specs] : [])];
+      const own = new Set(git(work.path, 'diff', '--name-only', `${target}...HEAD`).split('\n').filter(Boolean));
+      if (changed.some(path => own.has(path) || owned.some(root => within(path, root)))) {
         startIntegration(target);
         return 'integrate';
       }
@@ -1065,14 +1061,13 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         const ledgerSnapshot = ledger.pull();
         const foreignClaims = foreignClaimsOf(ledgerSnapshot, done, claimant);
         for (const candidate of queue.tasks.filter(task => remaining.includes(task.id))) {
-          if (foreignClaims.some(claim => claim.id === candidate.id || scopesOverlap(claim.scopes, candidate.scopes))) {
+          if (foreignClaims.some(claim => claim.id === candidate.id)) {
             statistics?.decision(candidate, 'claimed-elsewhere');
           }
         }
         const task = queue.tasks.filter(task => remaining.includes(task.id) && !store.state.blocked![task.id] &&
           task.dependencies.every(id => done.has(id)) &&
-          !foreignClaims.some(claim => claim.id === task.id || scopesOverlap(claim.scopes, task.scopes)) &&
-          !Object.values(store.state.blocked!).some(entry => entry.work && scopesOverlap(entry.work.scopes, task.scopes)))
+          !foreignClaims.some(claim => claim.id === task.id))
           .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
         if (!task) {
           const blockers = explain(remaining, foreignClaims);
@@ -1291,8 +1286,9 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             stage: 'receipt' });
           await cancellable(afterEffect('archive', activeWork()), signal);
         }
-        // An in-scope target advance is merged, checked and reviewed again. Every step saves its successor before the
-        // next effect, so a restart resumes at the recorded step without merging twice or reusing an acceptance.
+        // A target advance into the paths the task changed is merged, checked and reviewed again. Every step saves
+        // its successor before the next effect, so a restart resumes at the recorded step without merging twice or
+        // reusing an acceptance.
         while (activeWork().stage === 'integrate') {
           const integration = activeWork().integration!;
           const subject = commitSubject('chore', `integrate ${project.target} into ${work.id}`);
@@ -1312,17 +1308,12 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           const cancelled = (error: unknown): boolean => stopped || !!signal?.aborted ||
             !!(error as InterruptedFailure).interrupted;
           /**
-           * A rejection of the merged result by the checks or a review. A conflict integration blocks with its
-           * conflicting paths. A clean integration is sent back once: the send-back step is saved before the next
-           * effect. A rejection after that send-back records the last findings and blocks with
-           * `target-integration-rejected`.
+           * A rejection of the merged result by the checks or a review. The integration, clean or with resolved
+           * conflicts, is sent back once: the send-back step is saved before the next effect. A rejection after
+           * that send-back records the last findings and blocks with `target-integration-rejected`.
            */
           const sendBackOrReject = async (cause: SendBackCause, findings: string[]): Promise<void> => {
             const current = activeWork().integration!;
-            if (current.outcome === 'conflict') {
-              save({ findings });
-              throw new IntegrationFailure('target-conflict-unresolved', current.conflicts);
-            }
             if (current.sendBack) {
               save({ findings, integration: { ...current, sendBack: { ...current.sendBack, outcome: 'rejected',
                 rejection: { cause, findings: [...findings] } } } });
@@ -1336,13 +1327,14 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               sendBack: { cause, findings: [...findings], session: 'pending' } } });
             await cancellable(afterEffect('send-back-requested', activeWork()), signal);
           };
-          // The send-back step text: the cause, the findings or check output, and the task scopes as the only
-          // writable paths.
+          // The send-back step text: the cause, the findings or check output, and the task scopes and conflicting
+          // paths as the only writable paths.
           const sendBackPrompt = (sendBack: SendBackRecord): string =>
             `Address the rejection of the merged result: the ${CAUSE_LABEL[sendBack.cause]} did not accept the merge ` +
             `of the advanced ${project.target} ${integration.target} into the task branch. Findings or failed check ` +
-            `output: ${JSON.stringify(sendBack.findings)}. Fix them by writing only inside the task scopes ` +
-            `${JSON.stringify(work.scopes)}; writes to the OpenSpec change or any other path are refused. Keep all ` +
+            `output: ${JSON.stringify(sendBack.findings)}. Fix them by writing only inside the task scopes and the ` +
+            `conflicting paths ${JSON.stringify(integrationPaths(work, integration.conflicts))}; writes to the ` +
+            'OpenSpec change or any other path are refused. Keep all ' +
             'approved OpenSpec scenarios and tests passing. ' + workTestInstructions(config.coverage) + ' ' +
             LEFTOVER_FILES_WORK;
           if (integration.step === 'merge') {
@@ -1368,13 +1360,12 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           } else if (integration.step === 'resolve') {
             try {
               const paths = integration.conflicts;
-              const outside = paths.filter(path => !work.scopes.some(scope => within(path, scope)));
-              if (outside.length) throw new Error(`Conflicts outside the task scopes: ${outside.join(', ')}`);
               taskStep(work.id, 'implementation', 'starting the conflict resolution session');
               await session(activeWork(), 'work', prompt + `Resolve the merge conflicts of the advanced ${project.target} ` +
                 `${integration.target} in these paths: ${JSON.stringify(paths)}. Keep the intent of both sides, remove ` +
                 'every conflict marker and keep all approved OpenSpec scenarios and tests passing. Write only inside ' +
-                'the task scopes. ' + workTestInstructions(config.coverage));
+                'the task scopes and the conflicting paths. ' + workTestInstructions(config.coverage), false, undefined,
+                integrationPaths(work, paths));
               for (const path of paths) {
                 const file = join(work.path, path);
                 if (existsSync(file) && conflictMarkers(readFileSync(file, 'utf8'))) throw new Error('Conflict markers remain');
@@ -1433,8 +1424,9 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
                 integrations: [...(activeWork().integrations ?? []), finished] });
             }
           } else {
-            // The one send-back session of a rejected clean integration, limited to the task scopes. `started` is
-            // saved before the session, so a restart commits what is in the worktree and never starts it again.
+            // The one send-back session of a rejected integration, limited to the task scopes and the paths that
+            // conflicted. `started` is saved before the session, so a restart commits what is in the worktree and
+            // never starts it again.
             const sendBack = integration.sendBack!;
             if (sendBack.session === 'pending') {
               taskStep(work.id, 'implementation', 'starting the send-back session of the merged result', currentAttempt());
@@ -1442,7 +1434,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               let failed = false;
               try {
                 await session(activeWork(), 'work', prompt + sendBackPrompt(sendBack), false, undefined,
-                  [...work.scopes]);
+                  integrationPaths(work, integration.conflicts));
               } catch (error) {
                 if (cancelled(error)) throw error;
                 failed = true;
@@ -1452,7 +1444,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               await cancellable(afterEffect('send-back', activeWork()), signal);
             }
             taskStep(work.id, 'commit', 'committing the send-back result', currentAttempt());
-            try { assertWork(activeWork()); commitSendBack(work); } catch (error) { rejected(error); }
+            try { assertWork(activeWork()); commitSendBack(work, integration.conflicts); } catch (error) { rejected(error); }
             const current = activeWork().integration!;
             save({ integration: { ...current, step: 'checks', sendBack: { ...current.sendBack!, session: 'finished' } } });
           }
@@ -1497,7 +1489,17 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           const targetNow = refresh(work.id).target;
           // An advance inside the guarded paths continues in the integrate stage of the next loop iteration.
           if (integrateTarget(work, targetNow, attempt) === 'integrate') continue;
-          save({ finalChecks: checks(work, project.checks, 'check', attempt) });
+          let finalChecks: CheckRecord[];
+          try { finalChecks = checks(work, project.checks, 'check', attempt); }
+          catch (error) {
+            const interrupted = stopped || signal?.aborted || (error as InterruptedFailure).interrupted;
+            if (interrupted || targetNow === activeWork().base) throw error;
+            // The checks fail on a target that was merged without the reviews: the integrate stage runs them again
+            // and gives the worker its send-back session.
+            startIntegration(targetNow);
+            continue;
+          }
+          save({ finalChecks });
           if (git(work.path, 'status', '--porcelain')) throw new Error('Final checks changed tracked inputs');
           const head = git(work.path, 'rev-parse', 'HEAD');
           const published = work;

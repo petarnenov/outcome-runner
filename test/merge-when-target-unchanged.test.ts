@@ -8,7 +8,7 @@ import type { Project, PullRequest, Work } from '../src/model.ts';
 import { TARGET_ATTEMPTS, conflictMarkers, explainUnfinished } from '../src/runner.ts';
 import type { PullRequestHost } from '../src/runner.ts';
 import type { HarnessAdapter, HarnessOptions, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
-import { checkoutState, hasBranch, runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
+import { RESULT_TEST, checkoutState, hasBranch, runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
 import type { RunnerFixture } from './support/runner-fixture.ts';
 
 // Runs use runnerFixture (a bare origin, the start checkout and an integrator clone), scripted adapters and the
@@ -91,14 +91,14 @@ const hasReceipt = (f: RunnerFixture) => git(f.remote, 'ls-tree', 'main', 'evide
 
 // Grade E
 
-test('E (required): target-keeps-advancing is explained as a blocked reason without paths and the limit is 5', () => {
+test('E (required): target-keeps-advancing is explained as a blocked reason without paths and the limit is 10', () => {
   const blockers = explainUnfinished({ remaining: ['A'], ids: ['A'], tasks: [{ id: 'A', dependencies: [], scopes: ['src/a'] }],
     completed: {}, done: [], baselineDone: [], foreignClaims: [], statePath: '/state/state.json',
     blocked: { A: { reason: 'target-keeps-advancing', work: { stage: 'publish', scopes: ['src/a'] } } } });
   assert.deepEqual(blockers.A, { kind: 'blocked', stage: 'publish', reason: 'target-keeps-advancing',
     diagnostics: '/state/state.json' });
   assert.equal(blockers.A.paths, undefined);
-  assert.equal(TARGET_ATTEMPTS, 5);
+  assert.equal(TARGET_ATTEMPTS, 10);
 });
 
 test('E (required): no source file produces Target changed outcome scope', () => {
@@ -119,7 +119,7 @@ test('E (required): README explains how the runner integrates an advanced target
   const end = readme.indexOf('\n## ', start + 1);
   const section = readme.slice(start, end < 0 ? undefined : end);
   for (const text of ['Owners may merge', 'inside a running task\'s scopes', 'task worktree', 'product checks',
-    'implementation review', 'immediately before merging', '--match-head-commit', '5 attempts',
+    'implementation review', 'immediately before merging', '--match-head-commit', '10 attempts',
     'target-keeps-advancing']) assert.ok(section.includes(text), text);
 });
 
@@ -233,7 +233,7 @@ test('C (required): an advance inside the scopes while waiting is merged in the 
   const f = runnerFixture(t, { ids: ['A'] }); const out = capture(); const before = checkoutState(f.root);
   let target = '';
   const result = await f.run(f.config('one'), { steps: out.steps, afterEffect: async operation => {
-    if (operation === 'pr' && !target) target = advance(f, 'src/a/notes.md', '# Notes\n');
+    if (operation === 'pr' && !target) target = advance(f, 'src/a/result.test.mjs', RESULT_TEST);
   } });
   assert.equal(result.status, 'exhausted', JSON.stringify(result));
   assert.deepEqual(checkoutState(f.root), before);
@@ -255,7 +255,7 @@ test('C (required): an advance inside the scopes while waiting is merged in the 
   const check = task.findIndex((line, index) => index > retry && line.startsWith('A check: '));
   const review = task.indexOf('A review: starting the implementation review session of the merged result');
   assert.ok(retry + 2 < check && check < review && review < push, task.join('\n'));
-  assert.equal(git(f.root, 'show', 'origin/main:src/a/notes.md'), '# Notes');
+  assert.equal(git(f.root, 'show', 'origin/main:src/a/result.test.mjs'), RESULT_TEST.trimEnd());
 });
 
 test('C (required): origin advancing between the check and the merge repeats the integration before merging', async t => {
@@ -296,8 +296,8 @@ test('B (required): a target that keeps advancing blocks with target-keeps-advan
   assert.equal(blocked.reason, 'target-keeps-advancing');
   assert.equal(blocked.work.stage, 'publish'); assert.equal(blocked.work.targetAttempts, 0);
   const task = out.task();
-  assert.deepEqual(task.filter(line => line.startsWith('A retry:')), [2, 3, 4, 5].map(n => `${RETRY} (attempt ${n})`));
-  assert.deepEqual(task.slice(-2), [`${CHECKED} (attempt 5)`, 'A blocked: stopped at compare']);
+  assert.deepEqual(task.filter(line => line.startsWith('A retry:')), Array.from({ length: TARGET_ATTEMPTS - 1 }, (_, index) => `${RETRY} (attempt ${index + 2})`));
+  assert.deepEqual(task.slice(-2), [`${CHECKED} (attempt ${TARGET_ATTEMPTS})`, 'A blocked: stopped at compare']);
   assert.equal(f.records[0].state, 'OPEN'); assert.ok(!hasReceipt(f));
   const work = blocked.work as Work;
   assert.ok(existsSync(work.path)); assert.ok(hasBranch(f.root, work.branch));
@@ -346,7 +346,7 @@ test('A (required): a restart resumes from the recorded target commit without me
   const first = capture(); let target = '';
   const cancelled = await f.run(f.config('one'), { steps: first.steps, signal: controller.signal,
     afterEffect: async operation => {
-      if (operation === 'pr' && !target) target = advance(f, 'src/a/notes.md', '# Notes\n');
+      if (operation === 'pr' && !target) target = advance(f, 'src/a/result.test.mjs', RESULT_TEST);
       if (operation === 'integrate') controller.abort();
     } });
   assert.equal(cancelled.status, 'cancelled', JSON.stringify(cancelled));

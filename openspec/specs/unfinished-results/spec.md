@@ -85,19 +85,19 @@ dependency SHALL be explained with `kind` `waiting-for-dependency` naming the un
 
 ### Requirement: Claim and scope reasons
 
-A task waiting for a foreign claim with the same id or overlapping scopes SHALL be explained with `kind`
-`waiting-for-claim` naming the `claim`. A task whose scopes overlap a blocked task of this invocation SHALL be
-explained with `kind` `waiting-for-blocked-scope` naming that `task`.
+A task waiting for a foreign claim with the same id SHALL be explained with `kind` `waiting-for-claim` naming the
+`claim`. Overlapping scopes SHALL NOT keep a task from running: neither a foreign claim on another task nor a blocked
+task of this invocation is a blocker for a task that shares their scopes.
 
 #### Scenario: Waiting for a foreign claim
 
-- **WHEN** another claimant holds a claim with scopes overlapping a remaining task
+- **WHEN** another claimant holds a claim on a remaining task
 - **THEN** that task's blocker has `kind` `waiting-for-claim` and names the claimed task id and host
 
-#### Scenario: Waiting for a blocked scope
+#### Scenario: Overlapping a blocked task
 
 - **WHEN** a remaining task's scopes overlap a blocked task of this invocation
-- **THEN** its blocker has `kind` `waiting-for-blocked-scope` and names the blocked task
+- **THEN** the remaining task is worked and accepted and only the blocked task has a blocker
 
 ### Requirement: maxAccepted reason
 
