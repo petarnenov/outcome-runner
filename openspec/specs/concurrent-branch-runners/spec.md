@@ -141,13 +141,12 @@ fail because of Git index or ref lock files.
 ### Requirement: Shared tasks through the claims ledger
 
 Runners of the same clone SHALL share tasks through the existing claims ledger, each invocation with its own
-claimant, so that two runners never work on the same task or on tasks with overlapping scopes at the same time.
+claimant, so that two runners never work on the same task at the same time. Tasks with overlapping scopes MAY be in progress at the same time.
 
 #### Scenario: Two invocations complete different tasks
 
 - **WHEN** two invocations run concurrently in one clone over a queue of tasks with disjoint scopes
-- **THEN** the claims ledger shows a distinct claimant per invocation, no task is claimed twice, no two
-  overlapping-scope tasks are in progress at the same time, and every task is merged into the start branch exactly
+- **THEN** the claims ledger shows a distinct claimant per invocation, no task is claimed twice, and every task is merged into the start branch exactly
   once
 
 ### Requirement: Cleanup after acceptance

@@ -25,9 +25,13 @@ function startingLine(runners: number) {
 
 // Grade A
 
-test('A (required): five runners started together on 8 parallel and 2 sequential tasks merge every task once without breaking',
+/** Every task also holds one scope shared with all the others, so no claim may exclude another task by its scopes. */
+const SHARED_SCOPES = Object.fromEntries(TASKS.map(id => [id, [`src/${id.toLowerCase()}`, 'src/shared']]));
+
+for (const [layout, scopes] of [['separate', {}], ['shared', SHARED_SCOPES]] as const) test('A (required): five runners ' +
+  `started together on 8 parallel and 2 sequential tasks with ${layout} scopes merge every task once without breaking`,
   { timeout: 900000 }, async t => {
-    const f = runnerFixture(t, { ids: TASKS, dependencies: { J: ['I'] } });
+    const f = runnerFixture(t, { ids: TASKS, dependencies: { J: ['I'] }, scopes });
     const line = startingLine(RUNNERS.length);
     const sessions: [runner: string, task: string][] = [];
     const sequentialOrder: string[] = [];

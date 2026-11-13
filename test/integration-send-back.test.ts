@@ -9,7 +9,7 @@ import type { CommandSpec, RunConfig, Work } from '../src/model.ts';
 import { explainUnfinished, outsideManifest } from '../src/runner.ts';
 import type { RunOptions } from '../src/runner.ts';
 import type { HarnessAdapter, HarnessOptions, ToolInput, WorkerReply } from '../src/harness-adapter.ts';
-import { runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
+import { RESULT_TEST, runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
 import type { RunnerFixture } from './support/runner-fixture.ts';
 
 // Every run uses the Git fixture of runnerFixture (a bare origin and an integrator clone), scripted adapters and the
@@ -102,10 +102,13 @@ function worker(s: Scenario, script: WorkerScript) {
 const run = (s: Scenario, script: WorkerScript, extra: RunOptions = {}) =>
   s.f.run(s.config, { steps: line => s.lines.push(line), createAdapter: worker(s, script), ...extra });
 const at = (lines: string[], text: string, from = 0) => lines.findIndex((line, index) => index >= from && line.includes(text));
-/** Runs task A with an in-scope advance of `path` right after the archive. */
-const advanced = (s: Scenario, script: WorkerScript, path = 'src/a/notes.md', extra: RunOptions = {}) =>
+interface TargetFile { path: string; content: string }
+/** A file the task also writes, with the same content: the advance merges cleanly inside the guarded paths. */
+const TASK_FILE: TargetFile = { path: 'src/a/result.test.mjs', content: RESULT_TEST };
+/** Runs task A with an advance of `file` right after the archive. */
+const advanced = (s: Scenario, script: WorkerScript, file = TASK_FILE, extra: RunOptions = {}) =>
   run(s, script, { ...extra, afterEffect: async (kind, subject) => {
-    if (kind === 'archive') advance(s.f, path, '# Advanced\n');
+    if (kind === 'archive') advance(s.f, file.path, file.content);
     await extra.afterEffect?.(kind, subject);
   } });
 function commits(f: RunnerFixture, subject: string, revision = 'origin/main'): string[] {
@@ -226,7 +229,7 @@ test('C: an implementation review rejection of the merged result is fixed by the
 test('C: a failed check on the merged result is fixed by the send-back session with the check output', async t => {
   const script = "if (require('node:fs').existsSync('src/a/broken.md')) { console.error('broken.md present'); process.exit(1); }";
   const s = scenario(t, { command: 'node', args: ['-e', script] });
-  const result = await advanced(s, { sendBack: 'delete' }, 'src/a/broken.md');
+  const result = await advanced(s, { sendBack: 'delete' }, { path: 'src/a/broken.md', content: '# Advanced\n' });
   assert.equal(result.status, 'exhausted', JSON.stringify(result));
   assert.ok(s.prompts.filter(isSendBack)[0].includes(MARKER));
   const completed = assertAccepted(s, 'checks');
@@ -240,7 +243,7 @@ test('C: a failed check on the merged result is fixed by the send-back session w
 // 4.8 (C) (required)
 test('C: the send-back session writes only inside the task scopes', async t => {
   const s = scenario(t); let worktreeHasChange: boolean | undefined;
-  const result = await advanced(s, { review: 'until-fixed', sendBack: 'outside' }, 'src/a/notes.md', {
+  const result = await advanced(s, { review: 'until-fixed', sendBack: 'outside' }, TASK_FILE, {
     afterEffect: async (kind, subject) => {
       if (kind === 'send-back') worktreeHasChange = existsSync(join((subject as Work).path, DIRECTORY));
     } });
@@ -287,7 +290,7 @@ test('B: a merged result still rejected after the send-back blocks with target-i
 // 4.11 (A) (required)
 test('A: a restart after the send-back session commits its result without a second session', async t => {
   const s = scenario(t); const controller = new AbortController(); let recorded: Work | undefined;
-  const first = await advanced(s, { review: 'until-fixed', sendBack: 'write' }, 'src/a/notes.md', {
+  const first = await advanced(s, { review: 'until-fixed', sendBack: 'write' }, TASK_FILE, {
     signal: controller.signal, afterEffect: async kind => {
       if (kind === 'send-back') { recorded = s.f.state().current; controller.abort(); }
     } });
@@ -311,7 +314,7 @@ test('A: a restart after the send-back session commits its result without a seco
 // 4.12 (A) (required)
 test('A: a restart before the send-back session starts it once with a resuming line', async t => {
   const s = scenario(t); const controller = new AbortController(); let recorded: Work | undefined;
-  const first = await advanced(s, { review: 'until-fixed', sendBack: 'write' }, 'src/a/notes.md', {
+  const first = await advanced(s, { review: 'until-fixed', sendBack: 'write' }, TASK_FILE, {
     signal: controller.signal, afterEffect: async kind => {
       if (kind === 'send-back-requested') { recorded = s.f.state().current; controller.abort(); }
     } });

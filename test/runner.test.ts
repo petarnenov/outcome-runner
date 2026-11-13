@@ -750,10 +750,10 @@ test('two machines take different tasks and integrate each other results', async
   assert.equal(git(first.root, 'status', '--porcelain'), '');
 });
 
-test('a foreign claim blocks tasks with overlapping scopes until accepted', async t => {
+test('a foreign claim on another task does not block a task with overlapping scopes', async t => {
   const f = fixture(t); const other = machine(f, 'other');
   const overlapping = structuredClone(f.queue);
-  overlapping.tasks.find(task => task.id === 'D')!.scopes = ['src/a/nested'];
+  overlapping.tasks.find(task => task.id === 'D')!.scopes = ['src/d', 'src/a/nested'];
   const ledger = new ClaimLedger(other.root, 'proposal');
   assert.equal(ledger.acquire(ledger.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'foreign', host: 'other' }, 'chore: claim A'), true);
   writeFileSync(join(f.root, f.project.queue), JSON.stringify(overlapping));
@@ -761,8 +761,8 @@ test('a foreign claim blocks tasks with overlapping scopes until accepted', asyn
   git(f.root, 'push', 'origin', 'HEAD:proposal');
   const result = await runQueue({ ...f.config, leaves: ['D'], authority: { ...f.config.authority,
     tasks: { D: hash(overlapping.tasks.find(task => task.id === 'D')) } } }, { host: f.host, createAdapter: scripted });
-  assert.equal(result.status, 'cancelled'); assert.equal(f.records.length, 0);
-  assert.deepEqual(result.blockers!.D.claim, { id: 'A', host: 'other' });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.deepEqual(result.accepted, ['D']); assert.equal(f.records.length, 1);
 });
 
 test('a lost claim race is not forced and the winner stays recorded', t => {
@@ -834,15 +834,14 @@ test('an unrelated target advance before merge returns to publish', async t => {
   assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.equal(f.records.length, 1);
 });
 
-test('a target advance inside the outcome scope is merged and reviewed again before publish', async t => {
+test('a target advance inside the outcome scope to a file the task did not change is merged without reviews', async t => {
   const f = fixture(t);
   const result = await runQueue({ ...f.config, leaves: ['A'] }, { host: f.host, createAdapter: scripted,
     afterEffect: async kind => { if (kind === 'implementation') advanceTarget(f, 'src/a/foreign.txt', 'scope'); } });
   assert.equal(result.status, 'exhausted', JSON.stringify(result)); assert.equal(f.records.length, 1);
   assert.equal(git(f.root, 'show', 'origin/proposal:src/a/foreign.txt'), 'scope');
   const state = JSON.parse(readFileSync(join(f.config.stateDirectory, 'state.json'), 'utf8'));
-  assert.equal(state.completed.A.integrations.length, 1);
-  assert.equal(state.completed.A.integrations[0].outcome, 'clean');
+  assert.equal(state.completed.A.integrations, undefined);
 });
 
 test('coverage startup failures are private, exit 4 and allocate nothing', async t => {
@@ -1297,17 +1296,15 @@ test('C: final gate failure persists the actual failed command without private o
   assert.ok(!JSON.stringify(record).includes('SECRET_CHECK_OUTPUT'));
 });
 
-test('C: foreign task and scope claims are distinguished from dependent pending leaves', async t => {
+test('C: foreign task claims are distinguished from dependent pending leaves', async t => {
   const f = fixture(t); const statistics = new Statistics();
-  const changed = structuredClone(f.queue); changed.tasks[3].scopes = ['src/a/nested'];
-  writeFileSync(join(f.root, f.project.queue), JSON.stringify(changed));
-  git(f.root, 'add', '.'); git(f.root, 'commit', '-m', 'test: overlap ledger fixture scopes');
-  git(f.root, 'push', 'origin', 'HEAD:proposal');
   const claims = new ClaimLedger(f.root, f.project.target);
-  claims.acquire(claims.pull(), { version: 1, id: 'A', scopes: ['src/a'], claimant: 'foreign', host: 'fixture' }, 'chore: claim A');
-  // Every remaining task waits for the foreign claim or a dependency, so the run waits until its first poll cancels it.
-  const result = await runQueue({ ...f.config, authority: { ...f.config.authority,
-    tasks: Object.fromEntries(changed.tasks.map(task => [task.id, hash(task)])) } }, {
+  for (const id of ['A', 'D']) {
+    claims.acquire(claims.pull(), { version: 1, id, scopes: [`src/${id.toLowerCase()}`], claimant: 'foreign',
+      host: 'fixture' }, `chore: claim ${id}`);
+  }
+  // Every remaining task waits for a foreign claim or a dependency, so the run waits until its first poll cancels it.
+  const result = await runQueue(f.config, {
     statistics, host: f.host, createAdapter: () => { throw new Error('No worker expected'); },
   });
   assert.equal(result.status, 'cancelled');

@@ -1,3 +1,17 @@
+## 0.25.1 - 2026-11-13
+
+### Fixes
+
+- let tasks with shared scopes run side by side and resolve their conflicts (9a2fc48)
+
+## 0.25.0 - 2026-11-12
+
+### Features
+
+- implement OR-29 (04df18b)
+- implement OR-29 (90b3293)
+- implement OR-29 (aa11558)
+
 ## 0.24.2 - 2026-11-12
 
 ### Fixes

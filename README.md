@@ -117,7 +117,8 @@ Write it by hand or generate it from Jira, text or a file; see
 ```
 
 `scopes` are the only product paths a task may change. They cannot overlap the
-queue, receipts or OpenSpec changes. Smaller `priority` values run first.
+queue, receipts or OpenSpec changes. Tasks may share scopes: a scope never
+keeps another task from running. Smaller `priority` values run first.
 
 **4. Commit and push to the target branch**
 
@@ -230,7 +231,7 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 | Exit code | Meaning |
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
-| 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked, a task waiting for a blocked scope or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)). Work only claimed by other runners is waited for instead (see [Waiting for free work](#waiting-for-free-work)). A run cancelled by SIGINT or SIGTERM (`cancelled`) also exits 3 |
+| 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)). Work only claimed by other runners is waited for instead (see [Waiting for free work](#waiting-for-free-work)). A run cancelled by SIGINT or SIGTERM (`cancelled`) also exits 3 |
 | 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `invalid-poll-seconds`, `openspec-missing` or `harness-unavailable` |
 
 After an interruption, run the **same command with the same file** from the same
@@ -525,15 +526,18 @@ To run several runners on one branch, start each one from the same checkout on
 that branch with its own invocation file and invocation name, for example
 `my-project-1.json` and `my-project-2.json`. Every invocation has its own state,
 its own claimant in the claims ledger and its own task worktrees and branches, so
-two runners never work on the same task or on tasks with overlapping scopes at
-the same time, and each merges its results into the branch they started from.
+two runners never work on the same task at the same time, and each merges its
+results into the branch they started from. Tasks with shared or overlapping
+scopes run side by side; a runner whose task meets changes of another task in
+the target merges them and resolves the conflicts (see
+[When the target advances during a run](#when-the-target-advances-during-a-run)).
 Runners on other machines can join with their own clones in the same way.
 
 The repository is the Git top level of the current directory. State is kept per
 clone and invocation under `$XDG_STATE_HOME/outcome-runner` (default
 `~/.local/state/outcome-runner`). The invocation file must not set `root` or
 `stateDirectory`, so one file serves every machine and every repository. Tasks
-claimed by another run, or overlapping its scopes, are skipped until accepted. A
+claimed by another run are skipped until accepted. A
 run whose remaining work is only claimed by other runners, or waits for
 dependencies they are still working, does not end: it waits for that work and
 continues as soon as a task becomes free; see
@@ -547,8 +551,8 @@ claims with `outcome-runner dispose` on the machine and clone that ran it; see
 When no remaining task can be picked, the runner looks at the blockers of every
 remaining task and of every blocked task of the invocation (see
 [Unfinished results](#unfinished-results)). When each of them is
-`waiting-for-claim` (another runner holds a claim on the task or on overlapping
-scopes) or `waiting-for-dependency` (a dependency is not accepted yet), the work
+`waiting-for-claim` (another runner holds a claim on the task) or
+`waiting-for-dependency` (a dependency is not accepted yet), the work
 becomes free without any action of this invocation: another runner merges its
 task, or its owner releases the claim with `outcome-runner dispose`. The run
 therefore does not end. It waits one poll interval, then fetches
@@ -589,8 +593,9 @@ stays held, so the same command resumes the invocation later.
 finish. It ends at once with `incomplete` (exit code 3) and the existing
 `blockers` when any remaining task or task of the invocation has a blocker of
 another kind: a task `blocked` in this invocation's own state (including a
-merged task whose acceptance recording failed), a task that depends on such a
-task, or a task `waiting-for-blocked-scope`. Repair or retry the blocked task
+merged task whose acceptance recording failed) or a task that depends on such a
+task. Other tasks of the invocation are worked first, whatever their scopes.
+Repair or retry the blocked task
 (see [Review and check budgets](#review-and-check-budgets)) and run the same
 command again. The `exhausted` and `limit-reached` endings are unchanged: a
 reached `maxAccepted` ends the run with `limit-reached` without waiting, also
@@ -840,11 +845,11 @@ merged tasks of the invocation whose acceptance recording failed. It does not
 count prior completion, tasks accepted by other runners, proposals, attempts or
 worker sessions. A reached bound is successful (`limit-reached`, exit 0) with the
 remaining task IDs reported and explained. Too few accepted results, blocked
-tasks, dependencies inside the run that are blocked, tasks waiting for a blocked
-scope or protected merges return incomplete without asking a person anything;
+tasks, dependencies inside the run that are blocked or protected merges return
+incomplete without asking a person anything;
 work that only waits for foreign claims or their dependencies is waited for (see
-[Waiting for free work](#waiting-for-free-work)). Independent work may
-proceed only without overlapping held scopes. Receipts validate outputs at their
+[Waiting for free work](#waiting-for-free-work)). Independent work
+proceeds whatever scopes other tasks hold. Receipts validate outputs at their
 first accepted target commit; later ordinary
 changes preserve historical acceptance. Removed or altered receipts do not prove
 completion. A target that advanced without touching the task scopes, the change
@@ -890,8 +895,7 @@ matching kind is used, in this order:
 | `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete` (or `review-budget-exhausted` or `check-budget-exhausted` with the exhausted `budget`, see [Review and check budgets](#review-and-check-budgets); or `target-conflict-unresolved` with the conflicting `paths`, `target-integration-rejected` or `target-keeps-advancing`, see [When the target advances during a run](#when-the-target-advances-during-a-run)), `stage` and `diagnostics` (the private `state.json` path) |
 | `max-accepted` | The task was not started because `maxAccepted` was reached | `reason` `max-accepted`, `limit` |
 | `waiting-for-dependency` | A dependency is not accepted yet (for example blocked in this run) | `reason` `waiting-for-dependency`, `dependencies` (the ids not accepted) |
-| `waiting-for-claim` | Another runner holds a claim on the task or on overlapping scopes | `reason` `waiting-for-claim`, `claim` with the claimed task `id` and `host` |
-| `waiting-for-blocked-scope` | A blocked task of this invocation holds overlapping scopes | `reason` `waiting-for-blocked-scope`, `task` (the blocked task id) |
+| `waiting-for-claim` | Another runner holds a claim on the task | `reason` `waiting-for-claim`, `claim` with the claimed task `id` and `host` |
 
 For example:
 
@@ -1344,15 +1348,20 @@ it:
    head and target reaches the target.
 
 When the target differs, the runner compares the files the target changed since
-the task's recorded base with the task's guarded paths: the task scopes, the
-change directory and, after the archive, the archived change directory and the
-`openspec/specs` files written by the archive.
+the task's recorded base with the task's guarded paths: the files the task
+itself changed, its change directory and, after the archive, the archived
+change directory and the `openspec/specs` files written by the archive. A
+change of the target elsewhere inside the task scopes is not guarded, so tasks
+that share scopes do not repeat each other's reviews.
 
 **Change outside the guarded paths.** The target is merged into the task branch
 in the task worktree with a `chore(<commitScope>): integrate <target> into <id>`
 commit, the `setup` commands and the product checks run again on the merged
 result and the tested head is pushed. The recorded base stays the same and no
-new implementation or documentation review session runs.
+new implementation or documentation review session runs. When the product
+checks fail on that merged result, the task is not blocked: it enters the
+`integrate` stage below for the merged target, so the reviews run again and the
+worker gets its send-back session.
 
 **Change inside the guarded paths.** The task is not blocked. It enters the
 durable `integrate` stage: the runner merges the advanced target into the task
@@ -1366,7 +1375,7 @@ paths (`conflicts`), the `outcome` (`clean` or `conflict`) and the current
 2. the `setup` commands and the product checks run again;
 3. a new implementation review session reviews the merged result;
 4. a new documentation review session reviews it as well;
-5. when the checks or a review do not accept a merge without conflicts, one
+5. when the checks or a review do not accept the merged result, one
    send-back session repairs it and the checks and both reviews run again (see
    below).
 
@@ -1383,32 +1392,32 @@ the merge, the runner repeats the worktree merge, the checks (and, for a change
 inside the guarded paths, the reviews) and the comparison, then merges the new
 checked head. Each comparison while waiting for or immediately before the merge
 that finds a different target counts as one attempt, recorded in
-`targetAttempts` in `state.json`. After 5 attempts without an unchanged target
+`targetAttempts` in `state.json`. After 10 attempts without an unchanged target
 the task is blocked with reason `target-keeps-advancing`: nothing is merged, the
 worktree, the local branch and the remote task branch are kept, and the attempt
 count is reset. A restart of the same invocation continues in that worktree
-with the worktree merge of the current target and 5 fresh attempts.
+with the worktree merge of the current target and 10 fresh attempts.
 
 **Conflicts.** When the merge conflicts, the worker gets exactly one worker
 session (an implementation session) with the conflicting paths, to resolve them
-inside the task scopes while keeping the intent of both sides. The runner then
+while keeping the intent of both sides. The session may write the task scopes
+and the conflicting paths, wherever they are, including the archived change and
+`openspec/specs` files. The runner then
 checks that no conflicting file still has a conflict marker (a line starting
 with `<<<<<<< ` or `>>>>>>> `) and no path is left unmerged, and concludes the
 merge; the checks and the reviews of the merged result follow. A merge of a
 change outside the guarded paths that conflicts is aborted and handed to the
-`integrate` stage, so it is handled the same way. A conflicting path outside
-the task scopes, for example in the archived change or in an `openspec/specs`
-file, cannot be written by the worker, so the task is blocked at once without a
-session.
+`integrate` stage, so it is handled the same way.
 
-**Send-back after a rejected clean merge.** When the setup or product checks,
-the implementation review or the documentation review do not accept the result
-of a merge without conflicts, the task is not blocked at once. The worker gets
+**Send-back after a rejected merge.** When the setup or product checks,
+the implementation review or the documentation review do not accept the merged
+result, with or without resolved conflicts, the task is not blocked at once. The worker gets
 one send-back session: one worker session (an implementation session) given the
 failed check output or the review findings, which may write only inside the
-task scopes. The OpenSpec change is already archived at that point, so writes to
-its files, or to any other path outside the task scopes, are refused, and only
-task scope paths are committed after the session (as a
+task scopes and the paths that conflicted. The OpenSpec change is already
+archived at that point, so writes to its files, or to any other path outside
+the task scopes and the conflicting paths, are refused, and only those paths are
+committed after the session (as a
 `fix(<commitScope>): address the integration findings of <id>` commit when
 anything changed).
 After the send-back session the checks and both reviews run again.
@@ -1422,16 +1431,15 @@ and, after a rejection, the last `rejection` with its cause and findings. A
 finished integration keeps its `sendBack` record in `integrations`. The
 send-back session uses no review or check budget. A restart never grants a
 second send-back session for the same target commit; a later advance of the
-target is a new integration with its own send-back. Merges with conflicts get no
-send-back session.
+target is a new integration with its own send-back.
 
 **Blocking reasons.**
 
 | Reason | When |
 |---|---|
-| `target-conflict-unresolved` | A merge with conflicts: the resolution session fails, conflict markers or unmerged paths remain, a conflicting path is outside the task scopes, or the checks or a review do not accept the result. The conflicting `paths` are recorded with it |
-| `target-integration-rejected` | A merge without conflicts whose checks or reviews are still rejected after the one send-back session |
-| `target-keeps-advancing` | The target advanced before the merge in 5 consecutive attempts; the task keeps its worktree and branches and a restart continues |
+| `target-conflict-unresolved` | A merge with conflicts: the resolution session fails, or conflict markers or unmerged paths remain. The conflicting `paths` are recorded with it |
+| `target-integration-rejected` | A merge, with or without resolved conflicts, whose checks or reviews are still rejected after the one send-back session |
+| `target-keeps-advancing` | The target advanced before the merge in 10 consecutive attempts; the task keeps its worktree and branches and a restart continues |
 
 The reason (and, for a conflict, the `paths`) is stored in the task's `blocked`
 entry in `state.json` and appears in its `blocked` entry of `blockers` in the

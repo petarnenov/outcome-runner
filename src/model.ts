@@ -100,8 +100,8 @@ export interface RetryRecord {
 }
 
 /**
- * The durable steps of merging an in-scope target advance into the task branch, in order. `send-back` is the one
- * worker session of a rejected clean integration; the checks and both reviews follow it again.
+ * The durable steps of merging a target advance into the paths the task changed, in order. `send-back` is the one
+ * worker session of a rejected integration; the checks and both reviews follow it again.
  */
 export type IntegrationStep = 'merge' | 'resolve' | 'checks' | 'review' | 'document-review' | 'send-back';
 

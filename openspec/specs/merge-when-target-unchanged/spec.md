@@ -73,12 +73,12 @@ pull request head (`gh pr merge --match-head-commit <head>`), so no unchecked co
 ### Requirement: Bounded repeats
 
 When `origin/<target>` advanced again before the merge, the runner SHALL repeat the worktree merge, the checks and the
-comparison. After 5 consecutive attempts without an unchanged target the runner SHALL block the task with reason
+comparison. After 10 consecutive attempts without an unchanged target the runner SHALL block the task with reason
 `target-keeps-advancing`, keeping its worktree and branch so a restart continues.
 
 #### Scenario: Attempt limit
 
-- **WHEN** the target advances before every merge of 5 consecutive attempts
+- **WHEN** the target advances before every merge of 10 consecutive attempts
 - **THEN** the task is blocked with reason `target-keeps-advancing` and the run result blocker has `kind` `blocked`
   and that reason
 - **AND** nothing is merged, and the task worktree, local branch and remote branch still exist
@@ -168,7 +168,7 @@ MAY stay unlogged.
 ### Requirement: README describes target integration
 
 The README SHALL replace the advice not to merge into the target during a run with how the runner integrates an
-advanced target, compares before merging, repeats up to 5 attempts and blocks with `target-keeps-advancing`.
+advanced target, compares before merging, repeats up to 10 attempts and blocks with `target-keeps-advancing`.
 
 #### Scenario: README section
 
