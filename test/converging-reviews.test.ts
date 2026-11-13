@@ -101,7 +101,7 @@ test('E (required): the earlier findings text lists the rounds and is added only
 // 4.5 (E) (required)
 test('E (required): budgets stay outside the identity and exhaustions name the limits in force', t => {
   const f = runnerFixture(t, { ids: ['A'] });
-  const config = f.config('one', { leaves: ['A'], coverage: 85 });
+  const config = { ...f.config('one', { coverage: 85 }), leaves: ['A'] };
   const budgets = { plan: { reviews: 8 }, work: { reviews: 2, checks: 5 }, document: { reviews: 3 } };
   assert.deepEqual(invocationIdentity({ ...config, budgets }), invocationIdentity(config));
   assert.equal(hash(invocationIdentity({ ...config, budgets })), hash(invocationIdentity(config)));
