@@ -315,7 +315,7 @@ test('B: failing check runs use check attempts and never review rounds', async t
   assert.deepEqual(completed.budget!.work, { checks: 2, reviews: 4 });
 });
 
-// 5.13 (B) (required)
+// 5.13 (B) (required), updated by converging-reviews 4.14 to the planning default of 6 review rounds.
 test('B: a restart without --retry continues the planning review count', async t => {
   const f = runnerFixture(t, { ids: ['A'] });
   const s = scripted({ reject: { planReview: n => n !== 3 }, fail: { planReview: n => n === 3 } });
@@ -329,9 +329,12 @@ test('B: a restart without --retry continues the planning review count', async t
   assert.equal(s.count('planReview'), 3);
   const second = await f.run(config, { createAdapter: s.createAdapter });
   assert.equal(second.status, 'incomplete', JSON.stringify(second));
-  assert.equal(s.count('planReview'), 4);
-  const state = assertBudgetBlock(second, config, exhaustion('plan', 'reviews', 4, 0));
-  assert.equal(state.blocked.A.work.budget.plan.reviews, 4);
+  // The restart without --retry and without budgets starts exactly three more planning reviews.
+  assert.equal(s.count('planReview'), 6);
+  const state = assertBudgetBlock(second, config, { stage: 'plan', exhausted: 'reviews',
+    reviews: { used: 6, limit: 6 }, checks: { used: 0, limit: 4 } });
+  assert.equal(state.blocked.A.work.budget.plan.reviews, 6);
+  assert.equal(state.retries, undefined);
   assert.equal(s.count('work'), 0);
 });
 
