@@ -1,3 +1,9 @@
+## 0.25.1 - 2026-11-13
+
+### Fixes
+
+- let tasks with shared scopes run side by side and resolve their conflicts (9a2fc48)
+
 ## 0.25.0 - 2026-11-12
 
 ### Features
