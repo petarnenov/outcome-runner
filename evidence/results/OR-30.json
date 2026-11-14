@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "id": "OR-30",
+  "taskHash": "8321ce67e306382227213f0d3e5b7fbe1e5e8e7feabd031d43337520aec8217c",
+  "authority": "owner-2026-11-14-outcome-runner-claude-17",
+  "target": "main",
+  "specification": {
+    "openspec/changes/archive/2026-11-14-claim-leases/design.md": "0754311198612847b669c181c8e9776e5aebf9ede80e4ed6eaef808f01ed466d",
+    "openspec/changes/archive/2026-11-14-claim-leases/proposal.md": "74d98760c59cab7381500ef3caae4639dfb348770cc465a449757236cfb4fe97",
+    "openspec/changes/archive/2026-11-14-claim-leases/specs/claim-leases/spec.md": "ccdb87dc3f005ee26c6de1b9ba6aba5ac67ac3ebc7bbb0c14a0575a1aae58920"
+  },
+  "review": {
+    "reviewer": "claude:a680376c-fa6a-47f6-9722-e96bcf4b2e97",
+    "outcome": "accepted",
+    "accepted": true
+  },
+  "checks": [
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "typecheck"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "--experimental-test-coverage",
+        "--test-coverage-exclude=test/**",
+        "--test-coverage-exclude=scripts/*.test.ts",
+        "--test-coverage-exclude=mascot/*.test.ts",
+        "--test-coverage-lines=85",
+        "--test-coverage-branches=85",
+        "--test-coverage-functions=85",
+        "test/*.test.ts",
+        "scripts/*.test.ts",
+        "mascot/*.test.ts"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "manifest": [
+    {
+      "path": "README.md",
+      "hash": "f35fc3616735d5cacf20e47cb468e0de5cb637457fb7ad73df2eae79a7141d0b"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-14-claim-leases/design.md",
+      "hash": "0754311198612847b669c181c8e9776e5aebf9ede80e4ed6eaef808f01ed466d"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-14-claim-leases/proposal.md",
+      "hash": "74d98760c59cab7381500ef3caae4639dfb348770cc465a449757236cfb4fe97"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-14-claim-leases/specs/claim-leases/spec.md",
+      "hash": "ccdb87dc3f005ee26c6de1b9ba6aba5ac67ac3ebc7bbb0c14a0575a1aae58920"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-14-claim-leases/tasks.md",
+      "hash": "d3ee3d79d8f3d79a70d9c81f523afddcb3d254b77174ded7812e7018f9506f16"
+    },
+    {
+      "path": "openspec/specs/claim-leases/spec.md",
+      "hash": "32f80f0393eb13c3be04a6b5c92f23757ada7f45587a76068b768c7e14b28668"
+    },
+    {
+      "path": "src/claims.ts",
+      "hash": "1873783d62f3e2f3ee6edca1c669a2fdf9f7a31fa41fd9e8a6fb7216f04ca91e"
+    },
+    {
+      "path": "src/model.ts",
+      "hash": "5bb7a1ff071e07104831989437a707ae3e987dc09a82fa6960d4e1e7ca07ce5e"
+    },
+    {
+      "path": "src/run-store.ts",
+      "hash": "b1a2e23654f2fe758299bda35acf80fb1c6d749a569a78f40cd76066996f218f"
+    },
+    {
+      "path": "src/runner.ts",
+      "hash": "16387026cd3abedbcf1c832bd8da261d2b45a66472d140484b1def446e2c12b3"
+    },
+    {
+      "path": "test/claim-leases.test.ts",
+      "hash": "a5c37e172c115572407e307264db110071c3332e38a5cc7e274f229bd9a3c275"
+    },
+    {
+      "path": "test/invocation-evolution.test.ts",
+      "hash": "96469b2401b3e3bec7d0ed9d7547d30c3b5c56026a8610589fcc392ae004bdcc"
+    },
+    {
+      "path": "test/review-budgets.test.ts",
+      "hash": "349dc981af1020d48a00df2aec25cc1715ccb1f560ad54a4d0d19681c78a3199"
+    },
+    {
+      "path": "test/runner.test.ts",
+      "hash": "fa3b3fb5bb66c5f241587407c3493113631d45894d90248710831b30c9ed9a7f"
+    }
+  ],
+  "head": "b79162096340c1195f787fcab7ecc098a6808572",
+  "base": "4c58cc2fe7f69b651d346d5e6e4d783ba25f64e6"
+}
