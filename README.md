@@ -189,6 +189,10 @@ Save it as, for example, `~/invocations/my-project-1.json`:
 - The optional `pollSeconds` (an integer from 5 through 3600, default 60) sets
   how often a run polls while it waits for work held by other runners; see
   [Waiting for free work](#waiting-for-free-work).
+- The optional `leaseSeconds` (an integer from 300 through 86400, default 1800)
+  sets the lease of the claims the run holds: a claim not renewed for longer
+  than its lease can be taken over by another runner; see
+  [Claim leases](#claim-leases).
 - The optional `budgets` sets the review rounds and check attempts of the
   planning, implementation and documentation stages, each an integer from 1
   through 12, for example `"budgets": { "plan": { "reviews": 8 } }`; see
@@ -239,7 +243,7 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
 | 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)). Work only claimed by other runners is waited for instead (see [Waiting for free work](#waiting-for-free-work)). A run cancelled by SIGINT or SIGTERM (`cancelled`) also exits 3 |
-| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `invalid-poll-seconds`, `invalid-budget`, `invalid-check-timeout`, `openspec-missing` or `harness-unavailable` |
+| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `invalid-poll-seconds`, `invalid-lease-seconds`, `invalid-budget`, `invalid-check-timeout`, `openspec-missing` or `harness-unavailable` |
 
 After an interruption, run the **same command with the same file** from the same
 branch to resume. Do not delete the state under `~/.local/state/outcome-runner/`.
@@ -549,10 +553,13 @@ claimed by another run are skipped until accepted. A
 run whose remaining work is only claimed by other runners, or waits for
 dependencies they are still working, does not end: it waits for that work and
 continues as soon as a task becomes free; see
-[Waiting for free work](#waiting-for-free-work). Claims are never taken over
-automatically. When the owner of an invocation no longer wants it, release its
-claims with `outcome-runner dispose` on the machine and clone that ran it; see
-[Disposing of an invocation](#disposing-of-an-invocation).
+[Waiting for free work](#waiting-for-free-work). A claim has a lease: its holder
+renews it while it works the task, and a claim that is not renewed for longer
+than its lease is stale and is taken over by the next runner that picks the
+task, while the claim of a blocked task never expires; see
+[Claim leases](#claim-leases). When the owner of an invocation no longer wants
+it, release its claims with `outcome-runner dispose` on the machine and clone
+that ran it; see [Disposing of an invocation](#disposing-of-an-invocation).
 
 ### Waiting for free work
 
@@ -562,7 +569,8 @@ remaining task and of every blocked task of the invocation (see
 `waiting-for-claim` (another runner holds a claim on the task) or
 `waiting-for-dependency` (a dependency is not accepted yet), the work
 becomes free without any action of this invocation: another runner merges its
-task, or its owner releases the claim with `outcome-runner dispose`. The run
+task, its claim expires (see [Claim leases](#claim-leases)), or its owner
+releases the claim with `outcome-runner dispose`. The run
 therefore does not end. It waits one poll interval, then fetches
 `origin/<target>`, pulls the claims ledger again, recomputes which tasks are
 accepted and picks the next free task, and repeats this until a task can be
@@ -594,7 +602,8 @@ see [Step lines](#step-lines).
 **Cancel during the wait.** A SIGINT or SIGTERM during the wait ends the run at
 once with `cancelled` (exit code 3); no further fetch, claims ledger pull, claim,
 worktree or worker session follows. The `cancelled` result keeps the `blockers`
-of the remaining tasks, `state.json` gets `status` `incomplete` and the ownership
+of the remaining tasks, and `claimedElsewhere` with the foreign claims it waited
+for; `state.json` gets `status` `incomplete` and the ownership
 stays held, so the same command resumes the invocation later.
 
 **When a run still ends incomplete.** A run never waits for work nobody else can
@@ -609,11 +618,94 @@ command again. The `exhausted` and `limit-reached` endings are unchanged: a
 reached `maxAccepted` ends the run with `limit-reached` without waiting, also
 while other tasks are claimed elsewhere.
 
-**A claim that never frees.** A claim held by a runner that crashed and never
-comes back makes the waiting run wait until it is cancelled. End that stale
-invocation with `outcome-runner dispose` on the machine and clone that ran it
-(see [Disposing of an invocation](#disposing-of-an-invocation)); the waiting run
+**A claim that never frees.** A runner that crashed or was abandoned stops
+renewing its claims, so they become stale after their lease and the waiting run
+takes the task over at its next poll (see [Claim leases](#claim-leases)). The
+claim of a task that is blocked in its invocation never expires, so the waiting
+run waits for it until it is cancelled. End that invocation with
+`outcome-runner dispose` on the machine and clone that ran it (see
+[Disposing of an invocation](#disposing-of-an-invocation)); the waiting run
 claims the task at its next poll.
+
+### Claim leases
+
+A claim in `work-queue-claims-<target>` has a lease, so a runner that crashed,
+was cancelled or was abandoned never freezes its task for every other runner,
+while a task that blocks for a lasting reason is not started again by every
+other runner.
+
+**`leaseSeconds`.** The optional invocation field `leaseSeconds` sets the lease
+of every claim the run holds, in seconds: an integer from 300 through 86400,
+1800 (30 minutes) when omitted. Any other value, for example `299`, `86401`,
+`600.5` or `"1800"`, is refused at startup, before any preflight, lock, state,
+ownership file, claim or worktree, with exit code 4 and reason
+`invalid-lease-seconds`; the private diagnostics file names the setting
+`leaseSeconds` and the refused value. `leaseSeconds` is operational: it is not
+part of the invocation identity, so a resumed invocation may use another lease.
+
+**Renewal.** A claim records the time it was written in `claimedAt`, the time of
+its last renewal in `renewedAt` (equal to `claimedAt` when the claim is
+written) and the holder's lease in `leaseSeconds`. While the runner works a task
+it renews its claim every `leaseSeconds / 3` (every 10 minutes with the default
+lease): one claims commit `chore(<commitScope>): renew the claim of <id>` writes
+the current time to `renewedAt`, pushed without force like every claims commit.
+When a run starts or resumes a task whose claim it already holds, it renews the
+claim first, before any worker session. The renewals stop when the task is
+accepted, blocked or cancelled, or when its claim is lost. A renewal that cannot
+be written (the claims branch kept moving, or Git failed) writes the step line
+`lease: renewal failed; retrying` and is tried again at the next renewal.
+
+**Stale claims.** A claim that is not blocked and whose last renewal is older
+than its lease is stale. The holder's lease decides, not the lease of the runner
+that looks at the claim, and a claim renewed exactly one lease ago is not stale
+yet. Other runners ignore a stale claim: its task is not `waiting-for-claim`, not
+listed in `claimedElsewhere` and not named in the `run wait` line, and it is free
+work.
+
+**Takeover.** A runner that picks a task with a stale claim takes it over: it
+writes its own claim (with new `claimedAt`, `renewedAt` and `leaseSeconds`) on
+top of the claims ledger state in which it saw the stale claim and pushes it
+without force. The push succeeds only while that state is still the current one,
+so when two runners see the same stale claim, exactly one of them wins the
+takeover; the other pulls the ledger again, sees the winner's fresh claim and
+waits for it like any other claim. A takeover whose ledger state no longer holds
+the stale claim it observed makes no commit.
+
+**Blocked claims.** When a task is blocked, the runner that holds its claim marks
+the claim blocked in the ledger (`blocked` with the time `at`, in one claims
+commit `chore(<commitScope>): mark the claim of <id> blocked`) before it goes on
+with other work. A blocked claim never expires and is never taken over, so other
+runners keep waiting for it as `waiting-for-claim`. It is continued only by its
+own invocation, whose restart (for example with `--retry <task id>`) renews the
+claim and clears the mark before any worker session starts, or released with
+`outcome-runner dispose` (see
+[Disposing of an invocation](#disposing-of-an-invocation)). When the mark cannot
+be written, the step line `claim: could not mark the claim blocked` is written
+and the result of the run stays the same.
+
+**`claim-lost`.** A runner whose claim was taken over notices it before its next
+effect on the target or the Pull Request: it checks the claim in the ledger
+immediately before it pushes the tested head, before it creates the Pull
+Request, when the merge stage starts and immediately before the merge command
+(also in the merge guard that `GitHubHost.merge` calls), and a renewal that
+finds the claim held by another claimant stops the renewals at once. It then
+stops the task without pushing or merging, leaves the claim to its new holder
+and records the task blocked with reason `claim-lost` and the time it noticed
+the loss in `claimLostAt` of the blocked work in `state.json`; the task's
+blocker in the run result has `kind` `blocked` and `reason` `claim-lost` (see
+[Unfinished results](#unfinished-results)). A worker session that is running
+when the claim is lost is not interrupted; its work is never pushed. A restart
+of the invocation continues the task only when its claim is absent or stale
+again; otherwise the task is blocked with `claim-lost` again before any worker
+session. When the new holder has meanwhile merged the task, the restart records
+the work under `claimLost` in `state.json` and records no acceptance of it.
+
+**Claims of earlier runners.** A claim written by an earlier runner without
+`renewedAt` and `leaseSeconds` is treated as renewed at its `claimedAt` with the
+default lease of 1800 seconds, so it is stale 1800 seconds after it was written;
+a claim with neither `renewedAt` nor a readable `claimedAt` is never stale. A
+claim of an earlier runner that this invocation holds gets the new fields with
+its first renewal.
 
 ### Worktrees and cleanup
 
@@ -676,7 +768,8 @@ change and one PR. Scopes cannot overlap queue, receipt or OpenSpec roots.
 Keep the invocation JSON outside the checkout. Supply a stable `invocation` name
 (letters, digits, `.`, `_`, `-`), optional selected `leaves`, optional
 positive `maxAccepted`, optional `pollSeconds` (see
-[Waiting for free work](#waiting-for-free-work)), optional `budgets` (see
+[Waiting for free work](#waiting-for-free-work)), optional `leaseSeconds` (see
+[Claim leases](#claim-leases)), optional `budgets` (see
 [Review and check budgets](#review-and-check-budgets)) and optional
 `checkTimeoutMinutes` (see [Check time limit](#check-time-limit)). Omitted mode is OFF. `authority` contains the actual
 instruction `reference`, `instruction`, the optional `target` (the branch the
@@ -903,10 +996,10 @@ matching kind is used, in this order:
 
 | `kind` | Meaning | Other fields |
 |---|---|---|
-| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete` (or `review-budget-exhausted` or `check-budget-exhausted` with the exhausted `budget`, see [Review and check budgets](#review-and-check-budgets); or `target-conflict-unresolved` with the conflicting `paths`, `target-integration-rejected`, `target-keeps-advancing`, or `merge-not-eligible` with the last merge `status` and the failed or pending required `checks`, see [When the target advances during a run](#when-the-target-advances-during-a-run)), `stage` and `diagnostics` (the private `state.json` path) |
+| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete` (or `review-budget-exhausted` or `check-budget-exhausted` with the exhausted `budget`, see [Review and check budgets](#review-and-check-budgets); or `target-conflict-unresolved` with the conflicting `paths`, `target-integration-rejected`, `target-keeps-advancing`, or `merge-not-eligible` with the last merge `status` and the failed or pending required `checks`, see [When the target advances during a run](#when-the-target-advances-during-a-run); or `claim-lost` when another runner took over the task's claim, see [Claim leases](#claim-leases)), `stage` and `diagnostics` (the private `state.json` path) |
 | `max-accepted` | The task was not started because `maxAccepted` was reached | `reason` `max-accepted`, `limit` |
 | `waiting-for-dependency` | A dependency is not accepted yet (for example blocked in this run) | `reason` `waiting-for-dependency`, `dependencies` (the ids not accepted) |
-| `waiting-for-claim` | Another runner holds a claim on the task | `reason` `waiting-for-claim`, `claim` with the claimed task `id` and `host` |
+| `waiting-for-claim` | Another runner holds a claim on the task that is not stale (see [Claim leases](#claim-leases)) | `reason` `waiting-for-claim`, `claim` with the claimed task `id` and `host` |
 
 For example:
 
@@ -915,7 +1008,8 @@ For example:
 ```
 
 The private failure message of a blocked task stays in `state.json`; it is never
-written to stdout. `claimedElsewhere` still lists foreign claims by task id. A
+written to stdout. `claimedElsewhere` still lists foreign claims by task id;
+stale claims are not listed. A
 run whose blockers are all `waiting-for-claim` or `waiting-for-dependency` does
 not return `incomplete`; it waits (see
 [Waiting for free work](#waiting-for-free-work)). A `cancelled` result carries
@@ -1141,7 +1235,7 @@ hashes in `tasks`), the project `target`, `queue`, `changes` and `receipts`, the
 harness, model, effort and coverage, the checks (`checks`, `planningCheck` and
 `setup`; an omitted `setup` equals `[]`) and the leaves. Runner defaults such as
 the `archive` command, operational settings such as `maxAccepted`, `pollSeconds`,
-`budgets`, `checkTimeoutMinutes`, `commitScope`, `commitSuffix` and `repository`, the runner version, and settings
+`leaseSeconds`, `budgets`, `checkTimeoutMinutes`, `commitScope`, `commitSuffix` and `repository`, the runner version, and settings
 a newer runner introduces are not part of it, so they never make a resumed
 invocation incompatible.
 
@@ -1232,7 +1326,9 @@ Receipts committed to the repository do not carry it.
 Dispose of an invocation when its owner no longer wants it: a task stays
 blocked, an experiment is abandoned or the plan changed. Until then its claims
 make other invocations wait (`waiting-for-claim`), its ownership stays held and
-its `state.json` keeps saying `blocked` or `incomplete`. One command ends it:
+its `state.json` keeps saying `blocked` or `incomplete`. The claim of a blocked
+task never expires (see [Claim leases](#claim-leases)), so dispose is the way to
+free it. One command ends it:
 
 ```sh
 cd /path/to/project
@@ -1643,8 +1739,9 @@ and appears in its `blocked` entry of `blockers` in the run result (see
 [Unfinished results](#unfinished-results)), for example
 `{"kind":"blocked","stage":"integrate","reason":"target-conflict-unresolved","diagnostics":"...","paths":["src/counter/result.mjs"]}`.
 A task whose [review or check budget](#review-and-check-budgets) ran out has
-`review-budget-exhausted` or `check-budget-exhausted`; every other blocked task
-keeps the reason `operation-incomplete`.
+`review-budget-exhausted` or `check-budget-exhausted`, a task whose claim another
+runner took over has `claim-lost` (see [Claim leases](#claim-leases)); every
+other blocked task keeps the reason `operation-incomplete`.
 
 **Restarts.** Every integration step is saved in `state.json` before the next
 effect. `integratedTargets` lists every target commit merged into the task
@@ -1772,7 +1869,7 @@ Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
 `openspec-layout-created`, `harness-unavailable`, `missing-setting`
 or `startup-or-run-failed` (target refusals, `invocation-running`,
 `invocation-disposed`, `retry-not-blocked`, `invalid-poll-seconds`,
-`invalid-budget`, `invalid-check-timeout` and `dependencies-outside-invocation` are recorded as
+`invalid-lease-seconds`, `invalid-budget`, `invalid-check-timeout` and `dependencies-outside-invocation` are recorded as
 `startup-or-run-failed`).
 Blocked tasks use safe `blockingReason` codes
 `operation-incomplete` or `cancelled`. SIGINT and SIGTERM are handled
@@ -1838,7 +1935,8 @@ invocation file or a [target branch](#target-branch) refusal, exit with code 4
 without writing any step line. A `missing-setting` refusal (see
 [Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation)),
 an `invalid-poll-seconds` refusal (see
-[Waiting for free work](#waiting-for-free-work)), an `invalid-budget`
+[Waiting for free work](#waiting-for-free-work)), an `invalid-lease-seconds`
+refusal (see [Claim leases](#claim-leases)), an `invalid-budget`
 refusal (see [Review and check budgets](#review-and-check-budgets)) and an
 `invalid-check-timeout` refusal (see [Check time limit](#check-time-limit))
 write only the run `start` line and the run `end` line with outcome
@@ -1854,7 +1952,11 @@ target advanced), `send-back` (only when a rejected clean integration is sent
 back), `push`, `pull request`, `wait`, `merge`, `retry` (only when
 the target advanced before the merge or the Pull Request is behind it),
 `acceptance`, `cleanup`, and `blocked`
-(`stopped at <step>`, naming the last step and never the reason). An
+(`stopped at <step>`, naming the last step and never the reason). Two task
+lines report failed claim bookkeeping (see [Claim leases](#claim-leases)):
+`lease: renewal failed; retrying` when a renewal of the claim could not be
+written, and `claim: could not mark the claim blocked` after a `blocked` line
+when the claim could not be marked blocked. An
 integration of an in-scope target advance writes an `integrate` line before the
 merge, an `implementation` line before the conflict resolution session, `setup`
 and `check` lines for its checks, and `review` and `documentation review` lines
@@ -2015,7 +2117,13 @@ with the same fixtures and a fake sleep injected through `RunOptions.sleep`:
 another invocation merges the awaited task, a dependency is merged elsewhere, a
 claim is released by `dispose`, or the sleep aborts the run. The runner fixture
 gives every run a fake sleep that cancels it at its first poll, so a test whose
-remaining work is held elsewhere never waits for real. The dispose command is tested with Git fixtures, scripted adapters and
+remaining work is held elsewhere never waits for real. Claim leases are tested
+in `test/claim-leases.test.ts` with the same fixtures, a fake clock passed as
+`RunOptions.now` and a fake renewal timer injected through
+`RunOptions.leaseTimer`, whose renewal callback the test calls after advancing
+the clock: renewal during long work, stale, legacy and blocked claims written
+directly on the fixture's claims ledger, a takeover raced by two runners, and
+`claim-lost` before the push and before the merge. The dispose command is tested with Git fixtures, scripted adapters and
 scripted pull request hosts, through `disposeInvocation` and the exported
 `dispose` entry point with a temporary `XDG_STATE_HOME`. Target advances during
 a run (clean and conflicting merges, restarts and advances outside the scopes)
