@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 import { git } from '../src/git.ts';
 import type { RunResult } from '../src/runner.ts';
 import { runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
@@ -22,6 +23,12 @@ function startingLine(runners: number) {
   const arrive = () => { arrived += 1; if (arrived === runners) release(); };
   return { open, arrive };
 }
+
+/**
+ * Product checks no longer block the process, so a runner can find every remaining task claimed by a runner that is
+ * still checking. It then waits for real and polls again, instead of the fixture sleep that cancels the run.
+ */
+const waitForFreeWork = async (): Promise<void> => { await delay(200); };
 
 // Grade A
 
@@ -50,7 +57,7 @@ for (const [layout, scopes] of [['separate', {}], ['shared', SHARED_SCOPES]] as 
     };
 
     const results: RunResult[] = await Promise.all(RUNNERS.map(runner =>
-      f.run(f.config(runner), { createAdapter: worker(runner) }).finally(() => {
+      f.run(f.config(runner), { createAdapter: worker(runner), sleep: waitForFreeWork }).finally(() => {
         if (!sessions.some(([name]) => name === runner)) line.arrive();
       })));
 
