@@ -7,9 +7,9 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay, setImmediate as yieldLoop } from 'node:timers/promises';
 import { hash, digest, within, safePath, validateConfig, validateQueue, archiveCommand, isDocumentation,
-  specsDirectory, resolvePollSeconds, resolveCheckTimeoutMinutes } from './model.ts';
-import type { BudgetExhaustion, BudgetStage, CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose, Queue,
-  RetryRecord, ReviewRecord, RunConfig, SendBackCause, SendBackRecord, Task, TaskBudget, Work, WorkerReport,
+  specsDirectory, resolvePollSeconds, resolveBudgets, resolveCheckTimeoutMinutes, DEFAULT_BUDGETS } from './model.ts';
+import type { BudgetExhaustion, BudgetLimits, BudgetStage, CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose,
+  Queue, RetryRecord, ReviewRecord, RunConfig, SendBackCause, SendBackRecord, Task, TaskBudget, Work, WorkerReport,
   TaskCompletion } from './model.ts';
 import { command, describeCommand, git, gitPage, fileAt, hasRef, pushBookkeeping, receiptAt, GitHubHost, assertOriginHead,
   MERGE_STATE_VIEWS, MERGE_STATE_POLL_MS } from './git.ts';
@@ -190,9 +190,12 @@ const INTEGRATION_REASONS: readonly string[] = ['target-conflict-unresolved', 't
 const CAUSE_LABEL: Readonly<Record<SendBackCause, string>> = Object.freeze({ checks: 'checks',
   review: 'implementation review', 'document-review': 'documentation review' });
 
-/** The review rounds of every budget stage (planning, implementation and documentation) of a task. */
+/**
+ * The default review rounds of the implementation and documentation stages of a task; the planning default is
+ * `DEFAULT_BUDGETS.plan.reviews` (6). The `budgets` setting replaces any default.
+ */
 export const REVIEW_ROUNDS = 4;
-/** The failing runner check runs of each budget stage; the documentation stage runs no checks. */
+/** The default failing runner check runs of each budget stage; the documentation stage runs no checks. */
 export const CHECK_ATTEMPTS: Readonly<Record<BudgetStage, number>> = Object.freeze({ plan: 4, work: 4, document: 0 });
 const BUDGET_NAMES: Readonly<Record<BudgetStage, string>> = Object.freeze({ plan: 'Planning', work: 'Implementation',
   document: 'Documentation' });
@@ -211,11 +214,11 @@ export function budgetOf(work: Pick<Work, 'budget' | 'planningReviews' | 'review
     document: { reviews: (work.documentationReviews ?? []).length, checks: 0 } };
 }
 
-/** The exhaustion of `stage` of `budget`, with the used and allowed counts of both parts. */
-export function budgetExhaustion(budget: TaskBudget, stage: BudgetStage, exhausted: BudgetExhaustion['exhausted']):
-  BudgetExhaustion {
-  return { stage, exhausted, reviews: { used: budget[stage].reviews, limit: REVIEW_ROUNDS },
-    checks: { used: budget[stage].checks, limit: CHECK_ATTEMPTS[stage] } };
+/** The exhaustion of `stage` of `budget`, with the used counts and the `limits` in force of both parts. */
+export function budgetExhaustion(budget: TaskBudget, stage: BudgetStage, exhausted: BudgetExhaustion['exhausted'],
+  limits: Readonly<BudgetLimits> = DEFAULT_BUDGETS): BudgetExhaustion {
+  return { stage, exhausted, reviews: { used: budget[stage].reviews, limit: limits[stage].reviews },
+    checks: { used: budget[stage].checks, limit: limits[stage].checks } };
 }
 
 /**
@@ -251,24 +254,59 @@ export const failureDetail = (error: unknown): string => {
 
 const checkRecords = (rows: CheckRecord[]) => rows.map(({ command, args, outcome }) => ({ command, args, outcome }));
 const reviewRecord = ({ reviewer, outcome }: ReviewRecord) => ({ reviewer, outcome });
-const DOCUMENTATION_REVIEW = 'Review the documentation changes independently against the implementation, every ' +
-  'criterion and the task scope. Documentation may change only README files, Markdown files and docs or doc ' +
-  'directories inside the task scopes. Read files and context; the diff section shows all task changes. ' +
-  'Report accepted only with zero findings; otherwise changes-required with concrete findings.';
+/** The instruction of every planning, implementation and documentation review to report all findings of a round. */
+export const EXHAUSTIVE_REVIEW = 'Report every finding you can find in this round, not only the first ones, so that ' +
+  'the next round can address them all; report accepted only with zero findings.';
+/**
+ * The findings of the earlier review rounds of a stage, in recorded order with their 1-based round numbers, the
+ * instruction to check first that each was resolved and the permission to report new findings; `''` for no review.
+ */
+export function earlierFindingsPrompt(reviews: Pick<ReviewRecord, 'findings'>[]): string {
+  if (!reviews.length) return '';
+  const rounds = reviews.map((review, index) => ({ round: index + 1, findings: [...(review.findings ?? [])] }));
+  return `Findings reported by the earlier review rounds of this stage: ${JSON.stringify(rounds)}. ` +
+    'Check first that each of them was resolved and report every one that was not resolved; you may also report ' +
+    'new findings.';
+}
+/** `text` followed by the earlier findings text of `earlier`, if any. */
+const withEarlier = (text: string, earlier: Pick<ReviewRecord, 'findings'>[]): string => {
+  const listed = earlierFindingsPrompt(earlier);
+  return listed ? `${text} ${listed}` : text;
+};
+/** The planning review prompt; `earlier` are the planning reviews already recorded for the task. */
+export const planningReviewPrompt = (coverage: number | undefined,
+  earlier: Pick<ReviewRecord, 'findings'>[] = []): string =>
+  withEarlier('Review planning artifacts independently against exact source criteria, scope and decisions. ' +
+    'Report accepted only with zero findings; otherwise changes-required with concrete findings. ' +
+    planningReviewTestInstructions(coverage!) + ' ' + EXHAUSTIVE_REVIEW, earlier);
+/**
+ * The documentation review prompt of the document-review stage and of an integration; `earlier` are the
+ * documentation reviews already recorded for the task (none for an integration).
+ */
+export const documentationReviewPrompt = (earlier: Pick<ReviewRecord, 'findings'>[] = []): string =>
+  withEarlier('Review the documentation changes independently against the implementation, every ' +
+    'criterion and the task scope. Documentation may change only README files, Markdown files and docs or doc ' +
+    'directories inside the task scopes. Read files and context; the diff section shows all task changes. ' +
+    'Report accepted only with zero findings; otherwise changes-required with concrete findings. ' +
+    EXHAUSTIVE_REVIEW, earlier);
 /** The implementation session instruction to delete every scratch or diagnostic file before finishing. */
 export const LEFTOVER_FILES_WORK = 'Before finishing, delete with delete_file every scratch or diagnostic file you created ' +
   'during this task, such as temporary debug tests, captures or notes; keep only files the task needs.';
 /** The implementation review instruction to reject leftover diagnostic files and name them in findings. */
 export const LEFTOVER_FILES_REVIEW = 'Report changes-required when the task changes contain a file that only served ' +
   'diagnosis, such as a temporary debug test, capture or scratch file, and name each such file by path in findings.';
-/** The implementation review prompt of the work stage and of an integration. */
-const implementationReview = (coverage: number | undefined): string =>
-  'Review actual implementation independently against every criterion, scope, security and test evidence. ' +
-  'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required. ' +
-  'When reporting accepted, provide completion.summary with two or three English sentences describing what ' +
-  'the whole task changed, and completion.grade for whole-task complexity: A (most complex), B, C, D, ' +
-  'E (easiest). Grade complexity, not correctness, quality or execution speed. ' + LEFTOVER_FILES_REVIEW + ' ' +
-  implementationReviewTestInstructions(coverage!);
+/**
+ * The implementation review prompt of the work stage and of an integration; `earlier` are the implementation reviews
+ * already recorded for the task (none for an integration).
+ */
+export const implementationReviewPrompt = (coverage: number | undefined,
+  earlier: Pick<ReviewRecord, 'findings'>[] = []): string =>
+  withEarlier('Review actual implementation independently against every criterion, scope, security and test evidence. ' +
+    'Read files and context. Report accepted with zero findings only when complete; otherwise changes-required. ' +
+    'When reporting accepted, provide completion.summary with two or three English sentences describing what ' +
+    'the whole task changed, and completion.grade for whole-task complexity: A (most complex), B, C, D, ' +
+    'E (easiest). Grade complexity, not correctness, quality or execution speed. ' + LEFTOVER_FILES_REVIEW + ' ' +
+    implementationReviewTestInstructions(coverage!) + ' ' + EXHAUSTIVE_REVIEW, earlier);
 /** The number of sessions of `purpose` already started for `work`, as the session start counter records it. */
 const sessionsStarted = (work: Work, purpose: Purpose): number => work.sessionStarts ?
   work.sessionStarts[purpose] ?? 0 : (work.sessions ?? []).filter(item => item.purpose === purpose).length;
@@ -509,6 +547,9 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   if (lacking) throw new MissingSettingError(lacking);
   // An invalid poll interval is refused just as early; the interval is operational and never enters the identity.
   const pollSeconds = resolvePollSeconds((requested as Partial<RunConfig> | undefined)?.pollSeconds);
+  // Invalid budgets are refused just as early; the limits are operational and never enter the identity, so a restart
+  // applies the limits it is given to the recorded counts.
+  const limits = resolveBudgets((requested as Partial<RunConfig> | undefined)?.budgets);
   // An invalid check time limit is refused just as early; the limit is operational and never enters the identity.
   const checkTimeoutMinutes = resolveCheckTimeoutMinutes((requested as Partial<RunConfig> | undefined)?.checkTimeoutMinutes);
   const checkLimitMs = options.checkLimits?.timeoutMs ?? checkTimeoutMinutes * 60000;
@@ -675,18 +716,20 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
     // The durable budget of the active work. A budget stage saves it on entry, so legacy work keeps its derived counts.
     const budget = (): TaskBudget => budgetOf(activeWork());
     const enterBudget = () => { if (!activeWork().budget) save({ budget: structuredClone(budget()) }); };
+    // Every exhaustion names the limits of this run, so a blocker reports the limit in force when the task blocked.
     const exhausted = (stage: BudgetStage, part: BudgetExhaustion['exhausted']) =>
-      new BudgetExhausted(budgetExhaustion(budget(), stage, part));
-    // Before every round: an exhausted stage blocks before any session starts.
+      new BudgetExhausted(budgetExhaustion(budget(), stage, part, limits));
+    // Before every round: an exhausted stage blocks before any session starts. A restart with a limit above the used
+    // count passes, so the task resumes with its recorded counts.
     const guardRound = (stage: BudgetStage) => {
       const used = budget()[stage];
-      if (used.reviews >= REVIEW_ROUNDS) throw exhausted(stage, 'reviews');
-      if (CHECK_ATTEMPTS[stage] && used.checks >= CHECK_ATTEMPTS[stage]) throw exhausted(stage, 'checks');
+      if (used.reviews >= limits[stage].reviews) throw exhausted(stage, 'reviews');
+      if (limits[stage].checks && used.checks >= limits[stage].checks) throw exhausted(stage, 'checks');
     };
     // Immediately before a review session: the round is counted durably first, so a failing session still uses it.
     const countReview = (stage: BudgetStage) => {
       const current = budget();
-      if (current[stage].reviews >= REVIEW_ROUNDS) throw exhausted(stage, 'reviews');
+      if (current[stage].reviews >= limits[stage].reviews) throw exhausted(stage, 'reviews');
       save({ budget: { ...current, [stage]: { ...current[stage], reviews: current[stage].reviews + 1 } } });
     };
     // A failing runner check run uses one check attempt, never a review round.
@@ -694,11 +737,11 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       const current = budget();
       const checks = current[stage].checks + 1;
       save({ budget: { ...current, [stage]: { ...current[stage], checks } }, findings });
-      if (checks >= CHECK_ATTEMPTS[stage]) throw exhausted(stage, 'checks');
+      if (checks >= limits[stage].checks) throw exhausted(stage, 'checks');
     };
     // A review that did not accept on the last round exhausts the review budget.
     const afterRejection = (stage: BudgetStage) => {
-      if (budget()[stage].reviews >= REVIEW_ROUNDS) throw exhausted(stage, 'reviews');
+      if (budget()[stage].reviews >= limits[stage].reviews) throw exhausted(stage, 'reviews');
     };
     const rememberPr = (pr: PullRequest) => {
       const previous = activeWork().pr;
@@ -1252,10 +1295,9 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             }
             countReview('plan');
             taskStep(work.id, 'planning review', 'starting the planning review session', number);
+            // From the second round the reviewer first checks the findings of the earlier planning reviews.
             const review = await session(work, 'review', prompt +
-              'Review planning artifacts independently against exact source criteria, scope and decisions. ' +
-              'Report accepted only with zero findings; otherwise changes-required with concrete findings. ' +
-              planningReviewTestInstructions(config.coverage));
+              planningReviewPrompt(config.coverage, activeWork().planningReviews ?? []));
             save({ planningReviews: [...(activeWork().planningReviews ?? []), review] });
             if (review.outcome === 'accepted' && !review.findings.length) {
               save({ specification, stage: 'work', findings: [] }); break;
@@ -1282,8 +1324,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             catch (error) { countCheck('work', [failureDetail(error)]); continue; }
             countReview('work');
             taskStep(work.id, 'review', 'starting the implementation review session', number);
-            const review = await session(activeWork(), 'review', prompt + implementationReview(config.coverage),
-              true, number);
+            const review = await session(activeWork(), 'review', prompt +
+              implementationReviewPrompt(config.coverage, activeWork().reviews ?? []), true, number);
             save({ reviews: [...(activeWork().reviews ?? []), review] });
             if (review.outcome === 'accepted' && !review.findings.length) {
               // The documentation stage starts from the reviewed head; its record lists what it later updates.
@@ -1329,7 +1371,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             if (!resumed) countReview('document');
             taskStep(work.id, 'documentation review', 'starting the documentation review session',
               resumed ? round - 1 : round);
-            const review = await session(activeWork(), 'document-review', prompt + DOCUMENTATION_REVIEW);
+            const review = await session(activeWork(), 'document-review', prompt +
+              documentationReviewPrompt(activeWork().documentationReviews ?? []));
             const reviews = [...(activeWork().documentationReviews ?? []), review];
             if (review.outcome === 'accepted' && !review.findings.length) {
               save({ documentationReviews: reviews, stage: 'final-checks', findings: [] });
@@ -1497,7 +1540,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             let review!: ReviewRecord;
             try {
               taskStep(work.id, 'review', 'starting the implementation review session of the merged result');
-              review = await session(activeWork(), 'review', prompt + implementationReview(config.coverage) + ' ' +
+              // The integrate stage lists no earlier findings: its send-back already carries them.
+              review = await session(activeWork(), 'review', prompt + implementationReviewPrompt(config.coverage) + ' ' +
                 merged, true);
               save({ reviews: [...(activeWork().reviews ?? []), review] });
             } catch (error) { rejected(error); }
@@ -1511,7 +1555,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             let review!: ReviewRecord;
             try {
               taskStep(work.id, 'documentation review', 'starting the documentation review session of the merged result');
-              review = await session(activeWork(), 'document-review', prompt + DOCUMENTATION_REVIEW + ' ' + merged);
+              review = await session(activeWork(), 'document-review', prompt + documentationReviewPrompt() + ' ' + merged);
             } catch (error) { rejected(error); }
             const documentationReviews = [...(activeWork().documentationReviews ?? []), review];
             if (review.outcome !== 'accepted' || review.findings.length) {

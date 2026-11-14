@@ -189,6 +189,10 @@ Save it as, for example, `~/invocations/my-project-1.json`:
 - The optional `pollSeconds` (an integer from 5 through 3600, default 60) sets
   how often a run polls while it waits for work held by other runners; see
   [Waiting for free work](#waiting-for-free-work).
+- The optional `budgets` sets the review rounds and check attempts of the
+  planning, implementation and documentation stages, each an integer from 1
+  through 12, for example `"budgets": { "plan": { "reviews": 8 } }`; see
+  [Review and check budgets](#review-and-check-budgets).
 - The optional `checkTimeoutMinutes` (an integer from 1 through 240, default
   30) sets the time limit of every product check command; see
   [Check time limit](#check-time-limit).
@@ -235,12 +239,13 @@ outcome-runner ~/invocations/my-project-1.json --harness=codex --model=<codex-mo
 |---|---|
 | 0 | Success: `exhausted` or `limit-reached` |
 | 3 | Incomplete, for example a blocked task, a dependency inside the run that is blocked or a protected merge; `blockers` names every unfinished task and why (see [Unfinished results](#unfinished-results)). Work only claimed by other runners is waited for instead (see [Waiting for free work](#waiting-for-free-work)). A run cancelled by SIGINT or SIGTERM (`cancelled`) also exits 3 |
-| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `invalid-poll-seconds`, `invalid-check-timeout`, `openspec-missing` or `harness-unavailable` |
+| 4 | Did not run; the printed `reason` and the `diagnostics` file explain why, for example `detached-head`, `target-differs-from-current-branch`, `target-missing-on-origin`, `unsupported-target-name`, `invocation-running`, `invocation-disposed`, `dependencies-outside-invocation`, `retry-not-blocked`, `missing-setting`, `invalid-poll-seconds`, `invalid-budget`, `invalid-check-timeout`, `openspec-missing` or `harness-unavailable` |
 
 After an interruption, run the **same command with the same file** from the same
 branch to resume. Do not delete the state under `~/.local/state/outcome-runner/`.
 A task blocked because its review or check budget ran out stays blocked on such a
-restart; give it a fresh budget with `--retry <task id>` (see
+restart, unless the restart raises the exhausted limit above the used count with
+`budgets`; otherwise give it a fresh budget with `--retry <task id>` (see
 [Review and check budgets](#review-and-check-budgets)).
 The runner also creates a `work-queue-claims-<target>` branch. It is never
 merged; keep it while work is unfinished. When you no longer want an invocation,
@@ -671,7 +676,8 @@ change and one PR. Scopes cannot overlap queue, receipt or OpenSpec roots.
 Keep the invocation JSON outside the checkout. Supply a stable `invocation` name
 (letters, digits, `.`, `_`, `-`), optional selected `leaves`, optional
 positive `maxAccepted`, optional `pollSeconds` (see
-[Waiting for free work](#waiting-for-free-work)) and optional
+[Waiting for free work](#waiting-for-free-work)), optional `budgets` (see
+[Review and check budgets](#review-and-check-budgets)) and optional
 `checkTimeoutMinutes` (see [Check time limit](#check-time-limit)). Omitted mode is OFF. `authority` contains the actual
 instruction `reference`, `instruction`, the optional `target` (the branch the
 runner starts from) and a `tasks` object
@@ -921,11 +927,12 @@ result carries no `blockers`.
 
 Every task has a durable budget, saved in its work state in `state.json` as
 `budget` (`plan`, `work` and `document`, each with the used `reviews` and
-`checks`). It bounds the planning, implementation and documentation stages:
+`checks`). It bounds the planning, implementation and documentation stages.
+Without a `budgets` setting the limits are:
 
 | Stage | Review rounds | Check attempts |
 |---|---|---|
-| `plan` (planning and planning review) | 4 | 4 failing planning check runs (the OpenSpec packet or `planningCheck`) |
+| `plan` (planning and planning review) | 6 | 4 failing planning check runs (the OpenSpec packet or `planningCheck`) |
 | `work` (implementation and implementation review) | 4 | 4 failing product check runs (`checks`) |
 | `document` (documentation and documentation review) | 4 | 0 (the stage runs no checks) |
 
@@ -944,25 +951,86 @@ Every task has a durable budget, saved in its work state in `state.json` as
   send-back session before it blocks; a conflict integration and the final
   checks block on their first failure.
 - **Restarts keep the counts.** A restart of the invocation without `--retry`
-  continues from the recorded counts and never grants new rounds or attempts. A
-  blocked task is still resumed (for example after a failed session), but a task
-  whose budget ran out is blocked again at once, without any worker or review
-  session. State written before budgets existed takes its used review rounds from
-  the recorded planning, implementation and documentation reviews, with no check
+  continues from the recorded counts and never resets them; it allows further
+  rounds and attempts only up to the limits configured for that restart. A
+  blocked task is still resumed (for example after a failed session). A task
+  whose budget ran out is resumed as well when the restart sets the exhausted
+  limit above its used count (see [Raising a limit](#raising-a-limit) below);
+  otherwise it is blocked again at once, without any worker or review session.
+  State written before budgets existed takes its used review rounds from the
+  recorded planning, implementation and documentation reviews, with no check
   attempts used.
+
+**Reviews that converge.** Every planning, implementation and documentation
+review prompt, including the implementation and documentation reviews of an
+[integration](#when-the-target-advances-during-a-run), tells the reviewer to
+report every finding it can find in this round, not only the first ones, so
+that the next round can address them all, and to report accepted only with zero
+findings. From the second review round of the planning, implementation or
+documentation stage, the review prompt also lists the findings of the earlier
+review rounds of that stage for the task, in recorded order with their round
+numbers, for example
+`[{"round":1,"findings":["a"]},{"round":2,"findings":["b","c"]}]`, and tells
+the reviewer to check first that each of them was resolved; the reviewer may
+still report new findings. The first review round of a stage lists no earlier
+findings, a review session that failed before reporting adds none, and the
+findings of another stage are never listed. Reviews recorded before a `--retry`
+stay earlier rounds of their stage. The integration reviews list no earlier
+findings: their one send-back session already carries them.
+
+**The `budgets` setting.** The optional invocation field `budgets` sets the
+limits of a stage: `budgets.<stage>.reviews` (review rounds) and
+`budgets.<stage>.checks` (check attempts) for the stages `plan`, `work` and
+`document`, except `budgets.document.checks` (the documentation stage runs no
+checks). Each value is an integer from 1 through 12. A given value replaces the
+default of that stage and part; an omitted one keeps the default. For example,
+8 planning review rounds and 2 failing product check runs, with every other
+limit at its default:
+
+```json
+"budgets": { "plan": { "reviews": 8 }, "work": { "checks": 2 } }
+```
+
+Any other value or shape is refused at startup, before any preflight, lock,
+state, ownership file, claim or worktree, with exit code 4 and reason
+`invalid-budget`: a value that is not an integer from 1 through 12 (for example
+`0`, `13`, `2.5` or `"4"`), `budgets.document.checks`, an unknown stage or
+field (for example `budgets.review` or `budgets.work.rounds`), a stage that is
+not an object (for example `"plan": 5`) or a `budgets` that is not an object
+(for example an array). The private diagnostics file names the offending field
+in `details.setting`, for example `budgets.plan.reviews` (`budgets` for the
+whole value), and the refused value in `details.value`. `budgets` is
+operational: it is not part of the invocation identity, so a restart with other
+budgets resumes the same invocation and is never refused as incompatible.
 
 When a budget runs out the task is blocked. Its private reason in `state.json`
 names the stage, whether reviews or checks ran out, and the used and allowed
 counts of both, for example
 `Implementation review budget exhausted: 4 of 4 review rounds and 0 of 4 check attempts used`
-or `Planning check budget exhausted: 1 of 4 review rounds and 4 of 4 check attempts used`.
+or `Planning check budget exhausted: 1 of 6 review rounds and 4 of 4 check attempts used`.
 The blocked entry also has `budget` with `stage`, `exhausted` (`reviews` or
 `checks`), `reviews` and `checks`, each with `used` and `limit`. The public
 blocker in the run result (see [Unfinished results](#unfinished-results)) has
 `reason` `review-budget-exhausted` or `check-budget-exhausted` and the same
 `budget`, for example
 `{"kind":"blocked","stage":"work","reason":"review-budget-exhausted","diagnostics":"...","budget":{"stage":"work","exhausted":"reviews","reviews":{"used":4,"limit":4},"checks":{"used":0,"limit":4}}}`.
-Every other blocked task keeps its reason, for example `operation-incomplete`.
+Each `limit`, in the private reason, the blocked entry and the public blocker,
+is the limit in force for the run that blocked the task: the configured
+`budgets` value of that run, or the default. Every other blocked task keeps its
+reason, for example `operation-incomplete`.
+
+#### Raising a limit
+
+A task blocked by an exhausted budget resumes without `--retry` when the
+invocation is restarted with a `budgets` limit above its used count, for example
+`"budgets": { "work": { "reviews": 6 } }` after 4 of 4 implementation review
+rounds. It continues at its recorded stage with its used counts and the
+recorded findings (the next worker session of the stage starts first), so the
+example allows two more implementation review rounds. No retry record is
+written, and its receipt has no `retries`. A restart whose limit is not above
+the used count blocks the task again at once, without any session, and reports
+the limit of that restart; a limit lowered below the used count shows, for
+example, `"reviews":{"used":4,"limit":3}`.
 
 **`--retry <task id>`.** Only the owner grants a blocked task a fresh budget, by
 restarting the invocation with `--retry <task id>` (once per task id, for
@@ -973,9 +1041,11 @@ outcome-runner ~/invocations/my-project-1.json --retry TASK-1
 ```
 
 The task's used review rounds and check attempts are reset to zero before it
-resumes at its recorded stage. Each retry is recorded with the task id (`task`),
-the time (`at`), the `stage`, the `previous` budget and the `exhausted` budget,
-when there was one, both in the task's work state (`retries`) and in `retries` of
+resumes at its recorded stage, under the limits of that restart. Each retry is
+recorded with the task id (`task`), the time (`at`), the `stage`, the
+`previous` budget and the `exhausted` budget (with the limits in force when the
+task was blocked), when there was one, both in the task's work state
+(`retries`) and in `retries` of
 `state.json`. The task's receipt lists its retries in `retries`; receipts of
 tasks never retried have no such field. `--retry` is an operational option: it
 is never part of the invocation identity. A `--retry` for a task that is not a
@@ -1071,7 +1141,7 @@ hashes in `tasks`), the project `target`, `queue`, `changes` and `receipts`, the
 harness, model, effort and coverage, the checks (`checks`, `planningCheck` and
 `setup`; an omitted `setup` equals `[]`) and the leaves. Runner defaults such as
 the `archive` command, operational settings such as `maxAccepted`, `pollSeconds`,
-`checkTimeoutMinutes`, `commitScope`, `commitSuffix` and `repository`, the runner version, and settings
+`budgets`, `checkTimeoutMinutes`, `commitScope`, `commitSuffix` and `repository`, the runner version, and settings
 a newer runner introduces are not part of it, so they never make a resumed
 invocation incompatible.
 
@@ -1339,7 +1409,8 @@ documentation files inside the scopes.
 **Documentation review.** A fresh review session checks the documentation
 changes against the implementation, the criteria and the scopes, and accepts
 only with zero findings. Findings go back to a new documentation session. Like
-planning and implementation it allows at most 4 review rounds, counted durably
+the implementation stage it allows at most 4 review rounds without a `budgets`
+setting (`budgets.document.reviews` sets another limit), counted durably
 in `budget.document.reviews` when each documentation review session starts (see
 [Review and check budgets](#review-and-check-budgets)); after that the task is
 blocked with
@@ -1636,7 +1707,7 @@ Statuses `exhausted` and `limit-reached` use exit 0; `incomplete` and
 `openspec-layout-created`, `harness-unavailable`, `missing-setting`
 or `startup-or-run-failed` (target refusals, `invocation-running`,
 `invocation-disposed`, `retry-not-blocked`, `invalid-poll-seconds`,
-`invalid-check-timeout` and `dependencies-outside-invocation` are recorded as
+`invalid-budget`, `invalid-check-timeout` and `dependencies-outside-invocation` are recorded as
 `startup-or-run-failed`).
 Blocked tasks use safe `blockingReason` codes
 `operation-incomplete` or `cancelled`. SIGINT and SIGTERM are handled
@@ -1701,8 +1772,9 @@ invocation file or a [target branch](#target-branch) refusal, exit with code 4
 without writing any step line. A `missing-setting` refusal (see
 [Upgrading the runner or adding tasks during an invocation](#upgrading-the-runner-or-adding-tasks-during-an-invocation)),
 an `invalid-poll-seconds` refusal (see
-[Waiting for free work](#waiting-for-free-work)) and an `invalid-check-timeout`
-refusal (see [Check time limit](#check-time-limit))
+[Waiting for free work](#waiting-for-free-work)), an `invalid-budget`
+refusal (see [Review and check budgets](#review-and-check-budgets)) and an
+`invalid-check-timeout` refusal (see [Check time limit](#check-time-limit))
 write only the run `start` line and the run `end` line with outcome
 `unavailable`, and no `preflight` line. The task steps are `claim`, `worktree`, `setup`
 (each setup command), `investigation`, `planning`, `planning check`,
@@ -1887,7 +1959,11 @@ is rewritten the way an older runner wrote it, and `RunOptions.requiredSettings`
 declares a required setting. The review and check budgets and `--retry` are
 tested in `test/review-budgets.test.ts` with the same fixtures and scripted
 adapters that reject chosen reviews, write failing results or incomplete
-planning artifacts, or fail chosen sessions, across restarts and retries.
+planning artifacts, or fail chosen sessions, across restarts and retries. The
+exhaustive review instruction, the earlier findings of later review rounds, the
+`budgets` setting, its refusals and the resumption after a raised limit are
+tested in `test/converging-reviews.test.ts` with the same fixtures and scripted
+adapters, which read the review prompts they receive.
 The check time limit is tested in `test/check-time-limit.test.ts` with the same
 fixtures, scripted adapters and small check scripts from
 `test/support/check-scripts.ts`: a check that hangs while a marker file exists,
