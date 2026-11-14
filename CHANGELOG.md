@@ -1,3 +1,10 @@
+## 0.28.0 - 2026-11-14
+
+### Features
+
+- implement OR-32 (ea77994)
+- implement OR-32 (75c7c45)
+
 ## 0.27.0 - 2026-11-13
 
 ### Features
