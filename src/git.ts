@@ -129,12 +129,47 @@ export function receiptAt(root: string, revision: string, path: string, taskHash
 }
 interface MergeView { headRefName?: string; headRefOid: string; baseRefName: string; mergeStateStatus: string; state: string; isDraft: boolean }
 
+/** The bucket `gh pr checks --json bucket` reports for one check. */
+export type CheckBucket = 'pass' | 'fail' | 'pending' | 'skipping' | 'cancel';
+/** One required check of a pull request and its bucket. */
+export interface RequiredCheck { name: string; bucket: CheckBucket }
+/** The settled `mergeStateStatus` of an open pull request and its required checks (none for `CLEAN`). */
+export interface MergeEligibility { status: string; checks: RequiredCheck[] }
+
+/**
+ * A merge refused only because the settled status is not `CLEAN`; it carries the status and the required checks.
+ * The message is `PR protection or identity blocks merge (<status>)`.
+ */
+export class MergeIneligible extends Error {
+  status: string;
+  checks: RequiredCheck[];
+  constructor(status: string, checks: RequiredCheck[] = []) {
+    super(`PR protection or identity blocks merge (${status})`);
+    this.name = 'MergeIneligible';
+    this.status = status;
+    this.checks = checks.map(check => ({ ...check }));
+  }
+}
+
+/** Parses the JSON of `gh pr checks --json name,bucket`; anything but an array of named checks throws. */
+function parseChecks(text: string): RequiredCheck[] {
+  const rows: unknown = JSON.parse(text);
+  if (!Array.isArray(rows)) throw new Error('Unexpected required checks output');
+  return rows.map(row => {
+    const { name, bucket } = (row ?? {}) as Partial<RequiredCheck>;
+    if (typeof name !== 'string' || typeof bucket !== 'string') throw new Error('Unexpected required checks output');
+    return { name, bucket };
+  });
+}
+
 // GitHub has taken more than a minute; at the default poll this waits 5 minutes.
 export const MERGE_STATE_VIEWS = 100;
 export const MERGE_STATE_POLL_MS = 3000;
 export interface MergePolling {
   views?: number;
   pollMs?: number;
+  /** The delay between two views while required checks are pending; default `MERGE_ELIGIBILITY_POLL_MS`. */
+  eligibilityPollMs?: number;
   delay?: (ms: number) => Promise<unknown>;
 }
 export function assertOriginHead(root: string, branch: string, head: string): void {
@@ -171,15 +206,45 @@ export class GitHubHost {
     return this.find(work.branch);
   }
   /**
+   * The required checks of `pr` with their buckets. `gh pr checks` exits nonzero while checks are pending or after
+   * one failed, still printing the JSON, so the stdout of such a failure is parsed. Empty output gives no checks;
+   * any other unparsable output rethrows the command failure.
+   */
+  requiredChecks(pr: PullRequest): RequiredCheck[] {
+    let output: string;
+    try { output = this.gh('pr', 'checks', String(pr.number), '--required', '--json', 'name,bucket'); }
+    catch (error) {
+      const stdout = String((error as { stdout?: unknown }).stdout ?? '').trim();
+      if (!stdout) return [];
+      try { return parseChecks(stdout); } catch { throw error; }
+    }
+    return output.trim() ? parseChecks(output) : [];
+  }
+  /** Throws the identity refusal when the settled view is not the open, non-draft pull request of `head`. */
+  private assertIdentity(row: MergeView, head: string): void {
+    if (row.state !== 'OPEN' || row.headRefOid !== head || row.baseRefName !== this.project.target || row.isDraft) {
+      throw new Error(`PR protection or identity blocks merge (${row.mergeStateStatus})`);
+    }
+  }
+  /**
+   * The merge eligibility of the settled view of `head`: `CLEAN` without reading checks, any other status with the
+   * required checks. A view that is not the open, non-draft pull request of `head` throws.
+   */
+  async eligibility(pr: PullRequest, head: string): Promise<MergeEligibility> {
+    const row = await this.settledMergeView(pr, head);
+    this.assertIdentity(row, head);
+    if (row.mergeStateStatus === 'CLEAN') return { status: 'CLEAN', checks: [] };
+    return { status: row.mergeStateStatus, checks: this.requiredChecks(pr) };
+  }
+  /**
    * Merges the exact checked `head` once the pull request view has settled and is eligible. The optional `guard`
    * runs after the settled view and immediately before `gh pr merge`; a throwing guard issues no merge command.
+   * A view whose only problem is a status other than `CLEAN` throws `MergeIneligible` with the required checks.
    */
   async merge(pr: PullRequest, head: string, guard?: () => void | Promise<void>): Promise<void> {
     const row = await this.settledMergeView(pr, head);
-    if (row.state !== 'OPEN' || row.headRefOid !== head || row.baseRefName !== this.project.target ||
-        row.mergeStateStatus !== 'CLEAN' || row.isDraft) {
-      throw new Error(`PR protection or identity blocks merge (${row.mergeStateStatus})`);
-    }
+    this.assertIdentity(row, head);
+    if (row.mergeStateStatus !== 'CLEAN') throw new MergeIneligible(row.mergeStateStatus, this.requiredChecks(pr));
     await guard?.();
     this.gh('pr', 'merge', String(pr.number), '--merge', '--match-head-commit', head);
   }

@@ -12,7 +12,11 @@ import type { BudgetExhaustion, BudgetLimits, BudgetStage, CheckRecord, CleanupS
   Queue, RetryRecord, ReviewRecord, RunConfig, SendBackCause, SendBackRecord, Task, TaskBudget, Work, WorkerReport,
   TaskCompletion } from './model.ts';
 import { command, describeCommand, git, gitPage, fileAt, hasRef, pushBookkeeping, receiptAt, GitHubHost, assertOriginHead,
-  MERGE_STATE_VIEWS, MERGE_STATE_POLL_MS } from './git.ts';
+  MERGE_STATE_VIEWS, MERGE_STATE_POLL_MS, MergeIneligible } from './git.ts';
+import type { MergeEligibility } from './git.ts';
+import { classifyEligibility, releaseOnlyAdvance, MergeNotEligible, MERGE_ELIGIBILITY_POLL_MS,
+  MERGE_ELIGIBILITY_WAIT_MS, BEHIND, ELIGIBLE } from './merge-eligibility.ts';
+import type { EligibilityClass } from './merge-eligibility.ts';
 import { lockRootOf, withGitLock } from './git-lock.ts';
 import { pageOffset, readPage } from './text-page.ts';
 import { RunStore } from './run-store.ts';
@@ -48,9 +52,15 @@ export interface PullRequestHost {
   create(work: Work, body: string): PullRequest | null | Promise<PullRequest | null>;
   /**
    * Merges the pull request with the exact checked `head`. A host that waits before its merge command calls the
-   * optional `guard` immediately before it; a throwing guard means no merge command is issued.
+   * optional `guard` immediately before it; a throwing guard means no merge command is issued. A merge refused only
+   * by the pull request status may throw `MergeIneligible`.
    */
   merge(pr: PullRequest, head: string, guard?: () => void | Promise<void>): void | Promise<void>;
+  /**
+   * The settled merge status of the open pull request of `head` and its required checks. A host without it is
+   * treated as eligible (`CLEAN` without checks).
+   */
+  eligibility?(pr: PullRequest, head: string): MergeEligibility | Promise<MergeEligibility>;
 }
 
 export interface RunEvent {
@@ -66,8 +76,9 @@ export type BlockerKind = 'blocked' | 'waiting-for-dependency' | 'waiting-for-cl
  * One unfinished task of the invocation: `blocked` carries `stage` and `diagnostics` (the state.json path),
  * `waiting-for-dependency` the `dependencies` not yet accepted, `waiting-for-claim` the foreign `claim`
  * and `max-accepted` the `limit`.
- * A task blocked by an unresolved target conflict also carries the conflicting `paths`, and a task blocked by an
- * exhausted review or check budget carries the `budget`.
+ * A task blocked by an unresolved target conflict also carries the conflicting `paths`, a task blocked by an
+ * exhausted review or check budget carries the `budget`, and a task blocked with `merge-not-eligible` carries the
+ * last merge `status` and the failed or pending required `checks`.
  */
 export interface Blocker {
   kind: BlockerKind;
@@ -76,6 +87,8 @@ export interface Blocker {
   diagnostics?: string;
   paths?: string[];
   budget?: BudgetExhaustion;
+  status?: string;
+  checks?: string[];
   dependencies?: string[];
   claim?: { id: string; host?: string };
   limit?: number;
@@ -185,6 +198,9 @@ export const conflictMarkers = (text: string): boolean => /^(?:<<<<<<<|>>>>>>>) 
 
 const INTEGRATION_REASONS: readonly string[] = ['target-conflict-unresolved', 'target-integration-rejected',
   'target-keeps-advancing'];
+
+/** The blocked reason of a pull request that cannot become mergeable. */
+const MERGE_NOT_ELIGIBLE = 'merge-not-eligible';
 
 /** How the send-back step lines and the send-back prompt name what rejected the merged result. */
 const CAUSE_LABEL: Readonly<Record<SendBackCause, string>> = Object.freeze({ checks: 'checks',
@@ -355,7 +371,7 @@ export interface UnfinishedInput extends AcceptedInput {
   remaining: string[];
   tasks: Pick<Task, 'id' | 'dependencies' | 'scopes'>[];
   blocked: Record<string, { reason?: string; paths?: string[]; budget?: BudgetExhaustion;
-    work?: Pick<Work, 'stage' | 'scopes'> }>;
+    eligibility?: { status: string; checks: string[] }; work?: Pick<Work, 'stage' | 'scopes'> }>;
   maxAccepted?: number;
   foreignClaims: Pick<Claim, 'id' | 'host' | 'scopes'>[];
   statePath: string;
@@ -366,8 +382,9 @@ export interface UnfinishedInput extends AcceptedInput {
  * blocked, max-accepted, waiting-for-dependency, waiting-for-claim. Throws
  * `Unexplained unfinished task` when no rule matches. A blocked task with an exhausted budget has the reason
  * `review-budget-exhausted` or `check-budget-exhausted` and a copy of the `budget`; a blocked task keeps the reason
- * `target-conflict-unresolved` (with its conflicting `paths`), `target-integration-rejected` or
- * `target-keeps-advancing`; every other blocked task has the reason `operation-incomplete`.
+ * `target-conflict-unresolved` (with its conflicting `paths`), `target-integration-rejected`,
+ * `target-keeps-advancing` or `merge-not-eligible` (with the merge `status` and the required `checks`); every other
+ * blocked task has the reason `operation-incomplete`.
  */
 export function explainUnfinished(input: UnfinishedInput): Record<string, Blocker> {
   const { remaining, ids, tasks, blocked, done, maxAccepted, foreignClaims, statePath } = input;
@@ -378,11 +395,16 @@ export function explainUnfinished(input: UnfinishedInput): Record<string, Blocke
   const blockers: Record<string, Blocker> = {};
   for (const id of [...new Set([...blockedIds, ...remaining])]) {
     if (Object.hasOwn(blocked, id)) {
-      const { reason, paths, budget, work } = blocked[id];
+      const { reason, paths, budget, eligibility, work } = blocked[id];
       if (budget) {
         blockers[id] = { kind: 'blocked', stage: work?.stage,
           reason: budget.exhausted === 'reviews' ? 'review-budget-exhausted' : 'check-budget-exhausted',
           diagnostics: statePath, budget: structuredClone(budget) };
+        continue;
+      }
+      if (reason === MERGE_NOT_ELIGIBLE) {
+        blockers[id] = { kind: 'blocked', stage: work?.stage, reason: MERGE_NOT_ELIGIBLE, diagnostics: statePath,
+          ...(eligibility ? { status: eligibility.status, checks: [...eligibility.checks] } : {}) };
         continue;
       }
       const integration = typeof reason === 'string' && INTEGRATION_REASONS.includes(reason);
@@ -580,6 +602,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   validateConfig(config);
   statistics?.resolved(config, sources, harnessVersion);
   const { afterEffect = async () => {}, report = () => {}, now = Date.now, runCommand = command } = options;
+  // The run clock; the merge stage shadows `now` with its work, so the eligibility wait reads this name.
+  const clock = now;
   const createAdapter = options.createAdapter ?? ((adapterOptions: HarnessOptions) => createHarness(adapterOptions, config));
   const root = realpathSync(config.root); const project = config.project;
   const primary = dirname(resolve(root, git(root, 'rev-parse', '--git-common-dir')));
@@ -1680,6 +1704,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           const now = activeWork();
           const polling = options.mergePolling ?? {};
           const limit = polling.views ?? MERGE_STATE_VIEWS;
+          const pause = polling.delay ?? delay;
           // Every comparison of origin/<target> with the checked target goes through this helper; it is logged when
           // `log` is set or when the target differs, so repeated unchanged polling stays quiet.
           const compareTarget = (log: boolean): boolean => {
@@ -1692,10 +1717,36 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           };
           // Called by the host right before its merge command: a difference means no merge command is issued.
           const guard = (): void => { if (!compareTarget(true)) throw new TargetAdvanced(); };
+          /**
+           * One pending view of the eligibility wait. The first one records the start of the wait and a
+           * `checks-pending` retry; a wait line is written when the wait starts and whenever the status changes.
+           * After 30 minutes since the recorded start the task blocks with `merge-not-eligible`; otherwise the next
+           * view follows the eligibility poll interval. A restart keeps the recorded start.
+           */
+          const waitForChecks = async (number: number, status: string, names: string[]): Promise<void> => {
+            const wait = activeWork().mergeWait;
+            if (!wait || wait.status !== status) {
+              taskStep(work.id, 'wait', `waiting for required checks of #${number} (${status})`, currentAttempt());
+            }
+            if (!wait) {
+              const at = new Date(clock()).toISOString();
+              save({ mergeWait: { since: at, status, checks: [...names], views: 1 },
+                mergeRetries: [...(activeWork().mergeRetries ?? []), { attempt: currentAttempt(), reason: 'checks-pending',
+                  at, status, checks: [...names] }] });
+            } else {
+              save({ mergeWait: { ...wait, status, checks: [...names], views: wait.views + 1 } });
+            }
+            if (clock() - Date.parse(activeWork().mergeWait!.since) >= MERGE_ELIGIBILITY_WAIT_MS) {
+              throw new MergeNotEligible(status, names);
+            }
+            await cancellable(pause(polling.eligibilityPollMs ?? MERGE_ELIGIBILITY_POLL_MS), signal);
+          };
           // The wait is announced once on entry and a stale head once per merge stage, never on every view.
           taskStep(work.id, 'wait', `waiting for mergeability and checks of ${now.pr ? `#${now.pr.number}` : 'the pull request'}`,
             currentAttempt());
-          let headWait = false; let advanced = false;
+          let headWait = false; let staleViews = 0;
+          // Why the merge stage returns to publish: the target advanced, or the pull request is behind the target.
+          let retry: 'target-advanced' | 'behind' | undefined;
           for (let view = 1; ; view += 1) {
             const pr = await cancellable(Promise.resolve(host.find(work.branch)), signal);
             if (!pr) throw new Error('Recorded PR missing');
@@ -1707,33 +1758,76 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               throw new Error('Checked head or target changed');
             }
             const ready = pr.headRefOid === now.head;
-            if (!compareTarget(view === 1 || ready)) { advanced = true; break; }
+            // The eligibility of a ready view decides between merging, catching up, waiting and blocking.
+            let status = ''; let kind: EligibilityClass | undefined; let names: string[] = [];
             if (ready) {
-              taskStep(work.id, 'merge', `merging #${pr.number}`, currentAttempt());
-              try { await cancellable(Promise.resolve(host.merge(pr, now.head!, guard)), signal); }
-              catch (error) {
-                if (!(error instanceof TargetAdvanced)) throw error;
-                advanced = true; break;
+              const eligibility = host.eligibility ?
+                await cancellable(Promise.resolve(host.eligibility(pr, now.head!)), signal) : ELIGIBLE;
+              status = eligibility.status;
+              ({ kind, checks: names } = classifyEligibility(eligibility));
+            }
+            if (!compareTarget(view === 1 || kind === 'eligible' || kind === 'behind')) { retry = 'target-advanced'; break; }
+            if (ready) {
+              if (kind === 'eligible') {
+                taskStep(work.id, 'merge', `merging #${pr.number}`, currentAttempt());
+                try { await cancellable(Promise.resolve(host.merge(pr, now.head!, guard)), signal); }
+                catch (error) {
+                  if (error instanceof TargetAdvanced) { retry = 'target-advanced'; break; }
+                  if (!(error instanceof MergeIneligible)) throw error;
+                  // The status changed between the eligibility read and the merge; it is handled like that status.
+                  status = error.status;
+                  ({ kind, checks: names } = classifyEligibility({ status: error.status, checks: error.checks }));
+                  if (kind === 'eligible') kind = 'refused';
+                  if (kind === 'behind' && !compareTarget(true)) { retry = 'target-advanced'; break; }
+                }
+                if (kind === 'eligible') {
+                  await cancellable(afterEffect('merge', pr), signal);
+                  break;
+                }
               }
-              await cancellable(afterEffect('merge', pr), signal);
-              break;
+              if (kind === 'behind') { retry = 'behind'; break; }
+              if (kind === 'failed') throw new MergeNotEligible(status, names);
+              if (kind === 'refused') throw new MergeNotEligible(status, []);
+              await waitForChecks(pr.number, status, names);
+              continue;
             }
             if (!headWait) { headWait = true; taskStep(work.id, 'wait', 'waiting for pull request head to match', currentAttempt()); }
             assertOriginHead(work.path, work.branch, now.head!);
-            if (view >= limit) throw new Error('Checked head or target changed');
-            await cancellable((polling.delay ?? delay)(polling.pollMs ?? MERGE_STATE_POLL_MS), signal);
+            // Only stale-head views count toward the view limit; eligibility polls are bounded by time.
+            staleViews += 1;
+            if (staleViews >= limit) throw new Error('Checked head or target changed');
+            await cancellable(pause(polling.pollMs ?? MERGE_STATE_POLL_MS), signal);
           }
-          if (advanced) {
-            // A failed comparison: repeat the worktree merge, checks and comparison, at most TARGET_ATTEMPTS times.
-            const attempts = (activeWork().targetAttempts ?? 0) + 1;
-            if (attempts >= TARGET_ATTEMPTS) {
-              save({ stage: 'publish', targetAttempts: 0 });
-              throw new IntegrationFailure('target-keeps-advancing', []);
+          if (retry) {
+            // A failed comparison or a behind pull request: repeat the worktree merge, checks and comparison. Only
+            // advances that are not release-only count, at most TARGET_ATTEMPTS times.
+            const current = activeWork();
+            const targetNow = refresh(work.id).target;
+            const at = new Date(clock()).toISOString();
+            const records = current.mergeRetries ?? [];
+            if (current.testedTarget && releaseOnlyAdvance(work.path, current.testedTarget, targetNow)) {
+              const attempt = currentAttempt();
+              taskStep(work.id, 'retry', `origin/${project.target} advanced with a release commit; integrating it ` +
+                `without using an attempt (attempt ${attempt})`);
+              save({ stage: 'publish', mergeWait: undefined,
+                mergeRetries: [...records, { attempt, reason: 'release-commit', at, target: targetNow }] });
+            } else {
+              const attempts = (current.targetAttempts ?? 0) + 1;
+              if (attempts >= TARGET_ATTEMPTS) {
+                save({ stage: 'publish', targetAttempts: 0, mergeWait: undefined });
+                throw new IntegrationFailure('target-keeps-advancing', []);
+              }
+              taskStep(work.id, 'retry', retry === 'behind' ?
+                `#${current.pr?.number} is behind origin/${project.target}; catching up` :
+                `origin/${project.target} advanced; integrating it again`, attempts + 1);
+              save({ targetAttempts: attempts, stage: 'publish', mergeWait: undefined,
+                mergeRetries: [...records, { attempt: attempts + 1, reason: retry, at, target: targetNow,
+                  ...(retry === 'behind' ? { status: BEHIND } : {}) }] });
             }
-            taskStep(work.id, 'retry', `origin/${project.target} advanced; integrating it again`, attempts + 1);
-            save({ targetAttempts: attempts, stage: 'publish' });
+            await cancellable(afterEffect('retry', activeWork()), signal);
             continue;
           }
+          if (activeWork().mergeWait) save({ mergeWait: undefined });
           const targetNow = refresh(work.id).target;
           if (!accepted(targetNow, authorized(refresh(work.id).queue, work.id))) throw new Error('Merged result lacks valid receipt');
         }
@@ -1744,12 +1838,16 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         }
         if ((error as InterruptedFailure).interrupted) throw error;
         const stage = activeWork().stage;
-        // An unresolved target conflict keeps its conflicting paths beside the reason, and an exhausted budget its
-        // stage, exhausted part and counts.
+        // An unresolved target conflict keeps its conflicting paths beside the reason, an exhausted budget its
+        // stage, exhausted part and counts, and a pull request that cannot become mergeable its status and checks.
         const paths = error instanceof IntegrationFailure && error.paths.length ? { paths: [...error.paths] } : {};
         const budgetDetail = error instanceof BudgetExhausted ? { budget: structuredClone(error.budget) } : {};
+        const eligibility = error instanceof MergeNotEligible ?
+          { eligibility: { status: error.status, checks: [...error.checks] } } : {};
+        // The merge stage ends here, so an eligibility wait in progress is cleared; a restart starts a new one.
+        const blockedWork = activeWork().mergeWait ? { ...activeWork(), mergeWait: undefined } : activeWork();
         store.update({ blocked: { ...store.state.blocked, [work.id]: {
-          reason: (error as Error).message, ...paths, ...budgetDetail, work: activeWork() } }, current: null });
+          reason: (error as Error).message, ...paths, ...budgetDetail, ...eligibility, work: blockedWork } }, current: null });
         blockedStep(work.id, stage);
         // The reason reaches only the stderr mascot caption; the serialized event stays unchanged.
         report({ status: 'blocked', id: work.id }, { reason: (error as Error).message });

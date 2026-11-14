@@ -903,7 +903,7 @@ matching kind is used, in this order:
 
 | `kind` | Meaning | Other fields |
 |---|---|---|
-| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete` (or `review-budget-exhausted` or `check-budget-exhausted` with the exhausted `budget`, see [Review and check budgets](#review-and-check-budgets); or `target-conflict-unresolved` with the conflicting `paths`, `target-integration-rejected` or `target-keeps-advancing`, see [When the target advances during a run](#when-the-target-advances-during-a-run)), `stage` and `diagnostics` (the private `state.json` path) |
+| `blocked` | The task stopped at a stage of this invocation | `reason` `operation-incomplete` (or `review-budget-exhausted` or `check-budget-exhausted` with the exhausted `budget`, see [Review and check budgets](#review-and-check-budgets); or `target-conflict-unresolved` with the conflicting `paths`, `target-integration-rejected`, `target-keeps-advancing`, or `merge-not-eligible` with the last merge `status` and the failed or pending required `checks`, see [When the target advances during a run](#when-the-target-advances-during-a-run)), `stage` and `diagnostics` (the private `state.json` path) |
 | `max-accepted` | The task was not started because `maxAccepted` was reached | `reason` `max-accepted`, `limit` |
 | `waiting-for-dependency` | A dependency is not accepted yet (for example blocked in this run) | `reason` `waiting-for-dependency`, `dependencies` (the ids not accepted) |
 | `waiting-for-claim` | Another runner holds a claim on the task | `reason` `waiting-for-claim`, `claim` with the claimed task `id` and `host` |
@@ -1524,11 +1524,74 @@ the merge, the runner repeats the worktree merge, the checks (and, for a change
 inside the guarded paths, the reviews) and the comparison, then merges the new
 checked head. Each comparison while waiting for or immediately before the merge
 that finds a different target counts as one attempt, recorded in
-`targetAttempts` in `state.json`. After 10 attempts without an unchanged target
-the task is blocked with reason `target-keeps-advancing`: nothing is merged, the
-worktree, the local branch and the remote task branch are kept, and the attempt
-count is reset. A restart of the same invocation continues in that worktree
-with the worktree merge of the current target and 10 fresh attempts.
+`targetAttempts` in `state.json`, and so does a Pull Request that GitHub reports
+`BEHIND` (see below). After 10 attempts without an unchanged target the task is
+blocked with reason `target-keeps-advancing`: nothing is merged, the worktree,
+the local branch and the remote task branch are kept, and the attempt count is
+reset. A restart of the same invocation continues in that worktree with the
+worktree merge of the current target and 10 fresh attempts.
+
+**Release commits do not count toward the attempt limit.** A target advance
+whose commits are all release commits (non-merge commits with the subject
+`chore(release): vX.Y.Z` that the release script writes) and whose changed paths
+are only `package.json` and `package-lock.json`, changed only in their version
+fields (`version`, and `packages[""].version` of the lock file), and
+`CHANGELOG.md` is integrated, checked and published like any other advance, but
+it does not use an attempt: `targetAttempts` stays the same and the `retry`
+line says so (see [Step lines](#step-lines)). Any other advance counts, also a
+release commit that changes a dependency in `package.json` and an advance that
+mixes a release commit with other commits.
+
+**Merge eligibility retries.** Before the merge request the runner reads the
+settled merge status of the Pull Request (`mergeStateStatus`) and, for any
+status other than `CLEAN`, its required checks with
+`gh pr checks <number> --required --json name,bucket` (whose JSON is used also
+when `gh` exits nonzero because checks are pending or failed):
+
+- `CLEAN`: the runner merges.
+- `BEHIND`: the Pull Request is behind the target, so it is handled like an
+  advanced target. The runner records a retry with reason `behind`, catches up
+  with the target in the task worktree, runs the checks again, pushes the new
+  tested head and returns to the merge. It is never blocked as
+  `operation-incomplete` for being behind. Catching up counts as one attempt
+  toward the 10 attempts, unless the advance is release-only, so a Pull Request
+  that stays `BEHIND` still ends with `target-keeps-advancing`.
+- `BLOCKED`, `UNSTABLE` or `UNKNOWN` while pending required checks are still
+  running (and `UNKNOWN` while GitHub is still computing the status): the
+  runner waits for the pending required checks. It polls the Pull Request every
+  15 seconds for up to 30 minutes from the first pending view and merges as
+  soon as the Pull Request is `CLEAN`. The wait only reads the Pull Request,
+  compares the target and waits; it runs no check, commit, push or Pull Request
+  creation, and it is not bounded by the stale head view limit. When 30 minutes
+  have passed and checks are still pending, the task is blocked with
+  `merge-not-eligible`, the last status and the pending check names.
+- `BLOCKED`, `UNSTABLE` or `UNKNOWN` with a required check that failed or was
+  cancelled: the task is blocked at once with `merge-not-eligible`, the status
+  and the sorted names of the failed checks, without another view or delay.
+- Any other status that waiting cannot fix, for example `DIRTY`, or `BLOCKED`
+  or `UNSTABLE` with only passing or skipped checks (such as a missing
+  approval): the task is blocked at once with `merge-not-eligible` and the
+  status. The same applies when the status changes between that read and the
+  merge request and `GitHubHost.merge` refuses the merge: the refusal is handled
+  like that status (`BEHIND` catches up, pending checks are waited for, and any
+  other refusal blocks with `merge-not-eligible`).
+
+A task blocked with `merge-not-eligible` is not merged; its worktree, local
+branch and remote task branch are kept, and a restart of the same invocation
+continues at the merge stage. Its `blocked` entry in `state.json` has
+`eligibility` with the `status` and the `checks`, and its blocker in the run
+result carries the same `status` and `checks`, for example
+`{"kind":"blocked","stage":"merge","reason":"merge-not-eligible","diagnostics":"...","status":"BLOCKED","checks":["build"]}`.
+
+**Durable merge retries.** Every retry of the merge stage is recorded in
+`mergeRetries` of the task's work in `state.json`, with the `attempt` it leads
+to, its `reason` (`target-advanced`, `behind`, `release-commit` or
+`checks-pending`) and the time `at`, before the next effect, and is logged as a
+step line. A running wait for pending required checks is recorded in `mergeWait`
+with its start `since`, the last `status` and `checks` and the number of
+`views`. A restart resumes at the recorded attempt and, during a wait, keeps its
+recorded start, so the 30 minutes are not restarted; a restart after a
+`merge-not-eligible` block starts a new wait.
 
 **Conflicts.** When the merge conflicts, the worker gets exactly one worker
 session (an implementation session) with the conflicting paths, to resolve them
@@ -1572,10 +1635,12 @@ target is a new integration with its own send-back.
 | `target-conflict-unresolved` | A merge with conflicts: the resolution session fails, or conflict markers or unmerged paths remain. The conflicting `paths` are recorded with it |
 | `target-integration-rejected` | A merge, with or without resolved conflicts, whose checks or reviews are still rejected after the one send-back session |
 | `target-keeps-advancing` | The target advanced before the merge in 10 consecutive attempts; the task keeps its worktree and branches and a restart continues |
+| `merge-not-eligible` | The Pull Request cannot become mergeable: a required check failed, its status cannot be fixed by waiting (for example `DIRTY`), or required checks were still pending after 30 minutes. The last `status` and the failed or pending `checks` are recorded with it |
 
-The reason (and, for a conflict, the `paths`) is stored in the task's `blocked`
-entry in `state.json` and appears in its `blocked` entry of `blockers` in the
-run result (see [Unfinished results](#unfinished-results)), for example
+The reason (and, for a conflict, the `paths`; for `merge-not-eligible`, the
+`status` and `checks`) is stored in the task's `blocked` entry in `state.json`
+and appears in its `blocked` entry of `blockers` in the run result (see
+[Unfinished results](#unfinished-results)), for example
 `{"kind":"blocked","stage":"integrate","reason":"target-conflict-unresolved","diagnostics":"...","paths":["src/counter/result.mjs"]}`.
 A task whose [review or check budget](#review-and-check-budgets) ran out has
 `review-budget-exhausted` or `check-budget-exhausted`; every other blocked task
@@ -1756,9 +1821,10 @@ For example:
   harness, model and effort, the target branch name (in the `integrate`,
   `compare` and `retry` lines), a check or setup program name with its index,
   the check time limit (in the `check timeout` line),
-  the Pull Request number, attempt numbers, the poll interval and the hosts
-  recorded in claims (in the run `wait` line) and the run outcome. They never
-  contain commits, secrets, worker output, file contents, check output, error
+  the Pull Request number, the merge status (in the `wait` line for required
+  checks), attempt numbers, the poll interval and the hosts recorded in claims
+  (in the run `wait` line) and the run outcome. They never contain commits,
+  secrets, worker output, file contents, check output, check names, error
   messages, block reasons or other private diagnostics.
 
 The run steps are `start`, one `preflight` line for each preflight (OpenSpec,
@@ -1786,7 +1852,8 @@ write only the run `start` line and the run `end` line with outcome
 `receipt`, `compare` (each comparison with origin), `integrate` (only when the
 target advanced), `send-back` (only when a rejected clean integration is sent
 back), `push`, `pull request`, `wait`, `merge`, `retry` (only when
-the target advanced before the merge), `acceptance`, `cleanup`, and `blocked`
+the target advanced before the merge or the Pull Request is behind it),
+`acceptance`, `cleanup`, and `blocked`
 (`stopped at <step>`, naming the last step and never the reason). An
 integration of an in-scope target advance writes an `integrate` line before the
 merge, an `implementation` line before the conflict resolution session, `setup`
@@ -1809,24 +1876,33 @@ followed directly by `blocked: stopped at send-back`.
   waiting to merge, `compare: comparing origin/<target> with the checked
   target` is written for the first Pull Request view of the wait, for the view
   that leads to the merge request (directly before `merge: merging #N`, which
-  stays the last line before the merge request), for every view that finds a
-  different target, and by the guard right before the merge command. Later
-  views that find the target unchanged while polling stay quiet.
+  stays the last line before the merge request), for a view that reports
+  `BEHIND`, for every view that finds a different target, and by the guard right
+  before the merge command. Later views that find the target unchanged while
+  polling, also while waiting for pending required checks, stay quiet.
 - **Target retries**: only the `compare: comparing origin/<target> with the
   checked target` comparisons, made while waiting to merge or by the guard,
   write a `retry` line. When such a comparison finds a different target, it is
   followed directly by `retry: origin/<target> advanced; integrating it again
-  (attempt N)`, and the repeated publish pass follows. On the fifth consecutive
-  such comparison that finds a different target, no `retry` line is written:
-  the task is blocked with `target-keeps-advancing` and the compare line is
-  followed by `blocked: stopped at compare` (the `blocked` line names the last
-  step; the stage recorded in `state.json` stays `publish`). A publish-pass
-  comparison with the integrated target that finds an advanced target writes no
-  `retry` line; the `integrate` line (a change outside the guarded paths) or the
-  lines of the `integrate` stage (a change inside them) follow it directly.
+  (attempt N)`, and the repeated publish pass follows. When the Pull Request is
+  `BEHIND`, the line is `retry: #<number> is behind origin/<target>; catching
+  up (attempt N)`. A release-only advance writes `retry: origin/<target>
+  advanced with a release commit; integrating it without using an attempt
+  (attempt N)`, where N is the unchanged current attempt (with a task id and the
+  time in front, this line is longer than 120 characters and is cut as
+  described above). On the tenth consecutive counted attempt that finds a
+  different target, no `retry` line is written: the task is blocked with
+  `target-keeps-advancing` and the compare line is followed by
+  `blocked: stopped at compare` (the `blocked` line names the last step; the
+  stage recorded in `state.json` stays `publish`). A publish-pass comparison
+  with the integrated target that finds an advanced target writes no `retry`
+  line; the `integrate` line (a change outside the guarded paths) or the lines
+  of the `integrate` stage (a change inside them) follow it directly.
 - **Waits** of a task log once when the wait starts, never on every poll: one
   `wait` line for mergeability and checks, one more when the pull request head
-  is stale, and one `git lock: waiting for the Git lock` line when another
+  is stale, one `wait: waiting for required checks of #<number> (<status>)` line
+  when the wait for pending required checks starts and one more whenever its
+  status changes, and one `git lock: waiting for the Git lock` line when another
   runner holds the per-clone Git lock (nothing is written when the lock is
   free). The run-level wait for free work is different: it writes one
   `run wait` line per poll, immediately before each sleep, for example
@@ -1953,7 +2029,13 @@ waiting to merge and restarts from the recorded target commit are tested in
 `test/merge-when-target-unchanged.test.ts` with the same fixtures and scripted
 pull request hosts whose merge advances the target and then calls the guard, as
 `GitHubHost.merge` does; the guard order of `GitHubHost.merge` is tested with a
-stubbed `gh`. Runner upgrades, required settings and added
+stubbed `gh`. Merge eligibility retries (a `BEHIND` Pull Request, pending,
+failed and refused required checks, release-only advances, the attempt limit
+and restarts during a retry or a wait) are tested in
+`test/merge-retry-states.test.ts` with the same fixtures, scripted pull request
+hosts that report a scripted eligibility, and a fake clock advanced by the fake
+merge polling delay; `GitHubHost` eligibility and required checks are tested
+with a stubbed `gh`. Runner upgrades, required settings and added
 tasks are tested with the same fixtures: an interrupted invocation's `state.json`
 is rewritten the way an older runner wrote it, and `RunOptions.requiredSettings`
 declares a required setting. The review and check budgets and `--retry` are
