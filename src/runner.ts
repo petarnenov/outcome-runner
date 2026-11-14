@@ -7,12 +7,12 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay, setImmediate as yieldLoop } from 'node:timers/promises';
 import { hash, digest, within, safePath, validateConfig, validateQueue, archiveCommand, isDocumentation,
-  specsDirectory, resolvePollSeconds, resolveBudgets, DEFAULT_BUDGETS } from './model.ts';
+  specsDirectory, resolvePollSeconds, resolveBudgets, resolveCheckTimeoutMinutes, DEFAULT_BUDGETS } from './model.ts';
 import type { BudgetExhaustion, BudgetLimits, BudgetStage, CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose,
   Queue, RetryRecord, ReviewRecord, RunConfig, SendBackCause, SendBackRecord, Task, TaskBudget, Work, WorkerReport,
   TaskCompletion } from './model.ts';
-import { command, git, gitPage, fileAt, hasRef, pushBookkeeping, receiptAt, GitHubHost, assertOriginHead, MERGE_STATE_VIEWS,
-  MERGE_STATE_POLL_MS } from './git.ts';
+import { command, describeCommand, git, gitPage, fileAt, hasRef, pushBookkeeping, receiptAt, GitHubHost, assertOriginHead,
+  MERGE_STATE_VIEWS, MERGE_STATE_POLL_MS } from './git.ts';
 import { lockRootOf, withGitLock } from './git-lock.ts';
 import { pageOffset, readPage } from './text-page.ts';
 import { RunStore } from './run-store.ts';
@@ -31,11 +31,17 @@ import { openspecPreflight } from './openspec-preflight.ts';
 import type { PreflightDeps } from './openspec-preflight.ts';
 import { planTestInstructions, planningReviewTestInstructions, workTestInstructions,
   implementationReviewTestInstructions } from './test-grading.ts';
-import { useNetworkRetry } from './network-retry.ts';
+import { useNetworkRetry, withNetworkRetryAsync } from './network-retry.ts';
+import { CHECK_KILL_GRACE_MS, CheckTimedOut, limitText, passedCheck, runLimitedCheck } from './check-process.ts';
+import type { LimitedCheckResult } from './check-process.ts';
+import { SESSION_ATTEMPTS, SESSION_RETRY_DELAYS_MS, SessionAttemptsExhausted, isSessionTransportFailure,
+  sameSessionAttemptOwner, sessionAttemptOwner, sessionFailureDetail, sessionRetryMessage } from './session-retry.ts';
 import { createStepLog, runStartMessage } from './step-log.ts';
 import type { StepLog, StepOutput } from './step-log.ts';
 import type { BrokerInput, HarnessAdapter, HarnessOptions, ToolDefinition } from './harness-adapter.ts';
 import { runnerVersion } from './runner-version.ts';
+
+export { CHECK_KILL_GRACE_MS, CheckTimedOut, checkTimeoutLine, limitText } from './check-process.ts';
 
 export interface PullRequestHost {
   find(branch: string): PullRequest | null | Promise<PullRequest | null>;
@@ -120,6 +126,18 @@ export interface RunOptions {
    * signal that aborts on cancellation; the default is a timer that ends early when the signal aborts.
    */
   sleep?: Sleep;
+  /**
+   * Test hook: the time limit of each product check (`timeoutMs`, default `checkTimeoutMinutes` minutes) and the
+   * wait between SIGTERM and SIGKILL (`killGraceMs`, default `CHECK_KILL_GRACE_MS`). It never enters the identity
+   * or the state.
+   */
+  checkLimits?: { timeoutMs?: number; killGraceMs?: number };
+  /**
+   * The wait before a session is started again after a transport failure (10 and 30 seconds). It receives the wait in
+   * milliseconds and a signal that aborts on cancellation; the default is a timer that ends early when the signal
+   * aborts. Operational only: it never enters the invocation identity.
+   */
+  sessionRetrySleep?: Sleep;
 }
 
 interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
@@ -148,6 +166,14 @@ class TargetAdvanced extends Error {
   constructor() {
     super('Target advanced before the merge');
     this.name = 'TargetAdvanced';
+  }
+}
+
+/** One session attempt ended without a report because of a transport failure; `cause` is the original error. */
+class SessionTransportFailure extends Error {
+  constructor(cause: unknown) {
+    super('Session transport failure', { cause });
+    this.name = 'SessionTransportFailure';
   }
 }
 
@@ -214,8 +240,13 @@ export class BudgetExhausted extends Error {
   }
 }
 
+/**
+ * The detail of a failed check: the last 16000 characters of its stdout and stderr (or of the message). A timed-out
+ * check returns its `detail` unchanged, so the limit line follows the full 16000 characters.
+ */
 // Test reporters write failures to stdout while package managers write notices to stderr, so both are kept.
-const failureDetail = (error: unknown): string => {
+export const failureDetail = (error: unknown): string => {
+  if (error instanceof CheckTimedOut) return error.detail;
   const { stdout, stderr, message } = error as CommandFailure;
   const output = [stdout, stderr].map(stream => String(stream ?? '').trim()).filter(Boolean).join('\n');
   return (output || message).slice(-16000);
@@ -519,7 +550,12 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   // Invalid budgets are refused just as early; the limits are operational and never enter the identity, so a restart
   // applies the limits it is given to the recorded counts.
   const limits = resolveBudgets((requested as Partial<RunConfig> | undefined)?.budgets);
+  // An invalid check time limit is refused just as early; the limit is operational and never enters the identity.
+  const checkTimeoutMinutes = resolveCheckTimeoutMinutes((requested as Partial<RunConfig> | undefined)?.checkTimeoutMinutes);
+  const checkLimitMs = options.checkLimits?.timeoutMs ?? checkTimeoutMinutes * 60000;
+  const checkGraceMs = options.checkLimits?.killGraceMs ?? CHECK_KILL_GRACE_MS;
   const sleep = options.sleep ?? defaultSleep;
+  const sessionRetrySleep = options.sessionRetrySleep ?? defaultSleep;
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
   // the lock, claims and worktrees.
   const statistics = options.statistics;
@@ -753,22 +789,37 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       return true;
     };
     // `kind` names the step line written before each command; only the program name and its index are shown.
-    const checks = (work: Work, definitions: CommandSpec[], kind?: 'setup' | 'check', attempt?: number): CheckRecord[] => {
+    // Rows of `project.checks` run with the time limit; setup commands and the planning check run synchronously.
+    const checks = async (work: Work, definitions: CommandSpec[], kind?: 'setup' | 'check',
+      attempt?: number): Promise<CheckRecord[]> => {
       const rows: CheckRecord[] = [];
-      const finalGate = definitions === project.checks && activeWork()?.stage === 'publish';
+      const product = definitions === project.checks;
+      const finalGate = product && activeWork()?.stage === 'publish';
       for (const [index, check] of definitions.entries()) {
         const args = check.args.map(arg => arg.replaceAll('{change}', work.change)
           .replaceAll('{target}', project.target).replaceAll('{scope}', work.scopes[0])
           .replaceAll('{coverage}', String(config.coverage)));
         if (kind) taskStep(work.id, kind, `running ${index + 1}/${definitions.length}: ${basename(check.command)}`, attempt);
+        let result: LimitedCheckResult;
         try {
-          const output = command(work.path, check.command, args);
-          rows.push({ command: check.command, args, outcome: 'passed', output: output.slice(-16000) });
+          result = product ? await withNetworkRetryAsync(() => runLimitedCheck(work.path, check.command, args,
+            { limitMs: checkLimitMs, graceMs: checkGraceMs }), () => describeCommand(check.command, args)) :
+            passedCheck(command(work.path, check.command, args));
         } catch (error) {
           rows.push({ command: check.command, args, outcome: 'failed' });
           if (finalGate) save({ finalChecks: rows });
           throw error;
         }
+        if (result.status === 'timed-out') {
+          // The step line precedes every save, session or other effect of the timed-out check.
+          const timedOut = new CheckTimedOut(result.output, checkLimitMs, { command: check.command, args });
+          taskStep(work.id, 'check timeout', `${basename(check.command)} ${index + 1}/${definitions.length} timed out ` +
+            `after ${limitText(checkLimitMs)}`, attempt);
+          rows.push(timedOut.row);
+          save(finalGate ? { finalChecks: rows } : { checks: rows });
+          throw timedOut;
+        }
+        rows.push({ command: check.command, args, outcome: 'passed', output: result.output.slice(-16000) });
         if (finalGate) save({ finalChecks: rows });
       }
       return rows;
@@ -823,7 +874,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
      * changed, its change and its archive), or a merge with conflicts (aborted first), started the durable
      * `integrate` stage.
      */
-    const integrateTarget = (work: Work, target: string, attempt?: number): 'contained' | 'merged' | 'integrate' => {
+    const integrateTarget = async (work: Work, target: string, attempt?: number): Promise<'contained' | 'merged' | 'integrate'> => {
       if (git(work.path, 'merge-base', target, 'HEAD') === target) return 'contained';
       const recorded = activeWork();
       const changed = git(work.path, 'diff', '--name-only', recorded.base, target).split('\n').filter(Boolean);
@@ -847,11 +898,11 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         return 'integrate';
       }
       save({ integratedTargets: integrated(target) });
-      checks(work, project.setup ?? [], 'setup', attempt);
+      await checks(work, project.setup ?? [], 'setup', attempt);
       return 'merged';
     };
-    const runProductChecks = (work: Work, attempt?: number): CheckRecord[] => {
-      try { return checks(work, project.checks, 'check', attempt); }
+    const runProductChecks = async (work: Work, attempt?: number): Promise<CheckRecord[]> => {
+      try { return await checks(work, project.checks, 'check', attempt); }
       catch (error) { throw new Error(failureDetail(error)); }
     };
     const readContext = async (work: Work, files: string[], { section = 'paths', offset: requested }: Partial<BrokerInput>) => {
@@ -865,9 +916,10 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       if (section !== 'findings' && section !== 'checks') throw new Error('Unknown context section');
       return { section, ...await readPage([Buffer.from(JSON.stringify(activeWork()[section] ?? []))], offset) };
     };
-    // `writablePaths`, when given, replaces the default writable paths of `purpose` (the send-back session passes
-    // only the task scopes).
-    const session = async (work: Work, purpose: Purpose, prompt: string, implementationReview = false,
+    // One attempt of a session. `writablePaths`, when given, replaces the default writable paths of `purpose` (the
+    // send-back session passes only the task scopes). An unreported, uncancelled and uninterrupted transport failure
+    // throws `SessionTransportFailure`; every other failure is thrown unchanged.
+    const sessionOnce = async (work: Work, purpose: Purpose, prompt: string, implementationReview = false,
       attempt?: number, writablePaths?: string[]): Promise<ReviewRecord> => {
       let result: WorkerReport | undefined;
       const files = git(work.path, 'ls-files', '-z').split('\0').filter(Boolean);
@@ -895,7 +947,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             }
             taskStep(work.id, 'commit', 'committing the implementation', attempt);
             assertWork(activeWork()); commit(work);
-            const evidence = runProductChecks(work, attempt); save({ checks: evidence });
+            const evidence = await runProductChecks(work, attempt); save({ checks: evidence });
             return { checks: checkRecords(evidence) };
           }
           if (name === brokerTool.name && input.operation === 'context') {
@@ -922,6 +974,10 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           if (purpose === 'investigate' && !input.inspected?.length) throw new Error('Investigation references required');
           result = input as WorkerReport; return { status: 'recorded' };
         } });
+      // Only a harness lost before any report is a transport failure that may be retried.
+      const transportFailure = (error: unknown): unknown => result === undefined && !stopped && !signal?.aborted &&
+        !(error as InterruptedFailure)?.interrupted && isSessionTransportFailure(error) ?
+        new SessionTransportFailure(error) : error;
       try {
         if (adapter.probe().status !== 'interface-ready') throw new Error('Selected harness interface unavailable');
       const starts = activeWork().sessionStarts ?? Object.fromEntries(
@@ -944,7 +1000,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           'run_checks takes input {} and runs only frozen project checks after specification binding; ' +
           'read their output through the checks section. ' +
           'Read applicable AGENTS.md. Report blockers privately. No shell or approval tools.\n' +
-          `Resolved coverage threshold: ${config.coverage}%.\n` + prompt), signal);
+          `Resolved coverage threshold: ${config.coverage}%.\n` + prompt), signal)
+          .catch((error: unknown) => { throw transportFailure(error); });
         for (const event of reply.events) {
           if (event.type === 'token-usage') usage?.(tokenUsage({ inputTokens: event.inputTokens, outputTokens: event.outputTokens, totalTokens: event.totalTokens }));
         }
@@ -953,6 +1010,56 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         if (!result || result.outcome === 'blocked') throw new Error(`Worker ${purpose} incomplete`);
         return { ...result, reviewer: `${config.harness}:${reply.threadId}` };
       } finally { try { adapter?.close(); } finally { adapter = null; } }
+    };
+    /**
+     * A session with up to `SESSION_ATTEMPTS` attempts: an attempt that ended without a report because of a transport
+     * failure is started again after the wait of `SESSION_RETRY_DELAYS_MS`. Each attempt is recorded in the durable
+     * work, bound to its session, before it starts, so a restart that starts the same session continues the count.
+     * The record is cleared when the session reports, fails for another reason, is cancelled or runs out of attempts.
+     */
+    const session = async (work: Work, purpose: Purpose, prompt: string, implementationReview = false,
+      attempt?: number, writablePaths?: string[]): Promise<ReviewRecord> => {
+      const owner = sessionAttemptOwner(activeWork(), purpose);
+      const recorded = activeWork().sessionAttempt;
+      // A record of another session is stale: it is ignored here and replaced by the record of this session.
+      const previous = sameSessionAttemptOwner(recorded, owner) ? recorded : undefined;
+      let number = (previous?.attempt ?? 0) + 1;
+      let failure = previous?.failure;
+      if (number > SESSION_ATTEMPTS) {
+        // The runner stopped during the last attempt: no further attempt starts.
+        save({ sessionAttempt: undefined });
+        throw new SessionAttemptsExhausted(purpose, SESSION_ATTEMPTS, failure ?? 'the run stopped during the last attempt');
+      }
+      for (;;) {
+        if (number >= 2) {
+          const wait = SESSION_RETRY_DELAYS_MS[number - 2];
+          taskStep(work.id, 'session retry', sessionRetryMessage(purpose, wait), number);
+          await sessionRetrySleep(wait, waitSignal);
+          if (stopped || signal?.aborted) {
+            save({ sessionAttempt: undefined });
+            signal?.throwIfAborted();
+            throw new Error('Run stopped before the session was started again');
+          }
+        }
+        save({ sessionAttempt: { ...owner, attempt: number, ...(failure ? { failure } : {}) } });
+        try {
+          const review = await sessionOnce(work, purpose, prompt, implementationReview, attempt, writablePaths);
+          save({ sessionAttempt: undefined });
+          return review;
+        } catch (error) {
+          if (!(error instanceof SessionTransportFailure)) {
+            save({ sessionAttempt: undefined });
+            throw error;
+          }
+          failure = sessionFailureDetail(error.cause);
+          if (number >= SESSION_ATTEMPTS) {
+            save({ sessionAttempt: undefined });
+            throw new SessionAttemptsExhausted(purpose, SESSION_ATTEMPTS, failure);
+          }
+          save({ sessionAttempt: { ...owner, attempt: number, failure } });
+          number += 1;
+        }
+      }
     };
     process.on('SIGINT', stop); process.on('SIGTERM', stop);
     // Each retried task gets a fresh budget and a retry record on its work and in the state, in one update.
@@ -1155,7 +1262,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           save({ stage: 'investigate' });
         }
         if (activeWork().stage === 'investigate') {
-          checks(work, project.setup ?? [], 'setup');
+          await checks(work, project.setup ?? [], 'setup');
           taskStep(work.id, 'investigation', 'starting the investigation session');
           const investigation = await session(work, 'investigate', prompt +
             'Inspect current files and history before edits. Call outcome_report with outcome ready, summary, ' +
@@ -1182,7 +1289,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             try {
               taskStep(work.id, 'planning check', 'validating the planning artifacts', number);
               specification = packet(work.path, work.directory);
-              checks(work, [project.planningCheck]);
+              await checks(work, [project.planningCheck]);
             } catch (error) {
               countCheck('plan', [failureDetail(error)]); continue;
             }
@@ -1213,7 +1320,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             await cancellable(afterEffect('implementation', activeWork()), signal);
             taskStep(work.id, 'commit', 'committing the implementation', number);
             assertWork(activeWork()); commit(work);
-            try { save({ checks: checks(work, project.checks, 'check', number) }); }
+            try { save({ checks: await checks(work, project.checks, 'check', number) }); }
             catch (error) { countCheck('work', [failureDetail(error)]); continue; }
             countReview('work');
             taskStep(work.id, 'review', 'starting the implementation review session', number);
@@ -1257,9 +1364,13 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
               stage: 'document-review' });
           }
           if (activeWork().stage === 'document-review') {
-            // A restart in document-review skips the branch above, so the review budget is guarded here as well.
-            countReview('document');
-            taskStep(work.id, 'documentation review', 'starting the documentation review session', round);
+            // A restart in document-review skips the branch above, so the review budget is guarded here as well. A
+            // restart that continues the attempts of this round's review session counts no second round.
+            const resumed = sameSessionAttemptOwner(activeWork().sessionAttempt,
+              sessionAttemptOwner(activeWork(), 'document-review'));
+            if (!resumed) countReview('document');
+            taskStep(work.id, 'documentation review', 'starting the documentation review session',
+              resumed ? round - 1 : round);
             const review = await session(activeWork(), 'document-review', prompt +
               documentationReviewPrompt(activeWork().documentationReviews ?? []));
             const reviews = [...(activeWork().documentationReviews ?? []), review];
@@ -1274,7 +1385,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         if (activeWork().stage === 'final-checks') {
           taskStep(work.id, 'final checks', 'running the final checks');
           assertWork(activeWork());
-          save({ documentationChecks: runProductChecks(work), stage: 'archive' });
+          save({ documentationChecks: await runProductChecks(work), stage: 'archive' });
         }
         if (activeWork().stage === 'archive') {
           taskStep(work.id, 'archive', 'archiving the change');
@@ -1332,10 +1443,11 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           const merged = `The task branch was merged with the advanced ${project.target} ${integration.target} ` +
             `(previous base ${integration.previousBase}, new base ${activeWork().base}, conflicts ` +
             `${JSON.stringify(integration.conflicts)}); review the merged result.`;
-          // A failure after the merge blocks with the integration reason; a cancellation keeps the recorded step.
+          // A failure after the merge blocks with the integration reason; a cancellation keeps the recorded step. A
+          // session that ran out of attempts keeps its own reason, which names the attempts and the last failure.
           const rejected = (error: unknown): never => {
             if (stopped || signal?.aborted || (error as InterruptedFailure).interrupted ||
-                error instanceof IntegrationFailure) throw error;
+                error instanceof IntegrationFailure || error instanceof SessionAttemptsExhausted) throw error;
             throw integration.outcome === 'conflict' ?
               new IntegrationFailure('target-conflict-unresolved', integration.conflicts) :
               new IntegrationFailure('target-integration-rejected', []);
@@ -1416,8 +1528,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             // A failing setup or product check is a rejection; its stdout and stderr reach the send-back session.
             let rows: CheckRecord[] | undefined; let failure: unknown;
             try {
-              checks(work, project.setup ?? [], 'setup');
-              rows = runProductChecks(work);
+              await checks(work, project.setup ?? [], 'setup');
+              rows = await runProductChecks(work);
             } catch (error) {
               if (cancelled(error)) throw error;
               failure = error;
@@ -1472,13 +1584,17 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
                 await session(activeWork(), 'work', prompt + sendBackPrompt(sendBack), false, undefined,
                   integrationPaths(work, integration.conflicts));
               } catch (error) {
-                if (cancelled(error)) throw error;
+                // A send-back that ran out of attempts blocks with its own reason and is not recorded as rejected.
+                if (cancelled(error) || error instanceof SessionAttemptsExhausted) throw error;
                 failed = true;
               }
               // A failed session is the rejection after the send-back: it blocks with the original cause and findings.
               if (failed) await sendBackOrReject(sendBack.cause, sendBack.findings);
               await cancellable(afterEffect('send-back', activeWork()), signal);
             }
+            // A resumed send-back is not started again, so the record of its abandoned attempt is cleared before the
+            // commit; a later session never inherits it.
+            if (activeWork().sessionAttempt) save({ sessionAttempt: undefined });
             taskStep(work.id, 'commit', 'committing the send-back result', currentAttempt());
             try { assertWork(activeWork()); commitSendBack(work, integration.conflicts); } catch (error) { rejected(error); }
             const current = activeWork().integration!;
@@ -1524,9 +1640,9 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           taskStep(work.id, 'compare', `comparing origin/${project.target} with the integrated target`, attempt);
           const targetNow = refresh(work.id).target;
           // An advance inside the guarded paths continues in the integrate stage of the next loop iteration.
-          if (integrateTarget(work, targetNow, attempt) === 'integrate') continue;
+          if (await integrateTarget(work, targetNow, attempt) === 'integrate') continue;
           let finalChecks: CheckRecord[];
-          try { finalChecks = checks(work, project.checks, 'check', attempt); }
+          try { finalChecks = await checks(work, project.checks, 'check', attempt); }
           catch (error) {
             const interrupted = stopped || signal?.aborted || (error as InterruptedFailure).interrupted;
             if (interrupted || targetNow === activeWork().base) throw error;

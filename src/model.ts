@@ -69,6 +69,11 @@ export interface RunConfig {
    * enters the invocation identity.
    */
   budgets?: BudgetSettings;
+  /**
+   * The time limit in minutes of every product check command; an integer from 1 through 240, 30 when omitted.
+   * Operational only: it never enters the invocation identity.
+   */
+  checkTimeoutMinutes?: number;
 }
 
 export interface ResolvedRunConfig extends RunConfig {
@@ -115,6 +120,22 @@ export interface RetryRecord {
  */
 export type IntegrationStep = 'merge' | 'resolve' | 'checks' | 'review' | 'document-review' | 'send-back';
 
+/** The session an attempt record belongs to. */
+export interface SessionAttemptOwner {
+  purpose: Purpose;
+  stage: Stage;
+  /** Set only in the `integrate` stage: the integrated target commit and the integration step of the session. */
+  integration?: { target: string; step: IntegrationStep };
+}
+
+/** The attempts of the session in progress; cleared when it reports, fails for another reason or is cancelled. */
+export interface SessionAttempt extends SessionAttemptOwner {
+  /** The number of attempts started. */
+  attempt: number;
+  /** The detail of the last failed attempt, if any. */
+  failure?: string;
+}
+
 /**
  * What did not accept the merged result: the setup or product checks, the implementation review or the
  * documentation review.
@@ -155,7 +176,11 @@ export interface IntegrationRecord {
   sendBack?: SendBackRecord;
 }
 
-export interface CheckRecord extends CommandSpec { outcome: string; output?: string }
+/**
+ * One check command run. `outcome` is `passed`, `failed` or `timed-out`; a timed-out record carries its
+ * `timeLimitMs` and an `output` ending with the limit line.
+ */
+export interface CheckRecord extends CommandSpec { outcome: string; output?: string; timeLimitMs?: number }
 
 export type Grade = 'A' | 'B' | 'C' | 'D' | 'E';
 export interface Completion { summary: string; grade: Grade }
@@ -227,6 +252,8 @@ export interface Work extends Task {
   session?: SessionHandle & { purpose: Purpose };
   sessions?: WorkerSession[];
   sessionStarts?: Partial<Record<Purpose, number>>;
+  /** The attempts of the session in progress after a transport failure; absent when no session is retried. */
+  sessionAttempt?: SessionAttempt;
   lastToolError?: { purpose: Purpose; input: unknown; message: string };
   lastReportAttempt?: { purpose: Purpose; input: unknown };
   head?: string;
@@ -383,10 +410,27 @@ export function resolveBudgets(value: unknown): BudgetLimits {
   return limits;
 }
 
+/** The default time limit in minutes of one product check command. */
+export const DEFAULT_CHECK_TIMEOUT_MINUTES = 30;
+
+/**
+ * The product check time limit in minutes: `value`, or 30 when omitted. Anything but a safe integer from 1 through
+ * 240 throws an error with `reason` `invalid-check-timeout` and `details` naming the `checkTimeoutMinutes` setting
+ * and the value.
+ */
+export function resolveCheckTimeoutMinutes(value: unknown = DEFAULT_CHECK_TIMEOUT_MINUTES): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 240) {
+    throw Object.assign(new Error('Invalid checkTimeoutMinutes: expected an integer from 1 through 240'),
+      { reason: 'invalid-check-timeout', details: { setting: 'checkTimeoutMinutes', value } });
+  }
+  return value;
+}
+
 export function validateConfig<T extends RunConfig>(config: T): T {
   resolveCoverage(config.coverage);
   resolvePollSeconds(config.pollSeconds);
   resolveBudgets(config.budgets);
+  resolveCheckTimeoutMinutes(config.checkTimeoutMinutes);
   const project = config.project;
   if ((config.mode ?? 'OFF') !== 'OFF' || !config.root || !config.stateDirectory ||
       !config.invocation || !config.authority?.reference || !config.authority?.instruction ||

@@ -1,3 +1,16 @@
+## 0.27.0 - 2026-11-13
+
+### Features
+
+- implement OR-34 (56beaee)
+- implement OR-34 (a673e7d)
+
+## 0.26.0 - 2026-11-13
+
+### Features
+
+- remove the test framework preflight (6cb65ce)
+
 ## 0.25.1 - 2026-11-13
 
 ### Fixes
