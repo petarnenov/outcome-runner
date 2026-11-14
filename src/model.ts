@@ -63,6 +63,11 @@ export interface RunConfig {
    * through 3600, 60 when omitted. Operational only: it never enters the invocation identity.
    */
   pollSeconds?: number;
+  /**
+   * The time limit in minutes of every product check command; an integer from 1 through 240, 30 when omitted.
+   * Operational only: it never enters the invocation identity.
+   */
+  checkTimeoutMinutes?: number;
 }
 
 export interface ResolvedRunConfig extends RunConfig {
@@ -161,7 +166,11 @@ export interface IntegrationRecord {
   sendBack?: SendBackRecord;
 }
 
-export interface CheckRecord extends CommandSpec { outcome: string; output?: string }
+/**
+ * One check command run. `outcome` is `passed`, `failed` or `timed-out`; a timed-out record carries its
+ * `timeLimitMs` and an `output` ending with the limit line.
+ */
+export interface CheckRecord extends CommandSpec { outcome: string; output?: string; timeLimitMs?: number }
 
 export type Grade = 'A' | 'B' | 'C' | 'D' | 'E';
 export interface Completion { summary: string; grade: Grade }
@@ -346,9 +355,26 @@ export function resolvePollSeconds(value: unknown = DEFAULT_POLL_SECONDS): numbe
   return value;
 }
 
+/** The default time limit in minutes of one product check command. */
+export const DEFAULT_CHECK_TIMEOUT_MINUTES = 30;
+
+/**
+ * The product check time limit in minutes: `value`, or 30 when omitted. Anything but a safe integer from 1 through
+ * 240 throws an error with `reason` `invalid-check-timeout` and `details` naming the `checkTimeoutMinutes` setting
+ * and the value.
+ */
+export function resolveCheckTimeoutMinutes(value: unknown = DEFAULT_CHECK_TIMEOUT_MINUTES): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 240) {
+    throw Object.assign(new Error('Invalid checkTimeoutMinutes: expected an integer from 1 through 240'),
+      { reason: 'invalid-check-timeout', details: { setting: 'checkTimeoutMinutes', value } });
+  }
+  return value;
+}
+
 export function validateConfig<T extends RunConfig>(config: T): T {
   resolveCoverage(config.coverage);
   resolvePollSeconds(config.pollSeconds);
+  resolveCheckTimeoutMinutes(config.checkTimeoutMinutes);
   const project = config.project;
   if ((config.mode ?? 'OFF') !== 'OFF' || !config.root || !config.stateDirectory ||
       !config.invocation || !config.authority?.reference || !config.authority?.instruction ||
