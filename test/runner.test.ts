@@ -731,7 +731,12 @@ function advanceTarget(f: Fixture, path: string, name: string) {
   git(clone, 'push', 'origin', `HEAD:${f.project.target}`);
 }
 
-const ledgerCommits = (f: Fixture) => git(join(f.base, 'origin.git'), 'rev-list', '--count', 'work-queue-claims-proposal');
+/**
+ * The claim writes on the claims ledger of origin. Renewals and blocked marks of a claim the invocation already holds
+ * (claim leases) are not claims and are not counted.
+ */
+const ledgerCommits = (f: Fixture) => git(join(f.base, 'origin.git'), 'rev-list', '--count', '--invert-grep',
+  '--grep=renew the claim of ', '--grep=mark the claim of ', 'work-queue-claims-proposal');
 const claimAt = (f: Fixture, id: string) => JSON.parse(git(join(f.base, 'origin.git'), 'show', `work-queue-claims-proposal:${id}.json`));
 const blockedReason = (result: RunResult) => JSON.parse(readFileSync(result.blockers!.A.diagnostics!, 'utf8')).blocked.A.reason;
 
