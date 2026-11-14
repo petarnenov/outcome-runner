@@ -137,10 +137,14 @@ type Scripted = ReturnType<typeof scripted>;
 
 const readState = (config: RunConfig) => JSON.parse(readFileSync(join(config.stateDirectory, 'state.json'), 'utf8'));
 const receiptOf = (f: RunnerFixture, id = 'A') => JSON.parse(git(f.remote, 'show', `main:evidence/results/${id}.json`));
-/** The number of commits on the claims ledger branch of origin; 0 before the first claim. */
+/**
+ * The number of claim writes on the claims ledger branch of origin; 0 before the first claim. Renewals and blocked
+ * marks of a claim the invocation already holds (claim leases) are not claims and are not counted.
+ */
 const claimCommits = (f: RunnerFixture): number =>
   git(f.remote, 'for-each-ref', '--format=%(refname)', 'refs/heads/work-queue-claims-main') ?
-    Number(git(f.remote, 'rev-list', '--count', 'work-queue-claims-main')) : 0;
+    Number(git(f.remote, 'rev-list', '--count', '--invert-grep', '--grep=renew the claim of ',
+      '--grep=mark the claim of ', 'work-queue-claims-main')) : 0;
 
 /** An invocation file for `main` and the configuration `main` resolves from it. */
 function invocationFile(f: RunnerFixture, patch: Partial<RunConfig> = {}) {
