@@ -1,4 +1,5 @@
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -11,7 +12,7 @@ import { explainUnfinished, foreignClaimsOf, invocationLockFiles, runQueue } fro
 import type { LeaseTimer } from '../src/runner.ts';
 import { invocationIdentity } from '../src/invocation-identity.ts';
 import { main } from './support/isolated-cli.ts';
-import { runnerFixture } from './support/runner-fixture.ts';
+import { runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
 import type { RunnerFixture } from './support/runner-fixture.ts';
 
 /** A fixed fake time used by the unit tests. */
@@ -28,6 +29,9 @@ const refusedLease = (value: unknown) => (error: Refusal) => error.reason === 'i
 const claimOf = (f: RunnerFixture, id: string): Claim => JSON.parse(git(f.remote, 'show', `refs/heads/${CLAIMS}:${id}.json`));
 /** The head commit of the claims ledger branch of the fixture origin. */
 const ledgerHead = (f: RunnerFixture): string => git(f.remote, 'rev-parse', `refs/heads/${CLAIMS}`);
+const stateOf = (config: RunConfig) => JSON.parse(readFileSync(join(config.stateDirectory, 'state.json'), 'utf8'));
+const waitLines = (lines: string[]) => lines.filter(line => / run wait: /u.test(line));
+const noWorker = () => { throw new Error('No worker expected'); };
 
 /**
  * A fake lease timer: it records every interval it was started with and the stop calls, and exposes the renewal
@@ -40,6 +44,16 @@ function fakeTimer() {
     return () => { timer.stops += 1; };
   };
   return { timer, leaseTimer };
+}
+
+/** Writes a claim of `id` by invocation `zero` (host `zero-host`) directly on the ledger of the fixture origin. */
+function claimByZero(f: RunnerFixture, id: string, fields: Partial<Claim>): Claim {
+  const ledger = new ClaimLedger(f.integrator, 'main');
+  const claim: Claim = { version: 1, id, claimant: 'zero-claimant', scopes: [`src/${id.toLowerCase()}`],
+    taskHash: hash(f.queue.tasks.find(task => task.id === id)), host: 'zero-host', branch: `outcome/${id}-zero`,
+    ...fields };
+  assert.equal(ledger.acquire(ledger.pull(), claim, `chore(fixture): claim ${id}`), true);
+  return claim;
 }
 
 // Grade E
@@ -146,19 +160,18 @@ test('D (required): leaseSeconds is outside the identity, so a resumed invocatio
   const one = f.config('one', { leaves: ['A', 'B'] });
   const identity = (leaseSeconds: number) => invocationIdentity({ ...one, leaseSeconds, coverage: 85, leaves: ['A', 'B'] });
   assert.deepEqual(identity(300), identity(3600)); assert.equal(hash(identity(300)), hash(identity(3600)));
-  const stateOf = () => JSON.parse(readFileSync(join(one.stateDirectory, 'state.json'), 'utf8'));
   const first = await f.run({ ...one, maxAccepted: 1, leaseSeconds: 300 });
   assert.equal(first.status, 'limit-reached', JSON.stringify(first)); assert.deepEqual(first.accepted, ['A']);
-  const identityHash = stateOf().identityHash;
+  const identityHash = stateOf(one).identityHash;
   const owned = JSON.parse(readFileSync(invocationLockFiles(f.root, one.stateDirectory).ownership, 'utf8')).identity;
   const second = await f.run({ ...one, leaseSeconds: 3600 });
   assert.equal(second.status, 'exhausted', JSON.stringify(second));
   assert.ok(second.accepted.includes('B')); assert.deepEqual(second.remaining, []);
-  assert.equal(stateOf().identityHash, identityHash);
+  assert.equal(stateOf(one).identityHash, identityHash);
   assert.equal(JSON.parse(readFileSync(invocationLockFiles(f.root, one.stateDirectory).ownership, 'utf8')).identity, owned);
   // The claim of B was written by the resumed run with its own lease.
   const claim = claimOf(f, 'B');
-  assert.equal(claim.claimant, stateOf().claimant); assert.equal(claim.leaseSeconds, 3600);
+  assert.equal(claim.claimant, stateOf(one).claimant); assert.equal(claim.leaseSeconds, 3600);
 });
 
 // Grade C
@@ -240,9 +253,136 @@ test('C (required): leaseSeconds 300 starts the renewal timer with 100000 ms and
   assert.deepEqual(timer.intervals, [100000]);
   assert.equal(timer.stops, 1);
   const claim = claimOf(f, 'B');
-  const state = JSON.parse(readFileSync(join(config.stateDirectory, 'state.json'), 'utf8'));
-  assert.equal(claim.claimant, state.claimant);
+  assert.equal(claim.claimant, stateOf(config).claimant);
   assert.equal(claim.leaseSeconds, 300);
   assert.equal(claim.claimedAt, iso(NOW)); assert.equal(claim.renewedAt, claim.claimedAt);
   assert.equal(Object.hasOwn(claim, 'blocked'), false);
+});
+
+// Grade B
+
+test('B (required): the claim is renewed during an implementation session that outlasts the default lease', async t => {
+  const f = runnerFixture(t, { ids: ['B'] });
+  const { timer, leaseTimer } = fakeTimer();
+  let clock = NOW;
+  const ticks: { at: number; claim: Claim }[] = [];
+  const createAdapter = scriptedWorker({ onSession: (_options, prompt) => {
+    if (!prompt.includes('Implement all approved')) return;
+    // The session lasts 2400 seconds: four ticks, each after the fake clock advanced by 600 seconds.
+    for (let tick = 0; tick < 4; tick += 1) {
+      clock += 600000;
+      timer.renew();
+      ticks.push({ at: clock, claim: claimOf(f, 'B') });
+    }
+  } });
+  const config = f.config('one', { leaves: ['B'] });
+  const result = await f.run(config, { now: () => clock, leaseTimer, createAdapter });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.deepEqual(result.accepted, ['B']);
+  assert.deepEqual(timer.intervals, [600000]);
+  assert.equal(ticks.length, 4);
+  for (const { at, claim } of ticks) {
+    assert.equal(claim.renewedAt, iso(at)); assert.equal(claim.leaseSeconds, 1800);
+    assert.equal(claim.claimant, stateOf(config).claimant); assert.equal(claim.claimedAt, iso(NOW));
+    // Another runner never sees the claim stale during the session.
+    assert.equal(claimStale(claim, at), false);
+  }
+  const last = ticks.at(-1)!;
+  assert.equal(last.at - NOW, 2400000);
+  // Control: without the renewals the claim would have been stale at the last tick.
+  assert.equal(claimStale({ ...last.claim, renewedAt: last.claim.claimedAt }, last.at), true);
+  assert.ok(timer.stops >= 1);
+});
+
+/** Runs invocation `one` with leaf `B` against a foreign claim of `B` by `zero`, at the fake time `NOW`. */
+async function againstZero(t: TestContext, fields: Partial<Claim>) {
+  const f = runnerFixture(t, { ids: ['B'] });
+  claimByZero(f, 'B', fields);
+  const prompts: string[] = []; const lines: string[] = [];
+  const config = f.config('one', { leaves: ['B'] });
+  const result = await f.run(config, { now: () => NOW, steps: line => { lines.push(line); },
+    createAdapter: scriptedWorker({ onSession: (_options, prompt) => { prompts.push(prompt); } }) });
+  return { f, config, result, prompts, waits: waitLines(lines) };
+}
+
+/** `B` was not started: it waits for `zero`'s claim, which still names `zero`. */
+function assertWaitingForZero({ f, result, prompts, waits }: Awaited<ReturnType<typeof againstZero>>) {
+  assert.equal(result.status, 'cancelled', JSON.stringify(result));
+  assert.deepEqual(result.blockers, { B: { kind: 'waiting-for-claim', reason: 'waiting-for-claim',
+    claim: { id: 'B', host: 'zero-host' } } });
+  assert.deepEqual(result.claimedElsewhere, { B: { host: 'zero-host' } });
+  assert.equal(waits.length, 1); assert.ok(waits[0].endsWith(' run wait: waiting 60s for B on zero-host\n'), waits[0]);
+  assert.equal(prompts.length, 0);
+  assert.equal(claimOf(f, 'B').claimant, 'zero-claimant');
+}
+
+/** `B` was taken over from `zero` and accepted, never waited for, and the new claim is `one`'s. */
+function assertTakenOver({ f, config, result, prompts, waits }: Awaited<ReturnType<typeof againstZero>>) {
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.deepEqual(result.accepted, ['B']);
+  assert.equal(result.blockers, undefined); assert.equal(result.claimedElsewhere, undefined);
+  assert.deepEqual(waits, []);
+  assert.ok(prompts.some(prompt => prompt.includes('Task B;')));
+  const claim = claimOf(f, 'B');
+  assert.equal(claim.claimant, stateOf(config).claimant);
+  assert.equal(claim.claimedAt, iso(NOW)); assert.equal(claim.renewedAt, iso(NOW)); assert.equal(claim.leaseSeconds, 1800);
+}
+
+test('B (required): a claim renewed exactly one lease ago is waited for', async t => {
+  assertWaitingForZero(await againstZero(t, { claimedAt: ago(5000), renewedAt: ago(1800), leaseSeconds: 1800 }));
+});
+
+test('B (required): a claim renewed longer than its lease ago is taken over as free work', async t => {
+  assertTakenOver(await againstZero(t, { claimedAt: ago(5000), renewedAt: ago(1801), leaseSeconds: 1800 }));
+});
+
+test('B (required): a legacy claim without renewal data within the default lease is waited for', async t => {
+  assertWaitingForZero(await againstZero(t, { claimedAt: ago(1000) }));
+});
+
+test('B (required): a legacy claim without renewal data older than the default lease is taken over', async t => {
+  assertTakenOver(await againstZero(t, { claimedAt: ago(1801) }));
+});
+
+/** Invocation `one` blocks `B` with a failing session at `NOW`; its claim is marked blocked in the ledger. */
+async function blockedByOne(f: RunnerFixture): Promise<RunConfig> {
+  const one = f.config('one', { leaves: ['B'] });
+  const result = await f.run(one, { now: () => NOW,
+    createAdapter: scriptedWorker({ fail: prompt => prompt.includes('Task B;') }) });
+  assert.equal(result.status, 'incomplete', JSON.stringify(result));
+  assert.equal(result.blockers!.B.kind, 'blocked');
+  const claim = claimOf(f, 'B');
+  assert.equal(claim.claimant, stateOf(one).claimant);
+  assert.deepEqual(claim.blocked, { at: iso(NOW) });
+  assert.equal(claim.renewedAt, iso(NOW));
+  return one;
+}
+
+test('B (required): a blocked claim ten leases old is not taken over by another runner', async t => {
+  const f = runnerFixture(t, { ids: ['B'] });
+  const one = await blockedByOne(f);
+  const before = claimOf(f, 'B');
+  const later = NOW + 10 * 1800 * 1000;
+  const result = await f.run(f.config('two', { leaves: ['B'] }), { now: () => later, createAdapter: noWorker });
+  assert.equal(result.status, 'cancelled', JSON.stringify(result));
+  assert.deepEqual(result.blockers!.B, { kind: 'waiting-for-claim', reason: 'waiting-for-claim',
+    claim: { id: 'B', host: before.host } });
+  assert.deepEqual(claimOf(f, 'B'), before);
+  assert.equal(claimOf(f, 'B').claimant, stateOf(one).claimant);
+});
+
+test('B (required): the own invocation resumes its blocked claim, clearing the mark before any session', async t => {
+  const f = runnerFixture(t, { ids: ['B'] });
+  const one = await blockedByOne(f);
+  const restart = NOW + 10 * 1800 * 1000;
+  const seen: Claim[] = [];
+  const result = await f.run(one, { now: () => restart, createAdapter: scriptedWorker({ onSession: () => {
+    if (!seen.length) seen.push(claimOf(f, 'B'));
+  } }) });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.equal(seen.length, 1);
+  const [first] = seen;
+  assert.equal(Object.hasOwn(first, 'blocked'), false);
+  assert.equal(first.renewedAt, iso(restart)); assert.equal(first.leaseSeconds, 1800);
+  assert.equal(first.claimant, stateOf(one).claimant); assert.equal(first.claimedAt, iso(NOW));
 });
