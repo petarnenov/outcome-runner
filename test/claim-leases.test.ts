@@ -5,12 +5,14 @@ import { dirname, join } from 'node:path';
 import { git } from '../src/git.ts';
 import { DEFAULT_LEASE_SECONDS, hash, resolveLeaseSeconds, validateConfig } from '../src/model.ts';
 import type { RunConfig } from '../src/model.ts';
-import { claimStale } from '../src/claims.ts';
+import { ClaimLedger, claimStale } from '../src/claims.ts';
 import type { Claim } from '../src/claims.ts';
 import { explainUnfinished, foreignClaimsOf, invocationLockFiles, runQueue } from '../src/runner.ts';
+import type { LeaseTimer } from '../src/runner.ts';
 import { invocationIdentity } from '../src/invocation-identity.ts';
 import { main } from './support/isolated-cli.ts';
 import { runnerFixture } from './support/runner-fixture.ts';
+import type { RunnerFixture } from './support/runner-fixture.ts';
 
 /** A fixed fake time used by the unit tests. */
 const NOW = Date.parse('2026-11-14T12:00:00.000Z');
@@ -21,6 +23,24 @@ const CLAIMS = 'work-queue-claims-main';
 type Refusal = Error & { reason?: string; details?: { setting?: string; value?: unknown } };
 const refusedLease = (value: unknown) => (error: Refusal) => error.reason === 'invalid-lease-seconds' &&
   error.details?.setting === 'leaseSeconds' && Object.is(error.details.value, value) && /leaseSeconds/u.test(error.message);
+
+/** The claim of `id` on the claims ledger branch of the fixture origin. */
+const claimOf = (f: RunnerFixture, id: string): Claim => JSON.parse(git(f.remote, 'show', `refs/heads/${CLAIMS}:${id}.json`));
+/** The head commit of the claims ledger branch of the fixture origin. */
+const ledgerHead = (f: RunnerFixture): string => git(f.remote, 'rev-parse', `refs/heads/${CLAIMS}`);
+
+/**
+ * A fake lease timer: it records every interval it was started with and the stop calls, and exposes the renewal
+ * callback of the last start, which the test invokes after advancing the fake clock.
+ */
+function fakeTimer() {
+  const timer = { intervals: [] as number[], stops: 0, renew: (): void => { throw new Error('No timer started'); } };
+  const leaseTimer: LeaseTimer = (renew, intervalMs) => {
+    timer.intervals.push(intervalMs); timer.renew = renew;
+    return () => { timer.stops += 1; };
+  };
+  return { timer, leaseTimer };
+}
 
 // Grade E
 
@@ -60,6 +80,8 @@ test('E (required): claimStale uses the holder lease, renewedAt or claimedAt, ne
   assert.equal(claimStale({ claimedAt: 'not a time' }, NOW), false);
   assert.equal(claimStale({ renewedAt: 'not a time', claimedAt: ago(100000) }, NOW), false);
 });
+
+// Grade E (coverage-only) 4.4: not needed, coverage reached.
 
 // Grade D
 
@@ -135,6 +157,92 @@ test('D (required): leaseSeconds is outside the identity, so a resumed invocatio
   assert.equal(stateOf().identityHash, identityHash);
   assert.equal(JSON.parse(readFileSync(invocationLockFiles(f.root, one.stateDirectory).ownership, 'utf8')).identity, owned);
   // The claim of B was written by the resumed run with its own lease.
-  const claim = JSON.parse(git(f.remote, 'show', `refs/heads/${CLAIMS}:B.json`));
+  const claim = claimOf(f, 'B');
   assert.equal(claim.claimant, stateOf().claimant); assert.equal(claim.leaseSeconds, 3600);
+});
+
+// Grade C
+
+test('C (required): ledger operations replace, renew, mark blocked, detect loss and defer under contention', t => {
+  const f = runnerFixture(t, { ids: ['B'] });
+  const ledger = new ClaimLedger(f.integrator, 'main');
+  const held: Claim = { version: 1, id: 'B', claimant: 'one', scopes: ['src/b'], host: 'one-host',
+    branch: 'outcome/B-one', claimedAt: ago(100), renewedAt: ago(100), leaseSeconds: 1800 };
+  assert.equal(ledger.acquire(ledger.pull(), held, 'chore(fixture): claim B'), true);
+  // commitClaim replaces the entry of the same id: one file per id.
+  assert.equal(ledger.acquire(ledger.pull(), { ...held, host: 'one-host-again' }, 'chore(fixture): rewrite B'), true);
+  assert.equal(git(f.remote, 'ls-tree', '--name-only', `refs/heads/${CLAIMS}`), 'B.json');
+  assert.equal(claimOf(f, 'B').host, 'one-host-again');
+  // markBlocked writes blocked.at and keeps renewedAt.
+  assert.equal(ledger.markBlocked('B', 'one', 'outcome/B-one', ago(50), 'chore(fixture): mark the claim of B blocked'),
+    'blocked');
+  assert.deepEqual(claimOf(f, 'B').blocked, { at: ago(50) });
+  assert.equal(claimOf(f, 'B').renewedAt, ago(100));
+  // renew writes renewedAt and leaseSeconds and drops blocked.
+  assert.equal(ledger.renew('B', 'one', 'outcome/B-one', ago(10), 900, 'chore(fixture): renew the claim of B'), 'renewed');
+  const renewed = claimOf(f, 'B');
+  assert.equal(renewed.renewedAt, ago(10)); assert.equal(renewed.leaseSeconds, 900);
+  assert.equal(Object.hasOwn(renewed, 'blocked'), false);
+  assert.equal(renewed.claimedAt, ago(100)); assert.equal(renewed.claimant, 'one');
+  // Another claimant's or another branch's claim, or no claim at all, is lost; nothing is written.
+  const head = ledgerHead(f);
+  assert.equal(ledger.renew('B', 'two', 'outcome/B-one', ago(5), 1800, 'renew'), 'lost');
+  assert.equal(ledger.renew('B', 'one', 'outcome/B-other', ago(5), 1800, 'renew'), 'lost');
+  assert.equal(ledger.markBlocked('B', 'two', 'outcome/B-one', ago(5), 'mark'), 'lost');
+  assert.equal(ledger.renew('Z', 'one', 'outcome/B-one', ago(5), 1800, 'renew'), 'lost');
+  assert.equal(ledgerHead(f), head);
+  // A lock wrapper that pushes an unrelated ledger commit before every ledger operation makes every
+  // compare-and-swap fail, so both operations are deferred and the claim stays unchanged.
+  const noise = new ClaimLedger(f.root, 'main'); let pushed = 0;
+  const racing = new ClaimLedger(f.integrator, 'main', fn => {
+    pushed += 1;
+    assert.equal(noise.acquire(noise.pull(), { version: 1, id: `Z${pushed}`, claimant: 'noise', scopes: ['src/z'] },
+      'chore(fixture): unrelated claim'), true);
+    return fn();
+  });
+  const before = claimOf(f, 'B');
+  assert.equal(racing.renew('B', 'one', 'outcome/B-one', ago(1), 1800, 'renew'), 'deferred');
+  assert.equal(racing.markBlocked('B', 'one', 'outcome/B-one', ago(1), 'mark'), 'deferred');
+  assert.deepEqual(claimOf(f, 'B'), before);
+  assert.ok(pushed >= 20, String(pushed));
+});
+
+test('C (required): a takeover with a snapshot whose claim differs from the observed stale claim makes no commit', t => {
+  const f = runnerFixture(t, { ids: ['B'] });
+  const ledger = new ClaimLedger(f.integrator, 'main');
+  const stale: Claim = { version: 1, id: 'B', claimant: 'zero', scopes: ['src/b'], host: 'zero-host',
+    branch: 'outcome/B-zero', claimedAt: ago(4000), renewedAt: ago(4000), leaseSeconds: 1800 };
+  const taker: Claim = { version: 1, id: 'B', claimant: 'one', scopes: ['src/b'], host: 'one-host',
+    branch: 'outcome/B-one', claimedAt: ago(0), renewedAt: ago(0), leaseSeconds: 1800 };
+  // Without any claim of B in the snapshot nothing is taken over.
+  assert.equal(ledger.takeOver(ledger.pull(), stale, taker, 'chore(fixture): take over B'), false);
+  assert.equal(git(f.remote, 'for-each-ref', `refs/heads/${CLAIMS}`), '');
+  assert.equal(ledger.acquire(ledger.pull(), stale, 'chore(fixture): claim B'), true);
+  const head = ledgerHead(f);
+  // The snapshot holds the stale claim, but the observed claim differs (it was renewed meanwhile).
+  const snapshot = ledger.pull();
+  assert.equal(ledger.takeOver(snapshot, { ...stale, renewedAt: ago(10) }, taker, 'chore(fixture): take over B'), false);
+  assert.equal(ledgerHead(f), head); assert.equal(claimOf(f, 'B').claimant, 'zero');
+  // With the observed claim equal to the snapshot's, the takeover is pushed.
+  assert.equal(ledger.takeOver(snapshot, structuredClone(stale), taker, 'chore(fixture): take over B'), true);
+  assert.equal(claimOf(f, 'B').claimant, 'one');
+  // The same old snapshot cannot win a second takeover: its head is no longer the ledger head.
+  assert.equal(ledger.takeOver(snapshot, stale, { ...taker, claimant: 'two' }, 'chore(fixture): take over B'), false);
+  assert.equal(claimOf(f, 'B').claimant, 'one');
+});
+
+test('C (required): leaseSeconds 300 starts the renewal timer with 100000 ms and the claim records the lease', async t => {
+  const f = runnerFixture(t, { ids: ['B'] });
+  const { timer, leaseTimer } = fakeTimer();
+  const config = f.config('one', { leaves: ['B'], leaseSeconds: 300 });
+  const result = await f.run(config, { now: () => NOW, leaseTimer });
+  assert.equal(result.status, 'exhausted', JSON.stringify(result));
+  assert.deepEqual(timer.intervals, [100000]);
+  assert.equal(timer.stops, 1);
+  const claim = claimOf(f, 'B');
+  const state = JSON.parse(readFileSync(join(config.stateDirectory, 'state.json'), 'utf8'));
+  assert.equal(claim.claimant, state.claimant);
+  assert.equal(claim.leaseSeconds, 300);
+  assert.equal(claim.claimedAt, iso(NOW)); assert.equal(claim.renewedAt, claim.claimedAt);
+  assert.equal(Object.hasOwn(claim, 'blocked'), false);
 });
