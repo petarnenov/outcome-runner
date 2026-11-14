@@ -1,6 +1,6 @@
 {
   "name": "outcome-runner",
-  "version": "0.30.0",
+  "version": "0.31.0",
   "description": "Unattended OpenSpec outcome runner for the Git repository it is started in",
   "type": "module",
   "license": "MIT",
