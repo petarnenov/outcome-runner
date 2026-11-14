@@ -1,3 +1,14 @@
+## 0.30.0 - 2026-11-14
+
+### Features
+
+- implement OR-31 (c9b10aa)
+- implement OR-31 (c97af4f)
+
+### Fixes
+
+- use the merge status constants in the runner for OR-31 (f1c513e)
+
 ## 0.29.0 - 2026-11-14
 
 ### Features
