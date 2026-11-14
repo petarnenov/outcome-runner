@@ -229,8 +229,12 @@ test('D: added tasks update the stored identity; removed or changed tasks are re
 // Runner tests: the Git fixture of runnerFixture (a bare origin, the project queue, scripted adapters and the scripted
 // pull request host). An invocation is interrupted from afterEffect('implementation') and run again.
 
-/** The number of commits on the claims ledger branch of origin. */
-const claimCommits = (f: RunnerFixture) => git(f.remote, 'rev-list', '--count', 'work-queue-claims-main');
+/**
+ * The number of claim writes on the claims ledger branch of origin. Renewals and blocked marks of a claim the
+ * invocation already holds (claim leases) are not claims and are not counted.
+ */
+const claimCommits = (f: RunnerFixture) => git(f.remote, 'rev-list', '--count', '--invert-grep',
+  '--grep=renew the claim of ', '--grep=mark the claim of ', 'work-queue-claims-main');
 const claimOf = (f: RunnerFixture, id: string) => JSON.parse(git(f.remote, 'show', `work-queue-claims-main:${id}.json`));
 const sessionsOf = (work: Work, purpose: string) => (work.sessions ?? []).filter(item => item.purpose === purpose).length;
 const statePath = (config: RunConfig) => join(config.stateDirectory, 'state.json');

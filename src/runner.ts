@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay, setImmediate as yieldLoop } from 'node:timers/promises';
 import { hash, digest, within, safePath, validateConfig, validateQueue, archiveCommand, isDocumentation,
-  specsDirectory, resolvePollSeconds, resolveBudgets, resolveCheckTimeoutMinutes, DEFAULT_BUDGETS } from './model.ts';
+  specsDirectory, resolvePollSeconds, resolveBudgets, resolveCheckTimeoutMinutes, resolveLeaseSeconds,
+  DEFAULT_BUDGETS } from './model.ts';
 import type { BudgetExhaustion, BudgetLimits, BudgetStage, CheckRecord, CleanupStep, CommandSpec, PullRequest, Purpose,
   Queue, RetryRecord, ReviewRecord, RunConfig, SendBackCause, SendBackRecord, Task, TaskBudget, Work, WorkerReport,
   TaskCompletion } from './model.ts';
@@ -25,7 +26,7 @@ import { invocationIdentity, missingSetting, MissingSettingError, REQUIRED_SETTI
   settingAt } from './invocation-identity.ts';
 import type { RequiredSetting } from './invocation-identity.ts';
 import { buildCompletion, validCompletion } from './completion.ts';
-import { ClaimLedger } from './claims.ts';
+import { ClaimLedger, claimStale, LEDGER_UPDATE_TRIES } from './claims.ts';
 import type { Claim, LedgerSnapshot } from './claims.ts';
 import { CodexFiles, brokerTool } from './codex-files.ts';
 import { resolveHarness, createHarness, codexSelection } from './harness.ts';
@@ -109,6 +110,9 @@ export type CommandRunner = (cwd: string, program: string, args: string[]) => st
 /** Waits `milliseconds` or until `signal` aborts; it resolves in both cases. */
 export type Sleep = (milliseconds: number, signal: AbortSignal) => Promise<void>;
 
+/** Starts calling `renew` every `intervalMs` milliseconds and returns the function that stops it. */
+export type LeaseTimer = (renew: () => void, intervalMs: number) => () => void;
+
 export interface RunOptions {
   statistics?: Statistics;
   signal?: AbortSignal;
@@ -151,6 +155,11 @@ export interface RunOptions {
    * aborts. Operational only: it never enters the invocation identity.
    */
   sessionRetrySleep?: Sleep;
+  /**
+   * The periodic timer that renews the claim of the task being worked, every `Math.floor(leaseSeconds * 1000 / 3)`
+   * milliseconds; the default is an unref'd `setInterval`. Operational only: it never enters the invocation identity.
+   */
+  leaseTimer?: LeaseTimer;
 }
 
 interface CommandFailure extends Error { stdout?: string | Buffer; stderr?: string | Buffer }
@@ -187,6 +196,20 @@ class SessionTransportFailure extends Error {
   constructor(cause: unknown) {
     super('Session transport failure', { cause });
     this.name = 'SessionTransportFailure';
+  }
+}
+
+/** The blocked reason of a task whose claim another claimant took over. */
+export const CLAIM_LOST = 'claim-lost';
+
+/**
+ * The claim of the task is no longer this runner's: another claimant took it over. Thrown before the next effect on
+ * the target or the pull request, so no push, pull request creation or merge follows it.
+ */
+export class ClaimLost extends Error {
+  constructor() {
+    super(CLAIM_LOST);
+    this.name = 'ClaimLost';
   }
 }
 
@@ -360,11 +383,15 @@ export function acceptedThisRun({ ids, completed, blocked, done, baselineDone }:
     (Object.hasOwn(completed, id) || Object.hasOwn(blocked, id)));
 }
 
-/** The claims of another claimant whose task is not done. */
+/**
+ * The claims of another claimant whose task is not done. With `nowMs`, claims that are stale at that time
+ * (`claimStale`) are omitted as well, so they are neither waited for nor explained.
+ */
 export function foreignClaimsOf(snapshot: Pick<LedgerSnapshot, 'claims'>, done: Iterable<string>,
-  claimant: string): Claim[] {
+  claimant: string, nowMs?: number): Claim[] {
   const finished = new Set(done);
-  return [...snapshot.claims.values()].filter(claim => claim.claimant !== claimant && !finished.has(claim.id));
+  return [...snapshot.claims.values()].filter(claim => claim.claimant !== claimant && !finished.has(claim.id) &&
+    (nowMs === undefined || !claimStale(claim, nowMs)));
 }
 
 export interface UnfinishedInput extends AcceptedInput {
@@ -383,8 +410,8 @@ export interface UnfinishedInput extends AcceptedInput {
  * `Unexplained unfinished task` when no rule matches. A blocked task with an exhausted budget has the reason
  * `review-budget-exhausted` or `check-budget-exhausted` and a copy of the `budget`; a blocked task keeps the reason
  * `target-conflict-unresolved` (with its conflicting `paths`), `target-integration-rejected`,
- * `target-keeps-advancing` or `merge-not-eligible` (with the merge `status` and the required `checks`); every other
- * blocked task has the reason `operation-incomplete`.
+ * `target-keeps-advancing`, `claim-lost` or `merge-not-eligible` (with the merge `status` and the required `checks`);
+ * every other blocked task has the reason `operation-incomplete`.
  */
 export function explainUnfinished(input: UnfinishedInput): Record<string, Blocker> {
   const { remaining, ids, tasks, blocked, done, maxAccepted, foreignClaims, statePath } = input;
@@ -405,6 +432,10 @@ export function explainUnfinished(input: UnfinishedInput): Record<string, Blocke
       if (reason === MERGE_NOT_ELIGIBLE) {
         blockers[id] = { kind: 'blocked', stage: work?.stage, reason: MERGE_NOT_ELIGIBLE, diagnostics: statePath,
           ...(eligibility ? { status: eligibility.status, checks: [...eligibility.checks] } : {}) };
+        continue;
+      }
+      if (reason === CLAIM_LOST) {
+        blockers[id] = { kind: 'blocked', stage: work?.stage, reason: CLAIM_LOST, diagnostics: statePath };
         continue;
       }
       const integration = typeof reason === 'string' && INTEGRATION_REASONS.includes(reason);
@@ -467,6 +498,13 @@ export function waitMessage(blockers: Record<string, Pick<Blocker, 'kind' | 'cla
 const defaultSleep: Sleep = async (milliseconds, signal) => {
   try { await delay(milliseconds, undefined, { signal }); }
   catch (error) { if ((error as Error)?.name !== 'AbortError') throw error; }
+};
+
+/** The default lease timer: an unref'd `setInterval`, so a pending renewal never keeps the process alive. */
+const defaultLeaseTimer: LeaseTimer = (renew, intervalMs) => {
+  const timer = setInterval(renew, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
 };
 
 /**
@@ -569,6 +607,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   if (lacking) throw new MissingSettingError(lacking);
   // An invalid poll interval is refused just as early; the interval is operational and never enters the identity.
   const pollSeconds = resolvePollSeconds((requested as Partial<RunConfig> | undefined)?.pollSeconds);
+  // An invalid claim lease is refused just as early; the lease is operational and never enters the identity.
+  const leaseSeconds = resolveLeaseSeconds((requested as Partial<RunConfig> | undefined)?.leaseSeconds);
   // Invalid budgets are refused just as early; the limits are operational and never enter the identity, so a restart
   // applies the limits it is given to the recorded counts.
   const limits = resolveBudgets((requested as Partial<RunConfig> | undefined)?.budgets);
@@ -578,6 +618,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   const checkGraceMs = options.checkLimits?.killGraceMs ?? CHECK_KILL_GRACE_MS;
   const sleep = options.sleep ?? defaultSleep;
   const sessionRetrySleep = options.sessionRetrySleep ?? defaultSleep;
+  const leaseTimer = options.leaseTimer ?? defaultLeaseTimer;
   // The OpenSpec preflight precedes the harness availability check and selection, harness resolution,
   // the lock, claims and worktrees.
   const statistics = options.statistics;
@@ -633,6 +674,16 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
   // The wait for free work ends on the caller's signal and on `stop` (also reached through SIGINT and SIGTERM).
   const local = new AbortController();
   const waitSignal = signal ? AbortSignal.any([signal, local.signal]) : local.signal;
+  // The renewal of the claim of the task being worked: its stop function, the task id it renews and whether a
+  // renewal or a check found the claim held by another claimant.
+  let stopLease: () => void = () => {};
+  let leaseFor: string | null = null;
+  let claimLost = false;
+  const stopRenewal = (): void => {
+    const stopTimer = stopLease;
+    stopLease = () => {}; leaseFor = null;
+    stopTimer();
+  };
   const stop = () => {
     stopped = true;
     local.abort();
@@ -724,6 +775,88 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
     if (!store.state.claimant) store.update({ claimant: randomUUID() });
     const claimant = store.state.claimant!;
     const commitSubject = (type: string, text: string) => `${type}(${project.commitScope ?? 'work-queue'}): ${text}${project.commitSuffix ?? ''}`;
+    // A new, acquired or taken-over claim of this runner: renewed when it is written, with the lease of this run.
+    const claimRecord = (work: Pick<Work, 'id' | 'taskHash' | 'scopes' | 'branch'>, at: string): Claim => ({
+      version: 1, id: work.id, taskHash: work.taskHash, scopes: work.scopes, claimant, host: hostname(),
+      branch: work.branch, claimedAt: at, renewedAt: at, leaseSeconds });
+    // Runs one group of ledger operations announcing a contended Git lock for task `id`.
+    const forTask = <T>(id: string, fn: () => T): T => {
+      const previous = ledgerSubject; ledgerSubject = id;
+      try { return fn(); } finally { ledgerSubject = previous; }
+    };
+    /**
+     * Makes sure the claim of `work` is this runner's before anything else happens: an own claim is renewed (which
+     * also clears a blocked mark), an absent claim is acquired and a stale foreign claim is taken over, each with the
+     * compare-and-swap. A fresh or blocked foreign claim throws `ClaimLost`.
+     */
+    const holdClaim = (work: Work): void => forTask(work.id, () => {
+      for (let tries = 0; tries < LEDGER_UPDATE_TRIES; tries += 1) {
+        const at = new Date(now()).toISOString();
+        const renewed = ledger.renew(work.id, claimant, work.branch, at, leaseSeconds,
+          commitSubject('chore', `renew the claim of ${work.id}`));
+        if (renewed === 'renewed') return;
+        if (renewed === 'deferred') continue;
+        const snapshot = ledger.pull();
+        const claim = snapshot.claims.get(work.id);
+        if (!claim) {
+          if (ledger.acquire(snapshot, claimRecord(work, at), commitSubject('chore', `claim ${work.id}`))) return;
+          continue;
+        }
+        if (claim.claimant === claimant && claim.branch === work.branch) continue;
+        if (!claimStale(claim, now())) throw new ClaimLost();
+        if (ledger.takeOver(snapshot, claim, claimRecord(work, at), commitSubject('chore', `take over ${work.id}`))) return;
+      }
+      throw new Error('The claims ledger kept moving; the claim was not renewed');
+    });
+    /**
+     * Starts the renewal of the claim of `work` every third of the lease. A renewal that finds the claim held by
+     * another claimant sets `claimLost` and stops the timer; a deferred or failed renewal writes a step line and waits
+     * for the next tick.
+     */
+    const startRenewal = (work: Work): void => {
+      stopRenewal();
+      claimLost = false;
+      let active = true;
+      const renew = (): void => {
+        if (!active) return;
+        try {
+          const result = forTask(work.id, () => ledger.renew(work.id, claimant, work.branch,
+            new Date(now()).toISOString(), leaseSeconds, commitSubject('chore', `renew the claim of ${work.id}`)));
+          if (result === 'lost') { claimLost = true; stopRenewal(); }
+          else if (result === 'deferred') step(work.id, 'lease', 'renewal failed; retrying');
+        } catch { step(work.id, 'lease', 'renewal failed; retrying'); }
+      };
+      const stopTimer = leaseTimer(renew, Math.floor(leaseSeconds * 1000 / 3));
+      stopLease = () => { active = false; stopTimer(); };
+      leaseFor = work.id;
+    };
+    /**
+     * Throws `ClaimLost` when a renewal found the claim of `work` lost, or when the ledger no longer holds this
+     * runner's claim of `work.id` on its branch. Called before every effect on the target or the pull request.
+     */
+    const assertClaimHeld = (work: Work): void => {
+      if (!claimLost) {
+        const claim = forTask(work.id, () => ledger.pull()).claims.get(work.id);
+        if (claim?.claimant === claimant && claim.branch === work.branch) return;
+      }
+      claimLost = true;
+      stopRenewal();
+      throw new ClaimLost();
+    };
+    /**
+     * Marks the claim of the blocked `work` blocked, unless its task is already accepted on the target. A failure only
+     * writes a step line and never changes the result.
+     */
+    const markClaimBlocked = (work: Work): void => {
+      try {
+        const { target, queue } = refresh(work.id);
+        const task = queue.tasks.find(item => item.id === work.id);
+        if (task && accepted(target, task)) return;
+        const result = forTask(work.id, () => ledger.markBlocked(work.id, claimant, work.branch,
+          new Date(now()).toISOString(), commitSubject('chore', `mark the claim of ${work.id} blocked`)));
+        if (result !== 'blocked') step(work.id, 'claim', 'could not mark the claim blocked');
+      } catch { step(work.id, 'claim', 'could not mark the claim blocked'); }
+    };
     const save = (fields: Partial<Work>) => {
       const result = store.update({ current: { ...store.state.current, ...fields } as Work });
       statistics?.decision(result.current!, 'blocked', result.current!);
@@ -1158,7 +1291,11 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         statePath: stateFile });
       const withBlockers = (blockers: Record<string, Blocker>) => Object.keys(blockers).length ? { blockers } : {};
       let acceptanceFailed = false;
-      if (current && done.has(current.id)) {
+      if (current && done.has(current.id) && current.claimLostAt) {
+        // Another claimant took over the claim and its task was accepted on the target: the work was not this
+        // invocation's acceptance, so it is kept aside instead of being recorded as accepted.
+        store.update({ current: null, claimLost: { ...store.state.claimLost, [current.id]: current } });
+      } else if (current && done.has(current.id)) {
         try {
           taskStep(current.id, 'acceptance', 'recording the acceptance');
           const claimedAt = recoverClaimTime(current);
@@ -1206,12 +1343,12 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       const mergedBlocked = ids.some(id => done.has(id) && Object.hasOwn(store.state.blocked ?? {}, id));
       if (mergedBlocked && limitReached) {
         return finish({ status: 'incomplete', ...resultData(newlyAccepted), remaining,
-          blockers: explain(remaining, foreignClaimsOf(ledger.pull(), done, claimant)) });
+          blockers: explain(remaining, foreignClaimsOf(ledger.pull(), done, claimant, now())) });
       }
       if (limitReached) {
         if (!Object.keys(store.state.blocked!).length && !store.state.current && !recovery.length) release();
         return finish({ status: 'limit-reached', ...resultData(newlyAccepted), remaining,
-          ...withBlockers(explain(remaining, foreignClaimsOf(ledger.pull(), done, claimant))) });
+          ...withBlockers(explain(remaining, foreignClaimsOf(ledger.pull(), done, claimant, now()))) });
       }
       if (!remaining.length) {
         // A merged task whose acceptance recording failed keeps the ownership for the next run.
@@ -1223,9 +1360,12 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
       }
       if (stopped) return finish({ status: 'cancelled', ...resultData(newlyAccepted), remaining });
       let work = store.state.current;
+      // The id of a task claimed (acquired or taken over) in this iteration; its claim needs no renewal yet.
+      let freshClaim: string | null = null;
       if (!work) {
         const ledgerSnapshot = ledger.pull();
-        const foreignClaims = foreignClaimsOf(ledgerSnapshot, done, claimant);
+        // Stale foreign claims are neither waited for nor explained; their tasks are free work.
+        const foreignClaims = foreignClaimsOf(ledgerSnapshot, done, claimant, now());
         for (const candidate of queue.tasks.filter(task => remaining.includes(task.id))) {
           if (foreignClaims.some(claim => claim.id === candidate.id)) {
             statistics?.decision(candidate, 'claimed-elsewhere');
@@ -1237,6 +1377,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
         if (!task) {
           const blockers = explain(remaining, foreignClaims);
+          const claimedElsewhere = Object.fromEntries(foreignClaims.map(claim => [claim.id, { host: claim.host }]));
           // Work held by another runner or waiting for a dependency is waited for; anything blocked in this
           // invocation (or waiting for such a task or scope) ends the run, because nobody else can finish it.
           if (waitsForFreeWork(blockers)) {
@@ -1244,30 +1385,37 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             await sleep(pollSeconds * 1000, waitSignal);
             // A cancel during the wait ends the run before any fetch, ledger pull, claim, worktree or session.
             if (stopped || signal?.aborted) {
-              return finish({ status: 'cancelled', ...resultData(newlyAccepted), remaining, blockers });
+              return finish({ status: 'cancelled', ...resultData(newlyAccepted), remaining, blockers,
+                ...(foreignClaims.length ? { claimedElsewhere } : {}) });
             }
             continue;
           }
-          return finish({ status: 'incomplete', ...resultData(newlyAccepted), remaining, blockers,
-            claimedElsewhere: Object.fromEntries(foreignClaims.map(claim => [claim.id, { host: claim.host }])) });
+          return finish({ status: 'incomplete', ...resultData(newlyAccepted), remaining, blockers, claimedElsewhere });
         }
         const operation = hash({ invocation: config.invocation, id: task.id, authority: config.authority.reference });
         const branch = `outcome/${task.id}-${operation.slice(0, 12)}`;
         taskStep(task.id, 'claim', 'claiming the task');
-        let claimed: boolean;
-        ledgerSubject = task.id;
-        try {
-          claimed = ledgerSnapshot.claims.has(task.id) || ledger.acquire(ledgerSnapshot, {
-            version: 1, id: task.id, taskHash: hash(task), scopes: task.scopes, claimant,
-            host: hostname(), branch, claimedAt: new Date(now()).toISOString(),
-          }, commitSubject('chore', `claim ${task.id}`));
-        } finally { ledgerSubject = 'run'; }
+        // An own claim is reused, a stale foreign claim is taken over and a free task is acquired; both writes use the
+        // compare-and-swap, so a lost race pulls the ledger again.
+        const existing = ledgerSnapshot.claims.get(task.id);
+        const record = claimRecord({ id: task.id, taskHash: hash(task), scopes: task.scopes, branch },
+          new Date(now()).toISOString());
+        const claimed = forTask(task.id, () => existing?.claimant === claimant ? true : existing ?
+          ledger.takeOver(ledgerSnapshot, existing, record, commitSubject('chore', `take over ${task.id}`)) :
+          ledger.acquire(ledgerSnapshot, record, commitSubject('chore', `claim ${task.id}`)));
         if (!claimed) continue;
+        if (existing?.claimant !== claimant) freshClaim = task.id;
         save({ ...task, taskHash: hash(task), operation, stage: 'claim', base: target, branch,
           path: join(outcomes, operation), directory: `${project.changes}/${task.change}` });
         work = activeWork();
       }
       try {
+        // The claim is this runner's before anything else happens, and it is renewed while the task is worked.
+        if (leaseFor !== work.id) {
+          if (freshClaim !== work.id) holdClaim(work);
+          startRenewal(work);
+        }
+        if (activeWork().claimLostAt) save({ claimLostAt: undefined });
         const claimedAt = recoverClaimTime(work);
         if (work.claimedAt !== claimedAt) save({ claimedAt });
         const prompt = `Task ${work.id}; OpenSpec directory ${work.directory}. ` +
@@ -1680,6 +1828,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           const head = git(work.path, 'rev-parse', 'HEAD');
           const published = work;
           taskStep(work.id, 'push', 'pushing the tested head', attempt);
+          // A claim taken over by another runner stops the task before its tested head is pushed.
+          assertClaimHeld(published);
           lockGit(published.id, () => git(published.path, 'push', 'origin', `HEAD:refs/heads/${published.branch}`));
           save({ head, testedTarget: targetNow, stage: 'pr' });
         }
@@ -1693,6 +1843,7 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           if (pr) { taskStep(work.id, 'pull request', `reusing #${pr.number}`, attempt); rememberPr(pr); }
           if (!pr) {
             taskStep(work.id, 'pull request', 'creating the pull request', attempt);
+            assertClaimHeld(now);
             pr = await cancellable(Promise.resolve(host.create(now, body)), signal);
             if (pr) rememberPr(pr);
             await cancellable(afterEffect('pr', pr), signal);
@@ -1715,8 +1866,11 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             }
             return unchanged;
           };
-          // Called by the host right before its merge command: a difference means no merge command is issued.
-          const guard = (): void => { if (!compareTarget(true)) throw new TargetAdvanced(); };
+          // Called by the host right before its merge command: a lost claim or a difference means no merge command.
+          const guard = (): void => {
+            assertClaimHeld(now);
+            if (!compareTarget(true)) throw new TargetAdvanced();
+          };
           /**
            * One pending view of the eligibility wait. The first one records the start of the wait and a
            * `checks-pending` retry; a wait line is written when the wait starts and whenever the status changes.
@@ -1744,6 +1898,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           // The wait is announced once on entry and a stale head once per merge stage, never on every view.
           taskStep(work.id, 'wait', `waiting for mergeability and checks of ${now.pr ? `#${now.pr.number}` : 'the pull request'}`,
             currentAttempt());
+          // A claim taken over by another runner stops the task before the merge stage reads the pull request.
+          assertClaimHeld(now);
           let headWait = false; let staleViews = 0;
           // Why the merge stage returns to publish: the target advanced, or the pull request is behind the target.
           let retry: 'target-advanced' | 'behind' | undefined;
@@ -1770,6 +1926,8 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
             if (ready) {
               if (kind === 'eligible') {
                 taskStep(work.id, 'merge', `merging #${pr.number}`, currentAttempt());
+                // A host without a guard call merges right away, so the claim is checked immediately before.
+                assertClaimHeld(now);
                 try { await cancellable(Promise.resolve(host.merge(pr, now.head!, guard)), signal); }
                 catch (error) {
                   if (error instanceof TargetAdvanced) { retry = 'target-advanced'; break; }
@@ -1831,13 +1989,18 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
           const targetNow = refresh(work.id).target;
           if (!accepted(targetNow, authorized(refresh(work.id).queue, work.id))) throw new Error('Merged result lacks valid receipt');
         }
+        // The task is merged: its claim needs no further renewal.
+        stopRenewal();
       } catch (error) {
+        stopRenewal();
         if (stopped || signal?.aborted) {
           statistics?.decision(activeWork(), 'blocked', activeWork(), 'cancelled');
           return finish({ status: 'cancelled', ...resultData(newlyAccepted), remaining });
         }
         if ((error as InterruptedFailure).interrupted) throw error;
         const stage = activeWork().stage;
+        // A lost claim is recorded with the time it was noticed; the claim is not this runner's, so it is not marked.
+        const lost = error instanceof ClaimLost;
         // An unresolved target conflict keeps its conflicting paths beside the reason, an exhausted budget its
         // stage, exhausted part and counts, and a pull request that cannot become mergeable its status and checks.
         const paths = error instanceof IntegrationFailure && error.paths.length ? { paths: [...error.paths] } : {};
@@ -1845,17 +2008,20 @@ async function runSteps(requested: RunConfig, options: RunOptions, step: StepLog
         const eligibility = error instanceof MergeNotEligible ?
           { eligibility: { status: error.status, checks: [...error.checks] } } : {};
         // The merge stage ends here, so an eligibility wait in progress is cleared; a restart starts a new one.
-        const blockedWork = activeWork().mergeWait ? { ...activeWork(), mergeWait: undefined } : activeWork();
+        const settled = activeWork().mergeWait ? { ...activeWork(), mergeWait: undefined } : activeWork();
+        const blockedWork = lost ? { ...settled, claimLostAt: new Date(now()).toISOString() } : settled;
         store.update({ blocked: { ...store.state.blocked, [work.id]: {
           reason: (error as Error).message, ...paths, ...budgetDetail, ...eligibility, work: blockedWork } }, current: null });
         blockedStep(work.id, stage);
         // The reason reaches only the stderr mascot caption; the serialized event stays unchanged.
         report({ status: 'blocked', id: work.id }, { reason: (error as Error).message });
+        // A blocked claim never expires, so other runners do not start the task again for a lasting reason.
+        if (!lost) markClaimBlocked(work);
       }
     }
   } finally {
     const cleanupErrors: unknown[] = [];
-    for (const close of [() => adapter?.close(), () => store?.close(), () => lock.close()]) {
+    for (const close of [() => stopRenewal(), () => adapter?.close(), () => store?.close(), () => lock.close()]) {
       try { close(); } catch (error) { cleanupErrors.push(error); }
     }
     signal?.removeEventListener('abort', stop);

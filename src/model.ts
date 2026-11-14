@@ -74,6 +74,11 @@ export interface RunConfig {
    * Operational only: it never enters the invocation identity.
    */
   checkTimeoutMinutes?: number;
+  /**
+   * The lease in seconds of every claim this run holds; an integer from 300 through 86400, 1800 when omitted. The
+   * claim is renewed every `leaseSeconds / 3`. Operational only: it never enters the invocation identity.
+   */
+  leaseSeconds?: number;
 }
 
 export interface ResolvedRunConfig extends RunConfig {
@@ -288,6 +293,8 @@ export interface Work extends Task {
   acceptedTarget?: string;
   claimedAt?: string;
   acceptedAt?: string;
+  /** When this runner noticed that another claimant took over the claim of the task; cleared when it holds it again. */
+  claimLostAt?: string;
   completion?: TaskCompletion;
   cleanup?: { failed: CleanupStep[] };
   /** The used review rounds and check attempts; absent in work recorded before budgets existed. */
@@ -391,6 +398,21 @@ export function resolvePollSeconds(value: unknown = DEFAULT_POLL_SECONDS): numbe
   return value;
 }
 
+/** The default lease in seconds of a claim: a claim not renewed for longer is stale. */
+export const DEFAULT_LEASE_SECONDS = 1800;
+
+/**
+ * The claim lease in seconds: `value`, or 1800 when omitted. Anything but a safe integer from 300 through 86400 throws
+ * an error with `reason` `invalid-lease-seconds` and `details` naming the `leaseSeconds` setting and the value.
+ */
+export function resolveLeaseSeconds(value: unknown = DEFAULT_LEASE_SECONDS): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 300 || value > 86400) {
+    throw Object.assign(new Error('Invalid leaseSeconds: expected an integer from 300 through 86400'),
+      { reason: 'invalid-lease-seconds', details: { setting: 'leaseSeconds', value } });
+  }
+  return value;
+}
+
 /**
  * The limits used without a `budgets` setting: 6 planning review rounds, 4 implementation and documentation review
  * rounds, 4 planning and implementation check attempts and no documentation check attempt.
@@ -457,6 +479,7 @@ export function validateConfig<T extends RunConfig>(config: T): T {
   resolvePollSeconds(config.pollSeconds);
   resolveBudgets(config.budgets);
   resolveCheckTimeoutMinutes(config.checkTimeoutMinutes);
+  resolveLeaseSeconds(config.leaseSeconds);
   const project = config.project;
   if ((config.mode ?? 'OFF') !== 'OFF' || !config.root || !config.stateDirectory ||
       !config.invocation || !config.authority?.reference || !config.authority?.instruction ||
