@@ -8,8 +8,9 @@ import { DEFAULT_LEASE_SECONDS, hash, resolveLeaseSeconds, validateConfig } from
 import type { RunConfig } from '../src/model.ts';
 import { ClaimLedger, claimStale } from '../src/claims.ts';
 import type { Claim } from '../src/claims.ts';
+import { ELIGIBLE } from '../src/merge-eligibility.ts';
 import { explainUnfinished, foreignClaimsOf, invocationLockFiles, runQueue } from '../src/runner.ts';
-import type { LeaseTimer } from '../src/runner.ts';
+import type { LeaseTimer, PullRequestHost } from '../src/runner.ts';
 import { invocationIdentity } from '../src/invocation-identity.ts';
 import { main } from './support/isolated-cli.ts';
 import { runnerFixture, scriptedWorker } from './support/runner-fixture.ts';
@@ -53,6 +54,15 @@ function claimByZero(f: RunnerFixture, id: string, fields: Partial<Claim>): Clai
     taskHash: hash(f.queue.tasks.find(task => task.id === id)), host: 'zero-host', branch: `outcome/${id}-zero`,
     ...fields };
   assert.equal(ledger.acquire(ledger.pull(), claim, `chore(fixture): claim ${id}`), true);
+  return claim;
+}
+
+/** Replaces the claim of `B` on the ledger of the fixture origin with a fresh claim of another claimant, `taker`. */
+function takeOverByTaker(f: RunnerFixture, at: number): Claim {
+  const ledger = new ClaimLedger(f.integrator, 'main');
+  const claim: Claim = { version: 1, id: 'B', claimant: 'taker', scopes: ['src/b'], host: 'taker-host',
+    branch: 'outcome/B-taker', claimedAt: iso(at), renewedAt: iso(at), leaseSeconds: 1800 };
+  assert.equal(ledger.acquire(ledger.pull(), claim, 'chore(fixture): take over B'), true);
   return claim;
 }
 
@@ -386,3 +396,109 @@ test('B (required): the own invocation resumes its blocked claim, clearing the m
   assert.equal(first.renewedAt, iso(restart)); assert.equal(first.leaseSeconds, 1800);
   assert.equal(first.claimant, stateOf(one).claimant); assert.equal(first.claimedAt, iso(NOW));
 });
+
+// Grade A
+
+test('A (required): exactly one of two runners that read the same stale claim takes it over', async t => {
+  const f = runnerFixture(t, { ids: ['B'] });
+  claimByZero(f, 'B', { claimedAt: ago(5000), renewedAt: ago(5000), leaseSeconds: 1800 });
+  const one = f.config('one', { leaves: ['B'] }); const two = f.config('two', { leaves: ['B'] });
+  // Invocation two first runs while zero's claim is still fresh, so it only records its claimant and waits.
+  const early = await f.run(two, { now: () => NOW - 4000 * 1000, createAdapter: noWorker });
+  assert.equal(early.status, 'cancelled', JSON.stringify(early));
+  assert.equal(early.blockers!.B.kind, 'waiting-for-claim');
+  const twoClaimant = stateOf(two).claimant as string;
+  const twoBranch = `outcome/B-${hash({ invocation: 'two', id: 'B', authority: two.authority.reference }).slice(0, 12)}`;
+  // Invocation one pulls the ledger with the stale claim; right after its pull (at its claim step line) two takes
+  // the claim over from the very same ledger state, before one pushes its own takeover.
+  const pulled = ledgerHead(f);
+  let raced = false; const onePrompts: string[] = []; const lines: string[] = [];
+  const steps = (line: string) => {
+    lines.push(line);
+    if (raced || !/ B claim: claiming the task/u.test(line)) return;
+    raced = true;
+    const ledger = new ClaimLedger(f.integrator, 'main');
+    const snapshot = ledger.pull();
+    assert.equal(snapshot.head, pulled);
+    assert.equal(ledger.takeOver(snapshot, snapshot.claims.get('B')!, { version: 1, id: 'B', claimant: twoClaimant,
+      scopes: ['src/b'], taskHash: hash(f.queue.tasks[0]), host: 'two-host', branch: twoBranch, claimedAt: iso(NOW),
+      renewedAt: iso(NOW), leaseSeconds: 1800 }, 'chore(fixture): take over B'), true);
+  };
+  const lost = await f.run(one, { now: () => NOW, steps,
+    createAdapter: scriptedWorker({ onSession: (_options, prompt) => { onePrompts.push(prompt); } }) });
+  assert.ok(raced);
+  // Only one takeover was pushed: two's. One lost the compare-and-swap, pulled again and waits for two's claim.
+  assert.equal(git(f.remote, 'rev-list', '--count', '--grep=take over B', `refs/heads/${CLAIMS}`), '1');
+  assert.equal(claimOf(f, 'B').claimant, twoClaimant);
+  assert.equal(lost.status, 'cancelled', JSON.stringify(lost));
+  assert.deepEqual(lost.blockers, { B: { kind: 'waiting-for-claim', reason: 'waiting-for-claim',
+    claim: { id: 'B', host: 'two-host' } } });
+  assert.ok(!onePrompts.some(prompt => prompt.includes('Task B;')));
+  assert.ok(waitLines(lines).every(line => line.endsWith(' run wait: waiting 60s for B on two-host\n')));
+  // The winner works its claim and merges B exactly once.
+  const won = await f.run(two, { now: () => NOW + 1000 });
+  assert.equal(won.status, 'exhausted', JSON.stringify(won)); assert.deepEqual(won.accepted, ['B']);
+  assert.equal(claimOf(f, 'B').claimant, twoClaimant);
+  assert.equal(f.records.length, 1); assert.equal(f.records[0].state, 'MERGED');
+  assert.equal(f.records[0].branch, twoBranch);
+  assert.equal(git(f.remote, 'rev-list', '--count', '--grep=accept 1', 'refs/heads/main'), '1');
+  assert.equal(stateOf(one).completed, undefined);
+});
+
+test('A (required): a claim taken over before the merge stops the previous holder without a merge', async t => {
+  const f = runnerFixture(t, { ids: ['B'] });
+  const base = f.hostFor();
+  let merges = 0; let taken: Claim | undefined;
+  const host: PullRequestHost = { ...base,
+    // The merge stage reads the eligibility right before it would merge; another runner takes over B meanwhile.
+    eligibility: () => { taken ??= takeOverByTaker(f, NOW); return ELIGIBLE; },
+    merge: (pr, head, guard) => { merges += 1; return base.merge(pr, head, guard); } };
+  const one = f.config('one', { leaves: ['B'] });
+  const result = await f.run(one, { now: () => NOW, host });
+  assert.ok(taken);
+  assert.equal(merges, 0);
+  assert.equal(f.records.length, 1); assert.equal(f.records[0].state, 'OPEN');
+  assert.equal(result.status, 'incomplete', JSON.stringify(result));
+  assert.equal(result.blockers!.B.kind, 'blocked'); assert.equal(result.blockers!.B.reason, 'claim-lost');
+  assert.equal(result.blockers!.B.stage, 'merge');
+  const state = stateOf(one);
+  assert.equal(state.blocked.B.reason, 'claim-lost');
+  assert.equal(state.blocked.B.work.claimLostAt, iso(NOW));
+  // The claim stays the taker's: one never marks or renews it.
+  assert.deepEqual(claimOf(f, 'B'), taken);
+  assert.equal(git(f.remote, 'rev-parse', 'refs/heads/main'), git(f.root, 'rev-parse', 'HEAD'));
+});
+
+test('A (required): a renewal that finds the claim taken over stops the timer and the task before the push', async t => {
+  const f = runnerFixture(t, { ids: ['B'] });
+  const { timer, leaseTimer } = fakeTimer();
+  const base = f.hostFor();
+  let creates = 0; let clock = NOW; let taken: Claim | undefined; let stopsAfterTick = -1;
+  const host: PullRequestHost = { ...base, create: (work, body) => { creates += 1; return base.create(work, body); } };
+  const createAdapter = scriptedWorker({ onSession: (_options, prompt) => {
+    if (taken || !prompt.includes('Implement all approved')) return;
+    taken = takeOverByTaker(f, clock);
+    clock += 600000;
+    timer.renew();
+    stopsAfterTick = timer.stops;
+  } });
+  const one = f.config('one', { leaves: ['B'] });
+  const result = await f.run(one, { now: () => clock, host, leaseTimer, createAdapter });
+  assert.ok(taken);
+  // The renewal found the claim held by the taker and stopped the timer at once.
+  assert.equal(stopsAfterTick, 1);
+  assert.equal(timer.stops, 1);
+  // A later tick of the stopped timer does nothing.
+  timer.renew();
+  assert.deepEqual(claimOf(f, 'B'), taken);
+  assert.equal(result.status, 'incomplete', JSON.stringify(result));
+  assert.equal(result.blockers!.B.reason, 'claim-lost');
+  const state = stateOf(one);
+  assert.equal(state.blocked.B.reason, 'claim-lost');
+  assert.equal(state.blocked.B.work.branch.startsWith('outcome/B-'), true);
+  // No task branch was pushed and no pull request was created.
+  assert.equal(git(f.remote, 'for-each-ref', 'refs/heads/outcome'), '');
+  assert.equal(creates, 0); assert.equal(f.records.length, 0);
+});
+
+// Grade A (coverage-only) 4.19: not needed, coverage reached.
