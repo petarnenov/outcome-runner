@@ -66,3 +66,20 @@ export function withNetworkRetry<T>(run: () => T, describe: () => string): T {
     }
   }
 }
+
+/**
+ * The asynchronous form of `withNetworkRetry`, with the same policy: each attempt is awaited, and only a rejection
+ * caused by a connection that could not be made is retried. A resolved result is never retried.
+ */
+export async function withNetworkRetryAsync<T>(run: () => Promise<T>, describe: () => string): Promise<T> {
+  const { delaysMs, sleep, onWait } = policy;
+  for (let retry = 1; ; retry += 1) {
+    try { return await run(); }
+    catch (error) {
+      if (retry > delaysMs.length || !isConnectionFailure(error)) throw error;
+      const milliseconds = delaysMs[retry - 1];
+      onWait(retry, milliseconds, describe());
+      sleep(milliseconds);
+    }
+  }
+}

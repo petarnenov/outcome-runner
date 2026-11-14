@@ -36,15 +36,21 @@ export interface Receipt {
 export const GIT_OPTIONS: readonly string[] = ['-c', 'gc.auto=0'];
 const GIT_PREFIX = `git ${GIT_OPTIONS.join(' ')} `;
 
+/**
+ * The environment of every runner command: the process environment without the Node test runner variables, with
+ * `CI=true`, `GIT_TERMINAL_PROMPT=0` and `GH_PROMPT_DISABLED=1`.
+ */
+export const commandEnvironment = (): NodeJS.ProcessEnv => ({ ...Object.fromEntries(Object.entries(process.env)
+  .filter(([key]) => !['NODE_TEST_CONTEXT', 'NODE_TEST_WORKER_ID'].includes(key))), CI: 'true',
+  GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1' });
 const runOptions = (): ExecFileSyncOptionsWithStringEncoding => ({ encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
-  env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !['NODE_TEST_CONTEXT', 'NODE_TEST_WORKER_ID'].includes(key))), CI: 'true', GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1' } });
+  env: commandEnvironment() });
 /** Runs one program; a connection that cannot be made is waited out (see network-retry.ts). */
 export const command = (cwd: string, program: string, args: string[]): string => withNetworkRetry(
   () => execFileSync(program, args, { ...runOptions(), cwd, stdio: ['ignore', 'pipe', 'pipe'] }).trim(),
   () => describeCommand(program, args));
 /** The program and its first two arguments, without the runner's Git options, for the retry step line. */
-const describeCommand = (program: string, args: string[]): string => {
+export const describeCommand = (program: string, args: string[]): string => {
   const own = program === 'git' && GIT_OPTIONS.every((option, index) => args[index] === option) ? args.slice(GIT_OPTIONS.length) : args;
   return [program, ...own.slice(0, 2)].join(' ');
 };

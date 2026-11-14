@@ -144,6 +144,8 @@ function recorder(prompts: { kind: Kind; prompt: string }[], { rejectFirstPlanni
 const byKind = (prompts: { kind: Kind; prompt: string }[], kind: Kind) =>
   prompts.filter(entry => entry.kind === kind).map(entry => entry.prompt);
 const instructions = (prompt: string) => prompt.slice(0, prompt.indexOf('Address private findings'));
+/** The earlier findings text a later review round appends to its review prompt. */
+const EARLIER_FINDINGS = ' Findings reported by the earlier review rounds of this stage';
 
 function assertPlan(prompt: string, coverage: number) {
   assert.ok(prompt.includes('tasks.md must contain a test section'));
@@ -213,7 +215,12 @@ test('scripted prompts carry graded instructions at a non-default threshold thro
     assert.ok(retried.length >= 2, `${kind} was retried`);
     assert.ok(new Set(retried.map(instructions)).size === 1, `${kind} retries keep the same instructions`);
   }
-  assert.equal(new Set(byKind(prompts, 'planningReview')).size, 1);
+  // The second planning review also lists the finding of the first; the instructions before it stay the same.
+  const planningReviews = byKind(prompts, 'planningReview');
+  assert.equal(planningReviews.length, 2);
+  assert.ok(!planningReviews[0].includes(EARLIER_FINDINGS));
+  assert.ok(planningReviews[1].includes(`${EARLIER_FINDINGS}: [{"round":1,"findings":["Grade every planned test."]}]`));
+  assert.equal(new Set(planningReviews.map(prompt => prompt.split(EARLIER_FINDINGS)[0])).size, 1);
 });
 
 // B: every worker prompt explains the write path under the read-only sandbox and that binding is the runner's job.

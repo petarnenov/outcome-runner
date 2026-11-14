@@ -63,6 +63,17 @@ export interface RunConfig {
    * through 3600, 60 when omitted. Operational only: it never enters the invocation identity.
    */
   pollSeconds?: number;
+  /**
+   * The review rounds and check attempts of each budget stage (`budgets.<stage>.reviews` and `.checks`, each an integer
+   * from 1 through 12; no `budgets.document.checks`); omitted values keep `DEFAULT_BUDGETS`. Operational only: it never
+   * enters the invocation identity.
+   */
+  budgets?: BudgetSettings;
+  /**
+   * The time limit in minutes of every product check command; an integer from 1 through 240, 30 when omitted.
+   * Operational only: it never enters the invocation identity.
+   */
+  checkTimeoutMinutes?: number;
 }
 
 export interface ResolvedRunConfig extends RunConfig {
@@ -82,6 +93,10 @@ export type BudgetStage = 'plan' | 'work' | 'document';
 export interface StageBudget { reviews: number; checks: number }
 /** The used counts of every budget stage of a task. */
 export type TaskBudget = Record<BudgetStage, StageBudget>;
+/** The allowed review rounds and failing check runs of every budget stage; the same shape as the used counts. */
+export type BudgetLimits = Record<BudgetStage, StageBudget>;
+/** The `budgets` invocation setting: limits that replace the defaults; the documentation stage has no checks. */
+export type BudgetSettings = Partial<Record<'plan' | 'work', Partial<StageBudget>>> & { document?: { reviews?: number } };
 export interface BudgetUse { used: number; limit: number }
 /** A budget that ran out: its stage, which part ran out and the used and allowed counts of both parts. */
 export interface BudgetExhaustion {
@@ -127,6 +142,22 @@ export interface MergeWait { since: string; status: string; checks: string[]; vi
  */
 export type IntegrationStep = 'merge' | 'resolve' | 'checks' | 'review' | 'document-review' | 'send-back';
 
+/** The session an attempt record belongs to. */
+export interface SessionAttemptOwner {
+  purpose: Purpose;
+  stage: Stage;
+  /** Set only in the `integrate` stage: the integrated target commit and the integration step of the session. */
+  integration?: { target: string; step: IntegrationStep };
+}
+
+/** The attempts of the session in progress; cleared when it reports, fails for another reason or is cancelled. */
+export interface SessionAttempt extends SessionAttemptOwner {
+  /** The number of attempts started. */
+  attempt: number;
+  /** The detail of the last failed attempt, if any. */
+  failure?: string;
+}
+
 /**
  * What did not accept the merged result: the setup or product checks, the implementation review or the
  * documentation review.
@@ -167,7 +198,11 @@ export interface IntegrationRecord {
   sendBack?: SendBackRecord;
 }
 
-export interface CheckRecord extends CommandSpec { outcome: string; output?: string }
+/**
+ * One check command run. `outcome` is `passed`, `failed` or `timed-out`; a timed-out record carries its
+ * `timeLimitMs` and an `output` ending with the limit line.
+ */
+export interface CheckRecord extends CommandSpec { outcome: string; output?: string; timeLimitMs?: number }
 
 export type Grade = 'A' | 'B' | 'C' | 'D' | 'E';
 export interface Completion { summary: string; grade: Grade }
@@ -243,6 +278,8 @@ export interface Work extends Task {
   session?: SessionHandle & { purpose: Purpose };
   sessions?: WorkerSession[];
   sessionStarts?: Partial<Record<Purpose, number>>;
+  /** The attempts of the session in progress after a transport failure; absent when no session is retried. */
+  sessionAttempt?: SessionAttempt;
   lastToolError?: { purpose: Purpose; input: unknown; message: string };
   lastReportAttempt?: { purpose: Purpose; input: unknown };
   head?: string;
@@ -354,9 +391,72 @@ export function resolvePollSeconds(value: unknown = DEFAULT_POLL_SECONDS): numbe
   return value;
 }
 
+/**
+ * The limits used without a `budgets` setting: 6 planning review rounds, 4 implementation and documentation review
+ * rounds, 4 planning and implementation check attempts and no documentation check attempt.
+ */
+export const DEFAULT_BUDGETS: Readonly<BudgetLimits> = Object.freeze({
+  plan: Object.freeze({ reviews: 6, checks: 4 }),
+  work: Object.freeze({ reviews: 4, checks: 4 }),
+  document: Object.freeze({ reviews: 4, checks: 0 }),
+}) as Readonly<BudgetLimits>;
+
+const BUDGET_STAGES: readonly string[] = ['plan', 'work', 'document'];
+const plainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const invalidBudget = (setting: string, value: unknown, expected: string): Error =>
+  Object.assign(new Error(`Invalid ${setting}: expected ${expected}`),
+    { reason: 'invalid-budget', details: { setting, value } });
+
+/**
+ * The limits of every budget stage: a copy of `DEFAULT_BUDGETS` with the values of `value` (the `budgets` setting)
+ * replacing the defaults. The first violation throws an error with `reason` `invalid-budget` and `details` naming the
+ * offending field (`budgets` for the whole value) and its value.
+ */
+export function resolveBudgets(value: unknown): BudgetLimits {
+  const limits: BudgetLimits = { plan: { ...DEFAULT_BUDGETS.plan }, work: { ...DEFAULT_BUDGETS.work },
+    document: { ...DEFAULT_BUDGETS.document } };
+  if (value === undefined) return limits;
+  if (!plainObject(value)) throw invalidBudget('budgets', value, 'an object with plan, work or document');
+  for (const [stage, settings] of Object.entries(value)) {
+    const field = `budgets.${stage}`;
+    if (!BUDGET_STAGES.includes(stage)) throw invalidBudget(field, settings, 'plan, work or document');
+    if (!plainObject(settings)) throw invalidBudget(field, settings, 'an object with reviews or checks');
+    for (const [key, limit] of Object.entries(settings)) {
+      const name = `${field}.${key}`;
+      if (key !== 'reviews' && (key !== 'checks' || stage === 'document')) {
+        throw invalidBudget(name, limit, stage === 'document' ? 'reviews' : 'reviews or checks');
+      }
+      if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1 || limit > 12) {
+        throw invalidBudget(name, limit, 'an integer from 1 through 12');
+      }
+      limits[stage as keyof BudgetLimits][key as keyof StageBudget] = limit;
+    }
+  }
+  return limits;
+}
+
+/** The default time limit in minutes of one product check command. */
+export const DEFAULT_CHECK_TIMEOUT_MINUTES = 30;
+
+/**
+ * The product check time limit in minutes: `value`, or 30 when omitted. Anything but a safe integer from 1 through
+ * 240 throws an error with `reason` `invalid-check-timeout` and `details` naming the `checkTimeoutMinutes` setting
+ * and the value.
+ */
+export function resolveCheckTimeoutMinutes(value: unknown = DEFAULT_CHECK_TIMEOUT_MINUTES): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 240) {
+    throw Object.assign(new Error('Invalid checkTimeoutMinutes: expected an integer from 1 through 240'),
+      { reason: 'invalid-check-timeout', details: { setting: 'checkTimeoutMinutes', value } });
+  }
+  return value;
+}
+
 export function validateConfig<T extends RunConfig>(config: T): T {
   resolveCoverage(config.coverage);
   resolvePollSeconds(config.pollSeconds);
+  resolveBudgets(config.budgets);
+  resolveCheckTimeoutMinutes(config.checkTimeoutMinutes);
   const project = config.project;
   if ((config.mode ?? 'OFF') !== 'OFF' || !config.root || !config.stateDirectory ||
       !config.invocation || !config.authority?.reference || !config.authority?.instruction ||
