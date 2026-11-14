@@ -72,6 +72,11 @@ export interface RunState {
   current?: Work | null;
   completed?: Record<string, Work>;
   blocked?: Record<string, BlockedEntry>;
+  /**
+   * Work whose claim was taken over by another claimant and whose task was then accepted on the target by that
+   * claimant; it is never recorded as an acceptance of this invocation.
+   */
+  claimLost?: Record<string, Work>;
   baselineDone?: string[];
   statisticsSources?: import('./statistics.ts').Sources;
   disposed?: DisposedRecord;
